@@ -951,7 +951,7 @@ case "${1:-status}" in
     run_privileged do-apply-recommended
     ;;
   do-apply-recommended)
-    apply_mem_sleep "s2idle" "false"
+    apply_mem_sleep "deep" "false"
     apply_lid_action "suspend"
     apply_clamshell "true"
     apply_wake_toggle "LID0" "on"

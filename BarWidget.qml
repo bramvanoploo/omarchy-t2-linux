@@ -166,7 +166,7 @@ BarWidget {
 
     if (root.status) {
       var s = Object.assign({}, root.status)
-      s.memSleep = "s2idle"
+      s.memSleep = "deep"
       s.lidAction = "suspend"
       s.clamshellMode = true
       s.wakeOnLid = true
@@ -584,8 +584,8 @@ BarWidget {
 
         BorderSurface {
           id: dialogCard
-          width: Math.min(parent.width - Style.space(32), Style.space(520))
-          height: dialogCol.implicitHeight + Style.space(48)
+          width: Math.min(Style.space(520), parent.width - Style.space(48))
+          height: Math.min(dialogCol.implicitHeight + Style.space(48), parent.height - Style.space(48))
           anchors.centerIn: parent
           color: Color.popups.background
           borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
@@ -602,7 +602,7 @@ BarWidget {
             anchors.right: parent.right
             anchors.top: parent.top
             anchors.margins: Style.space(24)
-            spacing: Style.space(16)
+            spacing: Style.space(14)
 
             // Dialog Header
             Row {
@@ -2724,7 +2724,7 @@ BarWidget {
 
                       Repeater {
                         model: [
-                          { title: "Sleep mode", val: "Modern Standby", desc: "Allows MacBook to enter low-power s2idle standby for faster, more reliable wakeups." },
+                          { title: "Sleep mode", val: "Deep Sleep", desc: "Enters traditional ACPI S3 deep sleep state to minimize battery drain when suspended." },
                           { title: "Lid Close Action", val: "Suspend", desc: "Suspends the MacBook to preserve power when closing the display lid on battery." },
                           { title: "Clam Shell Mode", val: "Stay Awake", desc: "Keeps the system awake when connected to an external monitor and charger with lid closed." },
                           { title: "Wake On Lid Open", val: "Enabled", desc: "Automatically and instantly wakes the system when opening the laptop lid." },
