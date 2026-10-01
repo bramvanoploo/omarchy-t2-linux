@@ -2317,16 +2317,6 @@ BarWidget {
                                 onClicked: root.updatePlugin(modelData.id)
                               }
 
-                              // Enable / Disable button (if installed)
-                              Button {
-                                visible: modelData.installed
-                                text: modelData.enabled ? "Disable" : "Enable"
-                                iconText: modelData.enabled ? "󰄲" : "󰄱"
-                                bordered: true
-                                selected: modelData.enabled
-                                enabled: !pluginCard.isBusy && root.activePluginOpId === ""
-                                onClicked: root.togglePlugin(modelData.id, !modelData.enabled)
-                              }
 
                               // Remove button (if installed)
                               Button {
