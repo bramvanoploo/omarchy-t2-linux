@@ -11,7 +11,7 @@ SYSTEM_HELPER="/usr/local/libexec/omarchy-t2-helper"
 
 mkdir -p "$CONFIG_DIR"
 if [[ ! -f "$SETTINGS_FILE" ]]; then
-  echo '{"kbdTimeout":"1m","touchbarBlank":true}' > "$SETTINGS_FILE"
+  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false}' > "$SETTINGS_FILE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -261,7 +261,11 @@ get_lid_action() {
       local match
       match=$(grep -E '^[[:space:]]*HandleLidSwitch=' "$f" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '[:space:]' || true)
       if [[ -n "$match" ]]; then
-        action="$match"
+        if [[ "$match" == "suspend-then-hibernate" ]]; then
+          action="suspend"
+        else
+          action="$match"
+        fi
       fi
     fi
   done
@@ -293,7 +297,13 @@ get_hibernate_delay() {
       local match
       match=$(grep -E '^[[:space:]]*HibernateDelaySec=' "$f" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '[:space:]' || true)
       if [[ -n "$match" ]]; then
-        delay="$match"
+        case "$match" in
+          1800|1800s|30m|30min) delay="30min" ;;
+          3600|3600s|60m|1h|1hour) delay="1hour" ;;
+          7200|7200s|120m|2h|2hours) delay="2hours" ;;
+          0|off) delay="off" ;;
+          *) delay="$match" ;;
+        esac
       fi
     fi
   done
@@ -336,9 +346,10 @@ print_status_json() {
   clamshell=$(get_clamshell_mode)
   hib_delay=$(get_hibernate_delay)
 
-  local kbd_timeout touchbar_blank inactive_eth pcie_compat
+  local kbd_timeout touchbar_blank inactive_eth pcie_compat rec_prompt_shown
   kbd_timeout=$(get_setting "kbdTimeout" "1m")
   touchbar_blank=$(get_setting "touchbarBlank" "true")
+  rec_prompt_shown=$(get_setting "recommendedPromptShown" "false")
   inactive_eth=$(get_inactive_ethernet_json)
   pcie_compat=$(get_pcie_ports_compat)
 
@@ -370,7 +381,8 @@ print_status_json() {
   "wakeOnLid": $wake_lid,
   "wakeOnAc": $wake_ac,
   "hibernateDelay": "$hib_delay",
-  "touchbarBlank": $touchbar_blank
+  "touchbarBlank": $touchbar_blank,
+  "recommendedPromptShown": $rec_prompt_shown
 }
 EOF
 }
@@ -520,22 +532,92 @@ PYEOF
 
 apply_mem_sleep() {
   local val="$1" # deep | s2idle
+  local update_limine="${2:-true}"
+
+  # 1. Active immediately in sysfs
   if [[ -w /sys/power/mem_sleep ]]; then
     echo "$val" > /sys/power/mem_sleep 2>/dev/null || true
   fi
+
+  # 2. tmpfiles.d persistence rule
+  mkdir -p /etc/tmpfiles.d
+  echo "w /sys/power/mem_sleep - - - - $val" > /etc/tmpfiles.d/omarchy-t2-mem-sleep.conf
+
+  # 3. systemd-sleep configuration
   mkdir -p /etc/systemd/sleep.conf.d
-  cat <<CONF > /etc/systemd/sleep.conf.d/30-t2-sleep.conf
+  local cfg="/etc/systemd/sleep.conf.d/30-t2-sleep.conf"
+  if [[ -f "$cfg" ]] && grep -q "\[Sleep\]" "$cfg" 2>/dev/null; then
+    if grep -q "MemorySleepMode=" "$cfg" 2>/dev/null; then
+      sed -i "s/^[[:space:]]*MemorySleepMode=.*/MemorySleepMode=$val/" "$cfg"
+    else
+      sed -i "/\[Sleep\]/a MemorySleepMode=$val" "$cfg"
+    fi
+  else
+    cat <<CONF > "$cfg"
 [Sleep]
 MemorySleepMode=$val
 CONF
+  fi
+
+  # 4. Kernel command line persistence in /etc/limine-entry-tool.d/t2-mac.conf
+  local limine_conf="/etc/limine-entry-tool.d/t2-mac.conf"
+  python3 - <<PYEOF
+import re
+import os
+
+path = "$limine_conf"
+val = "$val"
+
+content = ""
+if os.path.exists(path):
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+def update_mem_sleep_default(text, val):
+    if re.search(r"\bmem_sleep_default=\w+\b", text):
+        return re.sub(r"\bmem_sleep_default=\w+\b", f"mem_sleep_default={val}", text)
+    def repl(m):
+        prefix = m.group(1)
+        v = m.group(2).rstrip()
+        closing = m.group(3)
+        sep = " " if v and not v.endswith(" ") else ""
+        return f"{prefix}{v}{sep}mem_sleep_default={val}{closing}"
+    new_text, count = re.subn(r"^([ \t]*KERNEL_CMDLINE[^=\n]*=[+ \t]*[\"'])([^\"']*)([\"'])", repl, text, flags=re.M)
+    if count == 0:
+        sep = "\n" if text and not text.endswith("\n") else ""
+        new_text = text + sep + f'KERNEL_CMDLINE[default]+=" mem_sleep_default={val}"\n'
+    return new_text
+
+new_content = update_mem_sleep_default(content, val)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w", encoding="utf-8") as f:
+    f.write(new_content)
+PYEOF
+
+  # 5. Update bootloader if requested
+  if [[ "$update_limine" == "true" ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo limine-update
+    else
+      limine-update
+    fi
+  fi
 }
 
 apply_lid_action() {
   local action="$1" # suspend | ignore | lock | hibernate
+  local target_action="$action"
+  if [[ "$action" == "suspend" ]]; then
+    local hib_delay
+    hib_delay=$(get_hibernate_delay)
+    if [[ "$hib_delay" != "off" && -n "$hib_delay" ]]; then
+      target_action="suspend-then-hibernate"
+    fi
+  fi
   mkdir -p /etc/systemd/logind.conf.d
   cat <<CONF > /etc/systemd/logind.conf.d/30-t2-lid.conf
 [Login]
-HandleLidSwitch=$action
+HandleLidSwitch=$target_action
 CONF
   systemctl kill -s HUP systemd-logind 2>/dev/null || true
 }
@@ -592,18 +674,24 @@ apply_hibernate_delay() {
   local delay="$1" # off | 30min | 1hour | 2hours
   mkdir -p /etc/systemd/sleep.conf.d
   local cfg="/etc/systemd/sleep.conf.d/30-t2-sleep.conf"
-  if [[ "$delay" == "off" ]]; then
+  local lid_cfg="/etc/systemd/logind.conf.d/30-t2-lid.conf"
+
+  if [[ "$delay" == "off" || "$delay" == "0" ]]; then
     if [[ -f "$cfg" ]]; then
       sed -i '/HibernateDelaySec=/d' "$cfg"
+    fi
+    if [[ -f "$lid_cfg" ]] && grep -q "HandleLidSwitch=suspend-then-hibernate" "$lid_cfg" 2>/dev/null; then
+      sed -i 's/HandleLidSwitch=suspend-then-hibernate/HandleLidSwitch=suspend/' "$lid_cfg"
+      systemctl kill -s HUP systemd-logind 2>/dev/null || true
     fi
   else
     local sec="1800"
     case "$delay" in
-      30min|30m) sec="1800" ;;
-      1hour|1h)  sec="3600" ;;
-      2hours|2h) sec="7200" ;;
+      30min|30m|1800) sec="1800" ;;
+      1hour|1h|3600)  sec="3600" ;;
+      2hours|2h|7200) sec="7200" ;;
     esac
-    if grep -q "\[Sleep\]" "$cfg" 2>/dev/null; then
+    if [[ -f "$cfg" ]] && grep -q "\[Sleep\]" "$cfg" 2>/dev/null; then
       sed -i '/HibernateDelaySec=/d' "$cfg"
       sed -i "/\[Sleep\]/a HibernateDelaySec=$sec" "$cfg"
     else
@@ -611,6 +699,15 @@ apply_hibernate_delay() {
 [Sleep]
 HibernateDelaySec=$sec
 CONF
+    fi
+
+    mkdir -p /etc/systemd/logind.conf.d
+    if [[ ! -f "$lid_cfg" ]] || grep -q -E "HandleLidSwitch=(suspend|suspend-then-hibernate)" "$lid_cfg" 2>/dev/null; then
+      cat <<CONF > "$lid_cfg"
+[Login]
+HandleLidSwitch=suspend-then-hibernate
+CONF
+      systemctl kill -s HUP systemd-logind 2>/dev/null || true
     fi
   fi
 }
@@ -736,6 +833,9 @@ case "${1:-status}" in
       touchbar_blank)
         save_user_setting "touchbarBlank" "$val"
         ;;
+      recommended_prompt_shown)
+        save_user_setting "recommendedPromptShown" "$val"
+        ;;
       *)
         echo "Unknown setting key: $key" >&2
         exit 1
@@ -769,6 +869,31 @@ case "${1:-status}" in
     shift; apply_usb_autosuspend "$1" ;;
   apply-hibernate-delay)
     shift; apply_hibernate_delay "$1" ;;
+  apply-recommended)
+    save_user_setting "kbdTimeout" "1m"
+    save_user_setting "touchbarBlank" "true"
+    save_user_setting "recommendedPromptShown" "true"
+    run_privileged do-apply-recommended
+    ;;
+  do-apply-recommended)
+    apply_mem_sleep "s2idle" "false"
+    apply_lid_action "suspend"
+    apply_clamshell "true"
+    apply_wake_toggle "LID0" "on"
+    apply_wake_toggle "ADP1" "off"
+    apply_hibernate_delay "off"
+    apply_wifi_powersave "off"
+    if command -v nmcli >/dev/null 2>&1; then
+      while IFS=: read -r dev type state rest; do
+        if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
+          apply_ethernet_managed "$dev" "no"
+        fi
+      done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+    fi
+    apply_audio_powersave "true"
+    apply_usb_autosuspend "true"
+    apply_pcie_ports_compat "on"
+    ;;
   install-system)
     run_privileged do-install-system ;;
   do-install-system)
@@ -800,7 +925,7 @@ case "${1:-status}" in
     ;;
 
   *)
-    echo "Usage: $0 {status|detect|set <key> <val>|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle}" >&2
+    echo "Usage: $0 {status|detect|set <key> <val>|apply-recommended|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle}" >&2
     exit 1
     ;;
 esac

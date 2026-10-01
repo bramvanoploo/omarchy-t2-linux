@@ -19,6 +19,7 @@ BarWidget {
   property string lastNotice: ""
   property bool limineUpdating: false
   property bool rebootConfirmOpen: false
+  property bool recommendedConfirmOpen: false
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string helper: pluginDir + "/scripts/t2-helper"
@@ -55,6 +56,9 @@ BarWidget {
     var parsed = Model.parseStatus(raw)
     if (parsed) {
       status = parsed
+      if (root.opened && parsed.isT2 && !parsed.recommendedPromptShown && !root.limineUpdating && !root.rebootConfirmOpen) {
+        root.recommendedConfirmOpen = true
+      }
     }
   }
 
@@ -125,7 +129,67 @@ BarWidget {
     limineProc.running = true
   }
 
+  function setMemSleep(mode) {
+    if (root.limineUpdating) return
+    root.limineUpdating = true
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      s.memSleep = mode
+      root.status = s
+    }
+    root.lastNotice = "Updating Limine boot configuration (limine-update)…"
+    limineProc.command = ["bash", helper, "set", "mem_sleep", mode]
+    limineProc.running = true
+  }
+
+  function applyRecommendedOptions() {
+    recommendedConfirmOpen = false
+    if (root.limineUpdating) return
+    root.limineUpdating = true
+
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      s.memSleep = "s2idle"
+      s.lidAction = "suspend"
+      s.clamshellMode = true
+      s.wakeOnLid = true
+      s.wakeOnAc = false
+      s.hibernateDelay = "off"
+      s.touchbarBlank = true
+      s.wifiPowerSave = false
+      s.audioPowerSave = true
+      s.usbAutosuspend = true
+      s.kbdTimeout = "1m"
+      s.pciePortsCompat = true
+      s.recommendedPromptShown = true
+      if (s.inactiveEthernet) {
+        s.inactiveEthernet = s.inactiveEthernet.map(function(item) {
+          return { device: item.device, managed: false, state: "unmanaged" }
+        })
+      }
+      root.status = s
+    }
+
+    root.lastNotice = "Applying recommended power and suspend settings…"
+    limineProc.command = ["bash", helper, "apply-recommended"]
+    limineProc.running = true
+  }
+
+  function dismissRecommendedPrompt() {
+    if (root.status && !root.status.recommendedPromptShown) {
+      var s = Object.assign({}, root.status)
+      s.recommendedPromptShown = true
+      root.status = s
+    }
+    actionProc.command = ["bash", helper, "set", "recommended_prompt_shown", "true"]
+    actionProc.running = true
+  }
+
   function setOption(key, val) {
+    if (key === "mem_sleep") {
+      setMemSleep(val)
+      return
+    }
     if (actionProc.running) actionProc.running = false
     applying = true
     lastNotice = "Applying " + key + "…"
@@ -170,7 +234,11 @@ BarWidget {
       } else if (key === "clamshell") {
         s.clamshell = (val === "true" || val === "on")
       } else if (key === "hibernate_delay") {
-        s.hibernateDelay = parseInt(val) || 0
+        s.hibernateDelay = val
+      } else if (key === "kbd_timeout") {
+        s.kbdTimeout = val
+      } else if (key === "recommended_prompt_shown") {
+        s.recommendedPromptShown = (val === "true" || val === "on")
       }
       root.status = s
     }
@@ -241,7 +309,13 @@ BarWidget {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
-    function showRebootDialog(): void { root.open(); root.rebootConfirmOpen = true }
+    function showRebootDialog(): void {
+      if (root.limineUpdating || limineProc.running) return
+      root.open()
+      root.rebootConfirmOpen = true
+    }
+    function showRecommendedDialog(): void { root.open(); root.recommendedConfirmOpen = true }
+    function applyRecommendedOptions(): void { root.applyRecommendedOptions() }
     function selectTab(index: int): void {
       root.activeTab = index
       if (index === 2 && root.opened) {
@@ -254,6 +328,7 @@ BarWidget {
     function refreshPlugins(): void { root.fetchPlugins(true) }
     function togglePlugin(pluginId: string, enable: bool): void { root.togglePlugin(pluginId, enable) }
     function setOption(key: string, val: string): void { root.setOption(key, val) }
+    function setMemSleep(mode: string): void { root.setMemSleep(mode) }
     function refresh(): void { root.refresh() }
     function scrollContent(y: real): void { flickable.contentY = y }
   }
@@ -279,6 +354,9 @@ BarWidget {
         fetchPlugins(true)
       } else {
         fetchPlugins(false)
+      }
+      if (root.status && root.status.isT2 && !root.status.recommendedPromptShown && !root.limineUpdating && !root.rebootConfirmOpen) {
+        root.recommendedConfirmOpen = true
       }
     }
   }
@@ -611,13 +689,21 @@ BarWidget {
       focus: true
 
       Keys.onPressed: function(event) {
-        if (root.limineUpdating) {
+        if (root.limineUpdating || limineProc.running) {
           event.accepted = true
           return
         }
         if (root.rebootConfirmOpen) {
           if (event.key === Qt.Key_Escape) {
             root.rebootConfirmOpen = false
+            event.accepted = true
+            return
+          }
+        }
+        if (root.recommendedConfirmOpen) {
+          if (event.key === Qt.Key_Escape) {
+            root.recommendedConfirmOpen = false
+            root.dismissRecommendedPrompt()
             event.accepted = true
             return
           }
@@ -636,7 +722,7 @@ BarWidget {
         MouseArea {
           anchors.fill: parent
           onClicked: {
-            if (!root.limineUpdating && !root.rebootConfirmOpen) {
+            if (!root.limineUpdating && !limineProc.running && !root.rebootConfirmOpen && !root.recommendedConfirmOpen) {
               root.close()
             }
           }
@@ -862,7 +948,7 @@ BarWidget {
                   }
                 }
 
-                // Bottom: "Apply recommended options" button + T2 Subsystem summary
+                // Bottom: "Apply recommended defaults" button + T2 Subsystem summary
                 Column {
                   id: sidebarFooterCol
                   anchors.left: parent.left
@@ -874,14 +960,14 @@ BarWidget {
                     id: applyRecommendedBtn
                     width: parent.width
                     height: Style.space(36)
-                    text: "Apply recommended options"
+                    text: "Apply recommended defaults"
                     iconText: "󰁨"
                     bordered: true
                     accent: root.accent
                     fontSize: Style.font.bodySmall
                     horizontalPadding: Style.space(8)
                     onClicked: {
-                      // Action will be specified by user
+                      root.recommendedConfirmOpen = true
                     }
                   }
 
@@ -1634,8 +1720,9 @@ BarWidget {
                                 width: parent.btnWidth
                                 text: Model.formatMemSleep(modelData)
                                 bordered: true
+                                enabled: !root.limineUpdating
                                 selected: root.status.memSleep === modelData
-                                onClicked: root.setOption("mem_sleep", modelData)
+                                onClicked: root.setMemSleep(modelData)
                               }
                             }
                           }
@@ -1710,7 +1797,7 @@ BarWidget {
                                 width: parent.btnWidth
                                 text: modelData.label
                                 bordered: true
-                                selected: root.status.lidAction === modelData.val
+                                selected: root.status.lidAction === modelData.val || (modelData.val === "suspend" && root.status.lidAction === "suspend-then-hibernate")
                                 onClicked: root.setOption("lid_action", modelData.val)
                               }
                             }
@@ -1919,7 +2006,7 @@ BarWidget {
 
                             Text {
                               id: hibStatusText
-                              text: root.status.hibernateDelay
+                              text: Model.formatHibernateDelay(root.status.hibernateDelay)
                               color: root.accent
                               font.family: root.fontFamily
                               font.pixelSize: Style.font.caption
@@ -2380,7 +2467,7 @@ BarWidget {
           // Blocking overlay when limine-update is in progress
           Rectangle {
             id: limineBlockingOverlay
-            visible: root.limineUpdating
+            visible: root.limineUpdating || limineProc.running
             anchors.fill: parent
             radius: Style.cornerRadius
             color: Qt.rgba(0, 0, 0, 0.85)
@@ -2412,7 +2499,7 @@ BarWidget {
                   to: 360
                   duration: 1200
                   loops: Animation.Infinite
-                  running: root.limineUpdating
+                  running: root.limineUpdating || limineProc.running
                 }
               }
 
@@ -2439,10 +2526,305 @@ BarWidget {
             }
           }
 
+          // Recommended options confirmation dialog
+          Rectangle {
+            id: recommendedDialogOverlay
+            visible: root.recommendedConfirmOpen && !root.limineUpdating && !limineProc.running
+            anchors.fill: parent
+            radius: Style.cornerRadius
+            color: Qt.rgba(0, 0, 0, 0.75)
+            z: 9997
+
+            // Absorb background clicks
+            MouseArea {
+              anchors.fill: parent
+              onClicked: {}
+            }
+
+            BorderSurface {
+              anchors.centerIn: parent
+              width: Math.min(parent.width - Style.space(32), Style.space(640))
+              height: Math.min(parent.height - Style.space(32), Style.space(560))
+              color: Color.popups.background
+              borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
+              radius: Style.cornerRadius
+
+              Item {
+                anchors.fill: parent
+
+                // Header
+                Row {
+                  id: recHeaderRow
+                  anchors.top: parent.top
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.margins: Style.space(20)
+                  spacing: Style.space(12)
+
+                  Text {
+                    text: "󰁨"
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title * 1.5
+                    color: root.accent
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                  Column {
+                    spacing: 2
+                    Text {
+                      text: "Apply recommended defaults"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.title
+                      font.bold: true
+                      color: root.foreground
+                    }
+                    Text {
+                      text: "Optimized suspend and battery life configuration"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      color: root.dim
+                    }
+                  }
+                }
+
+                // Explanation Banner
+                BorderSurface {
+                  id: recSummaryBox
+                  anchors.top: recHeaderRow.bottom
+                  anchors.topMargin: Style.space(10)
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.leftMargin: Style.space(20)
+                  anchors.rightMargin: Style.space(20)
+                  implicitHeight: summaryText.implicitHeight + Style.space(16)
+                  height: implicitHeight
+                  color: Util.alpha(root.accent, 0.08)
+                  borderSpec: Border.flat(Util.alpha(root.accent, 0.28), 1)
+                  radius: Style.cornerRadius
+
+                  Text {
+                    id: summaryText
+                    anchors.fill: parent
+                    anchors.margins: Style.space(10)
+                    text: "Applying the recommended defaults means that the macbook will wake from suspend easier and will have a longer battery life, up to 42% less battery drain compared to the default configuration. Depending on the system load."
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    color: root.foreground
+                    wrapMode: Text.WordWrap
+                    lineHeight: 1.2
+                  }
+                }
+
+                // Scrollable list of options
+                Flickable {
+                  id: optFlickable
+                  anchors.top: recSummaryBox.bottom
+                  anchors.topMargin: Style.space(12)
+                  anchors.bottom: recFooterRow.top
+                  anchors.bottomMargin: Style.space(12)
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.leftMargin: Style.space(20)
+                  anchors.rightMargin: Style.space(20)
+                  contentWidth: width
+                  contentHeight: optContentCol.implicitHeight
+                  clip: true
+
+                  Column {
+                    id: optContentCol
+                    width: parent.width
+                    spacing: Style.space(14)
+
+                    // Group 1: Suspend Behaviour
+                    Column {
+                      width: parent.width
+                      spacing: Style.space(6)
+
+                      Text {
+                        text: "SUSPEND BEHAVIOUR"
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                        color: root.accent
+                        font.letterSpacing: 0.8
+                      }
+
+                      Repeater {
+                        model: [
+                          { title: "Sleep mode", val: "Modern Standby", desc: "Allows MacBook to enter low-power s2idle standby for faster, more reliable wakeups." },
+                          { title: "Lid Close Action", val: "Suspend", desc: "Suspends the MacBook to preserve power when closing the display lid on battery." },
+                          { title: "Clam Shell Mode", val: "Stay Awake", desc: "Keeps the system awake when connected to an external monitor and charger with lid closed." },
+                          { title: "Wake On Lid Open", val: "Enabled", desc: "Automatically and instantly wakes the system when opening the laptop lid." },
+                          { title: "Wake on AC Charger Connect", val: "Disabled", desc: "Prevents unwanted wakeups when plugging in the USB-C or MagSafe charger." },
+                          { title: "Hibernate Delay", val: "Never", desc: "Prevents unexpected transitions to disk hibernation to maintain quick sleep responsiveness." },
+                          { title: "Touch Bar Blanking on Sleep", val: "Enabled", desc: "Ensures the OLED Touch Bar is powered off cleanly immediately upon suspend." }
+                        ]
+
+                        delegate: BorderSurface {
+                          width: parent.width
+                          implicitHeight: optRow1.implicitHeight + Style.space(12)
+                          height: implicitHeight
+                          color: Util.alpha(root.foreground, 0.03)
+                          radius: Style.cornerRadius
+
+                          Row {
+                            id: optRow1
+                            anchors.fill: parent
+                            anchors.margins: Style.space(8)
+                            spacing: Style.space(8)
+
+                            Text {
+                              text: "•"
+                              color: root.accent
+                              font.bold: true
+                            }
+                            Column {
+                              width: parent.width - Style.space(20)
+                              spacing: 2
+                              Row {
+                                spacing: Style.space(8)
+                                Text {
+                                  text: modelData.title + ":"
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.bodySmall
+                                  font.bold: true
+                                  color: root.foreground
+                                }
+                                Text {
+                                  text: modelData.val
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.bodySmall
+                                  font.bold: true
+                                  color: root.accent
+                                }
+                              }
+                              Text {
+                                text: modelData.desc
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                color: root.dim
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    // Group 2: Battery Life
+                    Column {
+                      width: parent.width
+                      spacing: Style.space(6)
+
+                      Text {
+                        text: "BATTERY LIFE"
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                        color: root.accent
+                        font.letterSpacing: 0.8
+                      }
+
+                      Repeater {
+                        model: [
+                          { title: "Wi-Fi Power Management", val: "Disabled", desc: "Prevents wireless sleep states that can cause Wi-Fi drops or stall system wakeups." },
+                          { title: "Ethernet Management", val: "Unmanaged (All devices)", desc: "Stops NetworkManager from querying inactive internal T2 network interfaces." },
+                          { title: "Audio Controller Power Save", val: "Enabled", desc: "Powers down the internal audio hardware when inactive to reduce idle battery drain." },
+                          { title: "USB Device Autosuspend", val: "Enabled", desc: "Puts unused internal USB controllers into low-power mode to preserve battery." },
+                          { title: "Keyboard Backlight Idle Auto-Dim", val: "1 min", desc: "Dims the keyboard illumination after 1 minute of inactivity to save energy." },
+                          { title: "PCIe ports compatibility", val: "Enabled", desc: "Enables low-power PCIe bus states to eliminate battery drain (updates bootloader)." }
+                        ]
+
+                        delegate: BorderSurface {
+                          width: parent.width
+                          implicitHeight: optRow2.implicitHeight + Style.space(12)
+                          height: implicitHeight
+                          color: Util.alpha(root.foreground, 0.03)
+                          radius: Style.cornerRadius
+
+                          Row {
+                            id: optRow2
+                            anchors.fill: parent
+                            anchors.margins: Style.space(8)
+                            spacing: Style.space(8)
+
+                            Text {
+                              text: "•"
+                              color: root.accent
+                              font.bold: true
+                            }
+                            Column {
+                              width: parent.width - Style.space(20)
+                              spacing: 2
+                              Row {
+                                spacing: Style.space(8)
+                                Text {
+                                  text: modelData.title + ":"
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.bodySmall
+                                  font.bold: true
+                                  color: root.foreground
+                                }
+                                Text {
+                                  text: modelData.val
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.bodySmall
+                                  font.bold: true
+                                  color: root.accent
+                                }
+                              }
+                              Text {
+                                text: modelData.desc
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                color: root.dim
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // Footer Buttons
+                Row {
+                  id: recFooterRow
+                  anchors.bottom: parent.bottom
+                  anchors.right: parent.right
+                  anchors.margins: Style.space(20)
+                  spacing: Style.space(10)
+
+                  Button {
+                    text: "Cancel"
+                    bordered: true
+                    onClicked: {
+                      root.recommendedConfirmOpen = false
+                      root.dismissRecommendedPrompt()
+                    }
+                  }
+
+                  Button {
+                    text: "Apply recommended defaults"
+                    iconText: "󰁨"
+                    bordered: true
+                    accent: root.accent
+                    selected: true
+                    onClicked: {
+                      root.applyRecommendedOptions()
+                    }
+                  }
+                }
+              }
+            }
+          }
+
           // Reboot confirmation dialog after limine-update
           Rectangle {
             id: rebootDialogOverlay
-            visible: root.rebootConfirmOpen
+            visible: root.rebootConfirmOpen && !root.limineUpdating && !limineProc.running
             anchors.fill: parent
             radius: Style.cornerRadius
             color: Qt.rgba(0, 0, 0, 0.75)
@@ -2522,7 +2904,9 @@ BarWidget {
                     bordered: true
                     accent: root.accent
                     selected: true
+                    enabled: !root.limineUpdating && !limineProc.running
                     onClicked: {
+                      if (root.limineUpdating || limineProc.running) return
                       root.rebootConfirmOpen = false
                       rebootProc.running = true
                     }

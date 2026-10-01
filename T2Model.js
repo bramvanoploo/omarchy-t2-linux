@@ -31,7 +31,8 @@ function emptyStatus() {
     wakeOnLid: true,
     wakeOnAc: false,
     hibernateDelay: "off",
-    touchbarBlank: true
+    touchbarBlank: true,
+    recommendedPromptShown: false
   };
 }
 
@@ -42,6 +43,13 @@ function parseStatus(raw) {
     if (data && typeof data === "object") {
       if (data.battery && typeof data.battery.percent === "number") {
         data.battery.percent = Math.min(100, Math.max(0, Math.round(data.battery.percent)));
+      }
+      if (data.hibernateDelay !== undefined) {
+        var hd = String(data.hibernateDelay).toLowerCase();
+        if (hd === "1800" || hd === "1800s" || hd === "30m" || hd === "30min") data.hibernateDelay = "30min";
+        else if (hd === "3600" || hd === "3600s" || hd === "60m" || hd === "1h" || hd === "1hour") data.hibernateDelay = "1hour";
+        else if (hd === "7200" || hd === "7200s" || hd === "120m" || hd === "2h" || hd === "2hours") data.hibernateDelay = "2hours";
+        else if (hd === "0" || hd === "off") data.hibernateDelay = "off";
       }
       return data;
     }
@@ -107,10 +115,29 @@ function formatMemSleep(mode) {
 
 function formatLidAction(action) {
   switch (action) {
-    case "suspend": return "Suspend";
+    case "suspend":
+    case "suspend-then-hibernate": return "Suspend";
     case "ignore": return "Do Nothing";
     case "lock": return "Lock Screen";
     case "hibernate": return "Hibernate";
     default: return action || "Suspend";
+  }
+}
+
+function formatHibernateDelay(delay) {
+  switch (String(delay)) {
+    case "off":
+    case "0":
+    case 0: return "Never";
+    case "30min":
+    case "30m":
+    case "1800": return "30 min";
+    case "1hour":
+    case "1h":
+    case "3600": return "1 hour";
+    case "2hours":
+    case "2h":
+    case "7200": return "2 hours";
+    default: return delay || "Never";
   }
 }
