@@ -1216,61 +1216,96 @@ BarWidget {
                         }
                       }
 
-                      // Inactive Ethernet Adapters (e.g. enp2s0f1u1 Apple T2 iBridge CDC-NCM)
-                      Repeater {
-                        model: (root.status && root.status.inactiveEthernet) ? root.status.inactiveEthernet : []
+                      // Inactive Ethernet Management (e.g. enp2s0f1u1 Apple T2 iBridge CDC-NCM or other inactive adapters)
+                      BorderSurface {
+                        visible: Boolean(root.status && root.status.inactiveEthernet && root.status.inactiveEthernet.length > 0)
+                        width: parent.width
+                        height: ethCardCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(root.foreground, 0.03)
+                        radius: Style.cornerRadius
 
-                        delegate: BorderSurface {
-                          width: parent.width
-                          height: Math.max(Style.space(62), ethCol.implicitHeight + Style.space(20))
-                          color: Util.alpha(root.foreground, 0.03)
-                          radius: Style.cornerRadius
+                        Column {
+                          id: ethCardCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(14)
+                          spacing: Style.space(10)
 
-                          Row {
-                            anchors.fill: parent
-                            anchors.leftMargin: Style.space(14)
-                            anchors.rightMargin: Style.space(14)
-                            anchors.verticalCenter: parent.verticalCenter
+                          // Header
+                          Column {
+                            width: parent.width
+                            spacing: 2
 
-                            Column {
-                              id: ethCol
-                              width: parent.width - ethSwitch.width - Style.space(14)
-                              anchors.verticalCenter: parent.verticalCenter
-                              spacing: 2
-
-                              Row {
-                                spacing: Style.space(8)
-                                Text {
-                                  text: "Ethernet Management (" + modelData.device + ")"
-                                  color: root.foreground
-                                  font.family: root.fontFamily
-                                  font.pixelSize: Style.font.body
-                                  font.bold: true
-                                }
-                                Text {
-                                  text: modelData.managed ? "Managed" : "Unmanaged"
-                                  color: modelData.managed ? root.foreground : root.dim
-                                  font.family: root.fontFamily
-                                  font.pixelSize: Style.font.caption
-                                  anchors.verticalCenter: parent.verticalCenter
-                                }
-                              }
-
-                              Text {
-                                text: "Prevent NetworkManager from attempting DHCP transactions on inactive network interface after resume."
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                                wrapMode: Text.WordWrap
-                                width: parent.width
-                              }
+                            Text {
+                              text: "Ethernet Management"
+                              color: root.foreground
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.body
+                              font.bold: true
                             }
 
-                            ToggleSwitch {
-                              id: ethSwitch
-                              anchors.verticalCenter: parent.verticalCenter
-                              checked: modelData.managed
-                              onToggled: root.setOption("ethernet_managed", modelData.device + ":" + (!modelData.managed ? "yes" : "no"))
+                            Text {
+                              text: "Prevent NetworkManager from attempting DHCP transactions on inactive network interfaces after resume."
+                              color: root.dim
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.caption
+                              wrapMode: Text.WordWrap
+                              width: parent.width
+                            }
+                          }
+
+                          // List of Inactive Interfaces
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(6)
+
+                            Repeater {
+                              model: (root.status && root.status.inactiveEthernet) ? root.status.inactiveEthernet : []
+
+                              delegate: BorderSurface {
+                                width: parent.width
+                                height: Style.space(38)
+                                color: Util.alpha(root.foreground, 0.03)
+                                radius: Style.cornerRadius
+
+                                Row {
+                                  anchors.fill: parent
+                                  anchors.leftMargin: Style.space(12)
+                                  anchors.rightMargin: Style.space(12)
+                                  anchors.verticalCenter: parent.verticalCenter
+
+                                  Row {
+                                    width: parent.width - ethDevSwitch.width
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: Style.space(8)
+
+                                    Text {
+                                      text: "󰌘  " + modelData.device
+                                      color: root.foreground
+                                      font.family: root.fontFamily
+                                      font.pixelSize: Style.font.body
+                                      font.bold: true
+                                      anchors.verticalCenter: parent.verticalCenter
+                                    }
+
+                                    Text {
+                                      text: modelData.managed ? "Managed" : "Unmanaged"
+                                      color: modelData.managed ? root.accent : root.dim
+                                      font.family: root.fontFamily
+                                      font.pixelSize: Style.font.caption
+                                      anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                  }
+
+                                  ToggleSwitch {
+                                    id: ethDevSwitch
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    checked: modelData.managed
+                                    onToggled: root.setOption("ethernet_managed", modelData.device + ":" + (!modelData.managed ? "yes" : "no"))
+                                  }
+                                }
+                              }
                             }
                           }
                         }

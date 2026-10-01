@@ -173,7 +173,7 @@ get_inactive_ethernet_json() {
       if [[ "$type" == "ethernet" ]]; then
         if [[ "$state" != "connected" && "$state" != "connecting" ]]; then
           local managed=true
-          if [[ "$state" == "unmanaged" ]]; then
+          if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
             managed=false
           fi
           items+=("{\"device\":\"$dev\",\"managed\":$managed,\"state\":\"$state\"}")
