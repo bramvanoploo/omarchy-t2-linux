@@ -209,6 +209,22 @@ get_mem_sleep() {
   echo "$val"
 }
 
+get_mem_sleep_modes_json() {
+  local raw modes=()
+  if [[ -r /sys/power/mem_sleep ]]; then
+    raw=$(tr -d '[]' < /sys/power/mem_sleep 2>/dev/null || true)
+    for m in $raw; do
+      [[ -n "$m" ]] && modes+=("\"$m\"")
+    done
+  fi
+  if (( ${#modes[@]} == 0 )); then
+    echo "[]"
+  else
+    local IFS=,
+    echo "[${modes[*]}]"
+  fi
+}
+
 get_audio_powersave() {
   local val
   val=$(cat /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || echo 0)
@@ -306,11 +322,12 @@ print_status_json() {
   local battery_json
   battery_json=$(get_battery_info)
 
-  local epp aspm wifi_ps mem_sleep audio_ps usb_ps wake_lid wake_ac lid_act clamshell hib_delay
+  local epp aspm wifi_ps mem_sleep mem_sleep_modes audio_ps usb_ps wake_lid wake_ac lid_act clamshell hib_delay
   epp=$(get_epp)
   aspm=$(get_aspm)
   wifi_ps=$(get_wifi_powersave)
   mem_sleep=$(get_mem_sleep)
+  mem_sleep_modes=$(get_mem_sleep_modes_json)
   audio_ps=$(get_audio_powersave)
   usb_ps=$(get_usb_autosuspend)
   wake_lid=$(get_wake_state "LID0")
@@ -347,6 +364,7 @@ print_status_json() {
   "usbAutosuspend": $usb_ps,
   "kbdTimeout": "$kbd_timeout",
   "memSleep": "$mem_sleep",
+  "memSleepModes": $mem_sleep_modes,
   "lidAction": "$lid_act",
   "clamshellMode": $clamshell,
   "wakeOnLid": $wake_lid,

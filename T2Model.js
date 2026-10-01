@@ -25,6 +25,7 @@ function emptyStatus() {
     usbAutosuspend: true,
     kbdTimeout: "1m",
     memSleep: "deep",
+    memSleepModes: [],
     lidAction: "suspend",
     clamshellMode: true,
     wakeOnLid: true,
@@ -97,9 +98,10 @@ function formatAspm(aspm) {
 
 function formatMemSleep(mode) {
   switch (mode) {
-    case "deep": return "Deep Sleep (S3)";
-    case "s2idle": return "Modern Standby (Freeze)";
-    default: return mode || "Unknown";
+    case "deep": return "Deep Sleep";
+    case "s2idle": return "Modern Standby";
+    case "shallow": return "Standby";
+    default: return mode ? (mode.charAt(0).toUpperCase() + mode.slice(1)) : "Unknown";
   }
 }
 

@@ -1504,8 +1504,9 @@ BarWidget {
                       width: parent.width
                       spacing: Style.space(12)
 
-                      // 1. System Sleep Mode (mem_sleep: deep vs s2idle)
+                      // 1. System Sleep Mode (mem_sleep)
                       BorderSurface {
+                        visible: root.status && root.status.memSleepModes && root.status.memSleepModes.length > 1
                         width: parent.width
                         height: memSleepCol.implicitHeight + Style.space(28)
                         color: Util.alpha(root.foreground, 0.03)
@@ -1529,7 +1530,7 @@ BarWidget {
                                 spacing: 2
                                 Text {
                                   id: memSleepTitle
-                                  text: "System Sleep Mode (mem_sleep)"
+                                  text: "Sleep Mode"
                                   color: root.foreground
                                   font.family: root.fontFamily
                                   font.pixelSize: Style.font.body
@@ -1537,10 +1538,12 @@ BarWidget {
                                 }
                                 Text {
                                   id: memSleepDesc
-                                  text: "Deep (S3 Suspend-to-RAM) completely powers down devices to prevent sleep drain."
+                                  text: "Choose how deeply your computer sleeps when suspended. Deep Sleep powers down internal components to save the most battery, while Modern Standby wakes up faster but consumes more battery during sleep."
                                   color: root.dim
                                   font.family: root.fontFamily
                                   font.pixelSize: Style.font.caption
+                                  wrapMode: Text.WordWrap
+                                  width: parent.width
                                 }
                               }
                             }
@@ -1557,21 +1560,19 @@ BarWidget {
 
                           Row {
                             width: parent.width
-                            spacing: Style.space(10)
-                            readonly property real btnWidth: (width - spacing) / 2
+                            spacing: Style.space(8)
+                            readonly property var modes: (root.status && root.status.memSleepModes) ? root.status.memSleepModes : []
+                            readonly property real btnWidth: modes.length > 0 ? (width - spacing * (modes.length - 1)) / modes.length : width
 
                             Repeater {
-                              model: [
-                                { val: "deep", label: "Deep (S3 Recommended)" },
-                                { val: "s2idle", label: "Modern Standby (s2idle)" }
-                              ]
+                              model: parent.modes
 
                               delegate: Button {
                                 width: parent.btnWidth
-                                text: modelData.label
+                                text: Model.formatMemSleep(modelData)
                                 bordered: true
-                                selected: root.status.memSleep === modelData.val
-                                onClicked: root.setOption("mem_sleep", modelData.val)
+                                selected: root.status.memSleep === modelData
+                                onClicked: root.setOption("mem_sleep", modelData)
                               }
                             }
                           }
