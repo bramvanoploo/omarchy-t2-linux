@@ -2254,23 +2254,6 @@ BarWidget {
                                   }
                                 }
 
-                                // Installed / Enabled Badge
-                                Rectangle {
-                                  visible: modelData.installed && !modelData.updateAvailable
-                                  height: Style.space(22)
-                                  width: installedBadgeText.implicitWidth + Style.space(12)
-                                  radius: Style.cornerRadius
-                                  color: modelData.enabled ? Util.alpha(Color.accent, 0.15) : Util.alpha(root.foreground, 0.06)
-
-                                  Text {
-                                    id: installedBadgeText
-                                    anchors.centerIn: parent
-                                    text: modelData.enabled ? "󰄲 Active" : "󰄱 Disabled"
-                                    color: modelData.enabled ? Color.accent : root.dim
-                                    font.family: root.fontFamily
-                                    font.pixelSize: Style.font.caption
-                                  }
-                                }
 
                                 // Available (not installed) Badge
                                 Rectangle {
