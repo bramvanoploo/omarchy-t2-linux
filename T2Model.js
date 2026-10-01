@@ -41,15 +41,47 @@ function parseStatus(raw) {
   try {
     var data = JSON.parse(raw);
     if (data && typeof data === "object") {
-      if (data.battery && typeof data.battery.percent === "number") {
-        data.battery.percent = Math.min(100, Math.max(0, Math.round(data.battery.percent)));
+      data.isT2 = Boolean(data.isT2);
+      data.helperInstalled = Boolean(data.helperInstalled);
+
+      if (data.battery && typeof data.battery === "object") {
+        if (typeof data.battery.percent === "number") {
+          data.battery.percent = Math.min(100, Math.max(0, Math.round(data.battery.percent)));
+        }
+        if (typeof data.battery.health === "number") {
+          data.battery.health = Math.min(100, Math.max(0, Math.round(data.battery.health)));
+        }
+        if (typeof data.battery.watts !== "number" || isNaN(data.battery.watts) || data.battery.watts < 0) {
+          data.battery.watts = 0.0;
+        }
+        if (typeof data.battery.cycles !== "number" || isNaN(data.battery.cycles) || data.battery.cycles < 0) {
+          data.battery.cycles = 0;
+        }
       }
+
+      if (!Array.isArray(data.inactiveEthernet)) {
+        data.inactiveEthernet = [];
+      }
+      if (!Array.isArray(data.memSleepModes)) {
+        data.memSleepModes = [];
+      }
+
+      data.wifiPowerSave = Boolean(data.wifiPowerSave);
+      data.pciePortsCompat = Boolean(data.pciePortsCompat);
+      data.audioPowerSave = Boolean(data.audioPowerSave);
+      data.usbAutosuspend = Boolean(data.usbAutosuspend);
+      data.clamshellMode = data.clamshellMode !== undefined ? Boolean(data.clamshellMode) : true;
+      data.wakeOnLid = Boolean(data.wakeOnLid);
+      data.wakeOnAc = Boolean(data.wakeOnAc);
+      data.touchbarBlank = data.touchbarBlank !== undefined ? Boolean(data.touchbarBlank) : true;
+      data.recommendedPromptShown = Boolean(data.recommendedPromptShown);
+
       if (data.hibernateDelay !== undefined) {
-        var hd = String(data.hibernateDelay).toLowerCase();
+        var hd = String(data.hibernateDelay).toLowerCase().trim();
         if (hd === "1800" || hd === "1800s" || hd === "30m" || hd === "30min") data.hibernateDelay = "30min";
         else if (hd === "3600" || hd === "3600s" || hd === "60m" || hd === "1h" || hd === "1hour") data.hibernateDelay = "1hour";
         else if (hd === "7200" || hd === "7200s" || hd === "120m" || hd === "2h" || hd === "2hours") data.hibernateDelay = "2hours";
-        else if (hd === "0" || hd === "off") data.hibernateDelay = "off";
+        else if (hd === "0" || hd === "off" || hd === "never") data.hibernateDelay = "off";
       }
       return data;
     }
@@ -125,19 +157,24 @@ function formatLidAction(action) {
 }
 
 function formatHibernateDelay(delay) {
-  switch (String(delay)) {
+  var d = String(delay || "").toLowerCase().trim();
+  switch (d) {
     case "off":
     case "0":
-    case 0: return "Never";
+    case "":
+    case "never": return "Never";
     case "30min":
     case "30m":
-    case "1800": return "30 min";
+    case "1800":
+    case "1800s": return "30 min";
     case "1hour":
     case "1h":
-    case "3600": return "1 hour";
+    case "3600":
+    case "3600s": return "1 hour";
     case "2hours":
     case "2h":
-    case "7200": return "2 hours";
+    case "7200":
+    case "7200s": return "2 hours";
     default: return delay || "Never";
   }
 }

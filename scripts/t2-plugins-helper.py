@@ -14,10 +14,11 @@ import subprocess
 import urllib.request
 import urllib.parse
 import urllib.error
+from datetime import datetime
 
 CATALOG_URL = "https://plugins.omarchy.org/catalog.json"
 STATS_URL = "https://api.omarchyplugins.com/v1/stats"
-QUERY_URL = "https://plugins.omarchy.org/index.html?q=T2&sort=rank"
+QUERY_URL = "https://plugins.omarchy.org/?q=T2"
 CACHE_DIR = os.path.expanduser("~/.cache/omarchy")
 CACHE_FILE = os.path.join(CACHE_DIR, "t2-plugins-catalog.json")
 STATS_CACHE_FILE = os.path.join(CACHE_DIR, "t2-plugins-stats.json")
@@ -127,46 +128,27 @@ FALLBACK_T2_PLUGINS = [
         "copies": 0,
         "hearts": 0,
         "accent": "amber"
-    },
-    {
-        "id": "io.github.rial0.gpu-status",
-        "name": "GPU Status (MacBook Pro gmux)",
-        "author": "rial0",
-        "version": "1.0.0",
-        "description": "MacBook Pro gmux discrete/integrated GPU status monitor and power switcher.",
-        "repo": "https://github.com/rial0/omarchy-gpu-status",
-        "installCommand": "omarchy plugin add https://github.com/rial0/omarchy-gpu-status.git --enable",
-        "tags": ["bar-widget", "hardware"],
-        "stars": 0,
-        "rank": None,
-        "rankLabel": "",
-        "views": 0,
-        "copies": 0,
-        "hearts": 0,
-        "accent": "rose"
-    },
-    {
-        "id": "io.github.alnandr.macbook-fn-keys",
-        "name": "MacBook Function Keys",
-        "author": "alnandr",
-        "version": "1.0.0",
-        "description": "Toggle fn key behavior (media keys vs standard F1-F12 function keys) on Apple keyboards.",
-        "repo": "https://github.com/alnandr/omarchy-macbook-fn-keys",
-        "installCommand": "omarchy plugin add https://github.com/alnandr/omarchy-macbook-fn-keys.git --enable",
-        "tags": ["bar-widget", "keyboard"],
-        "stars": 0,
-        "rank": None,
-        "rankLabel": "",
-        "views": 0,
-        "copies": 0,
-        "hearts": 0,
-        "accent": "amber"
     }
 ]
 
 
 def ensure_cache_dir():
     os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def safe_write_json(file_path, data):
+    ensure_cache_dir()
+    tmp_path = file_path + ".tmp." + str(os.getpid())
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp_path, file_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 def fetch_catalog(force_refresh=False):
@@ -190,13 +172,9 @@ def fetch_catalog(force_refresh=False):
         )
         with urllib.request.urlopen(req, timeout=6) as response:
             data = json.loads(response.read().decode("utf-8"))
-            try:
-                with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                    json.dump(data, f)
-            except Exception:
-                pass
+            safe_write_json(CACHE_FILE, data)
             return data
-    except Exception as e:
+    except Exception:
         # Fall back to cache if available
         if os.path.exists(CACHE_FILE):
             try:
@@ -232,11 +210,7 @@ def fetch_stats(force_refresh=False):
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             stats = data.get("plugins", {})
-            try:
-                with open(STATS_CACHE_FILE, "w", encoding="utf-8") as f:
-                    json.dump(stats, f)
-            except Exception:
-                pass
+            safe_write_json(STATS_CACHE_FILE, stats)
             return stats
     except Exception:
         if os.path.exists(STATS_CACHE_FILE):
@@ -363,7 +337,7 @@ def is_version_newer(remote_v, local_v):
 
 def matches_q_t2(plugin):
     """
-    Search logic matching https://plugins.omarchy.org/index.html?q=T2:
+    Search logic matching https://plugins.omarchy.org/?q=T2:
     Tokens starting with 't2' in name, id, description, tags, or author.
     """
     name = plugin.get("name", "")
@@ -376,14 +350,16 @@ def matches_q_t2(plugin):
     return any(w.startswith("t2") for w in words)
 
 
-def matches_macbook_hardware(plugin):
-    name = plugin.get("name", "")
-    pid = plugin.get("id", "")
-    desc = plugin.get("description", "")
-    tags = " ".join(plugin.get("tags", []))
-    full_text = f"{name} {pid} {desc} {tags}".lower()
-    hw_keywords = ["macbook", "touchbar", "touch bar", "gmux", "apple"]
-    return any(re.search(r'\b' + re.escape(kw) + r'\b', full_text) for kw in hw_keywords)
+def parse_listing_time(plugin):
+    val = plugin.get("listedAt") or plugin.get("addedAt") or ""
+    try:
+        if "T" in val:
+            return datetime.fromisoformat(val.replace("Z", "+00:00")).timestamp()
+        elif val:
+            return datetime.fromisoformat(val + "T00:00:00+00:00").timestamp()
+    except Exception:
+        pass
+    return 0.0
 
 
 def list_plugins(force_refresh=False):
@@ -395,19 +371,17 @@ def list_plugins(force_refresh=False):
 
     matched_dict = {}
 
-    # 1. Exact q=T2 matches
+    # 1. Matches for q=T2
     for p in catalog_plugins:
         pid = p.get("id", "")
         # Don't show this plugin itself
         if pid == "bramvanoploo.omarchy-t2-linux":
             continue
 
-        is_exact = matches_q_t2(p)
-        inst = installed_map.get(pid)
-        is_installed = inst is not None or os.path.exists(os.path.join(PLUGINS_DIR, pid))
-        is_enabled = inst.get("enabled", False) if inst else False
-
-        if is_exact:
+        if matches_q_t2(p):
+            inst = installed_map.get(pid)
+            is_installed = inst is not None or os.path.exists(os.path.join(PLUGINS_DIR, pid))
+            is_enabled = inst.get("enabled", False) if inst else False
 
             local_v = get_local_plugin_version(pid) if is_installed else ""
             remote_v = p.get("version", "1.0.0")
@@ -449,8 +423,9 @@ def list_plugins(force_refresh=False):
                 "hearts": p_stats.get("hearts", 0),
                 "accent": p.get("accent", "cyan"),
                 "webUrl": f"https://plugins.omarchy.org/plugin.html?id={urllib.parse.quote(pid)}",
-                "isExactT2": is_exact,
-                "category": "T2 Direct Match" if is_exact else "MacBook Hardware"
+                "isExactT2": True,
+                "category": "T2 Plugin",
+                "_listingTime": parse_listing_time(p)
             }
             matched_dict[pid] = entry
 
@@ -492,26 +467,23 @@ def list_plugins(force_refresh=False):
                 "accent": fb.get("accent", "lime"),
                 "webUrl": f"https://plugins.omarchy.org/plugin.html?id={urllib.parse.quote(pid)}",
                 "isExactT2": True,
-                "category": "T2 Direct Match"
+                "category": "T2 Plugin",
+                "_listingTime": parse_listing_time(fb)
             }
 
-    # Sort: Exact T2 matches first, sorted by rank ascending (lowest rank number = top ranked)
+    # Site default sort: recently added (listingTime descending, then name ascending)
     items = list(matched_dict.values())
-    items.sort(key=lambda x: (
-        not x["isExactT2"],
-        x.get("rank") if x.get("rank") is not None else 999999,
-        -x.get("stars", 0),
-        x["name"].lower()
-    ))
+    items.sort(key=lambda x: (-x.get("_listingTime", 0.0), x["name"].lower()))
+    for x in items:
+        x.pop("_listingTime", None)
 
     output = {
         "status": "ok",
         "fetchedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
         "sourceUrl": QUERY_URL,
-        "query": "q=T2&sort=rank",
-        "sortBy": "rank",
+        "query": "q=T2",
         "totalCount": len(items),
-        "exactT2Count": sum(1 for x in items if x["isExactT2"]),
+        "exactT2Count": len(items),
         "installedCount": sum(1 for x in items if x["installed"]),
         "plugins": items
     }

@@ -4,5 +4,6 @@ set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo ./setup-system" >&2; exit 1; }
 src=$(cd -- "$(dirname -- "$0")" && pwd)
 install -Dm755 "$src/scripts/t2-helper" /usr/local/libexec/omarchy-t2-helper
+install -Dm755 "$src/scripts/t2-plugins-helper.py" /usr/local/libexec/t2-plugins-helper.py
 install -Dm644 "$src/system/90-omarchy-t2-linux.rules" /etc/polkit-1/rules.d/90-omarchy-t2-linux.rules
-echo "✓ Installed /usr/local/libexec/omarchy-t2-helper and polkit rules."
+echo "✓ Installed /usr/local/libexec/omarchy-t2-helper, t2-plugins-helper.py and polkit rules."

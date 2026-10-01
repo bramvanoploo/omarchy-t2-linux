@@ -18,14 +18,33 @@ fi
 # Hardware Detection
 # ---------------------------------------------------------------------------
 
+run_limine_update() {
+  if command -v limine-update >/dev/null 2>&1; then
+    limine-update
+  elif [[ -x /usr/bin/limine-update ]]; then
+    /usr/bin/limine-update
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo limine-update
+  fi
+}
+
+find_plugins_helper() {
+  if [[ -f "$SCRIPT_DIR/t2-plugins-helper.py" ]]; then
+    echo "$SCRIPT_DIR/t2-plugins-helper.py"
+  elif [[ -f "$PLUGIN_ROOT/scripts/t2-plugins-helper.py" ]]; then
+    echo "$PLUGIN_ROOT/scripts/t2-plugins-helper.py"
+  elif [[ -f "/usr/local/libexec/t2-plugins-helper.py" ]]; then
+    echo "/usr/local/libexec/t2-plugins-helper.py"
+  fi
+}
+
 detect_t2() {
   # 1. Primary check: Apple T2 Bridge Controller (PCI Vendor 106b, Device 1801 or 1802)
-  local dev
+  local dev vendor device
   for dev in /sys/bus/pci/devices/*; do
     if [[ -r "$dev/vendor" && -r "$dev/device" ]]; then
-      local vendor device
-      vendor=$(cat "$dev/vendor" 2>/dev/null || true)
-      device=$(cat "$dev/device" 2>/dev/null || true)
+      read -r vendor < "$dev/vendor" 2>/dev/null || true
+      read -r device < "$dev/device" 2>/dev/null || true
       if [[ "$vendor" == "0x106b" && ("$device" == "0x1801" || "$device" == "0x1802") ]]; then
         return 0
       fi
@@ -48,7 +67,7 @@ detect_t2() {
 get_model_name() {
   local model="Unknown Device"
   if [[ -r /sys/class/dmi/id/product_name ]]; then
-    model=$(tr -d '\n' < /sys/class/dmi/id/product_name)
+    read -r model < /sys/class/dmi/id/product_name 2>/dev/null || model="Unknown Device"
   fi
   echo "$model"
 }
@@ -56,7 +75,7 @@ get_model_name() {
 get_sys_vendor() {
   local vendor="Unknown"
   if [[ -r /sys/class/dmi/id/sys_vendor ]]; then
-    vendor=$(tr -d '\n' < /sys/class/dmi/id/sys_vendor)
+    read -r vendor < /sys/class/dmi/id/sys_vendor 2>/dev/null || vendor="Unknown"
   fi
   echo "$vendor"
 }
@@ -78,41 +97,55 @@ get_battery_info() {
 
   if [[ -n "$bat_dir" && -r "$bat_dir/capacity" ]]; then
     present=true
-    percent=$(cat "$bat_dir/capacity" 2>/dev/null || echo 0)
-    if (( percent > 100 )); then
-      percent=100
-    fi
-    status=$(cat "$bat_dir/status" 2>/dev/null || echo "Unknown")
-    cycles=$(cat "$bat_dir/cycle_count" 2>/dev/null || echo 0)
+    read -r percent < "$bat_dir/capacity" 2>/dev/null || percent=0
+    [[ "$percent" =~ ^[0-9]+$ ]] || percent=0
+    (( percent > 100 )) && percent=100
+
+    read -r status < "$bat_dir/status" 2>/dev/null || status="Unknown"
+    status=$(echo "$status" | tr -d '"\r\n')
+    [[ -z "$status" ]] && status="Unknown"
+
+    read -r cycles < "$bat_dir/cycle_count" 2>/dev/null || cycles=0
+    [[ "$cycles" =~ ^[0-9]+$ ]] || cycles=0
 
     local v_now=0 c_now=0 p_now=0
     if [[ -r "$bat_dir/power_now" ]]; then
-      p_now=$(cat "$bat_dir/power_now" 2>/dev/null || echo 0)
-      watts=$(awk -v p="$p_now" 'BEGIN { printf "%.1f", p / 1000000 }')
+      read -r p_now < "$bat_dir/power_now" 2>/dev/null || p_now=0
+      if [[ "$p_now" =~ ^[0-9]+$ ]] && (( p_now > 0 )); then
+        watts=$(awk -v p="$p_now" 'BEGIN { printf "%.1f", p / 1000000 }')
+      fi
     elif [[ -r "$bat_dir/voltage_now" && -r "$bat_dir/current_now" ]]; then
-      v_now=$(cat "$bat_dir/voltage_now" 2>/dev/null || echo 0)
-      c_now=$(cat "$bat_dir/current_now" 2>/dev/null || echo 0)
-      watts=$(awk -v v="$v_now" -v c="$c_now" 'BEGIN { printf "%.1f", (v * c) / 1000000000000 }')
+      read -r v_now < "$bat_dir/voltage_now" 2>/dev/null || v_now=0
+      read -r c_now < "$bat_dir/current_now" 2>/dev/null || c_now=0
+      if [[ "$v_now" =~ ^[0-9]+$ && "$c_now" =~ ^[0-9]+$ ]] && (( v_now > 0 && c_now > 0 )); then
+        watts=$(awk -v v="$v_now" -v c="$c_now" 'BEGIN { printf "%.1f", (v * c) / 1000000000000 }')
+      fi
     fi
+    [[ -z "$watts" ]] && watts=0.0
 
     local full=0 design=0
     if [[ -r "$bat_dir/charge_full" && -r "$bat_dir/charge_full_design" ]]; then
-      full=$(cat "$bat_dir/charge_full" 2>/dev/null || echo 0)
-      design=$(cat "$bat_dir/charge_full_design" 2>/dev/null || echo 0)
+      read -r full < "$bat_dir/charge_full" 2>/dev/null || full=0
+      read -r design < "$bat_dir/charge_full_design" 2>/dev/null || design=0
     elif [[ -r "$bat_dir/energy_full" && -r "$bat_dir/energy_full_design" ]]; then
-      full=$(cat "$bat_dir/energy_full" 2>/dev/null || echo 0)
-      design=$(cat "$bat_dir/energy_full_design" 2>/dev/null || echo 0)
+      read -r full < "$bat_dir/energy_full" 2>/dev/null || full=0
+      read -r design < "$bat_dir/energy_full_design" 2>/dev/null || design=0
     fi
 
-    if (( design > 0 && full > 0 )); then
-      health=$(awk -v f="$full" -v d="$design" 'BEGIN { printf "%d", (f / d) * 100 }')
+    if [[ "$full" =~ ^[0-9]+$ && "$design" =~ ^[0-9]+$ ]] && (( design > 0 && full > 0 )); then
+      health=$(( (full * 100) / design ))
+      (( health > 100 )) && health=100
     fi
   fi
 
   for adp in /sys/class/power_supply/ADP* /sys/class/power_supply/AC*; do
-    if [[ -r "$adp/online" && "$(< "$adp/online")" == "1" ]]; then
-      online=true
-      break
+    if [[ -r "$adp/online" ]]; then
+      local adp_online=0
+      read -r adp_online < "$adp/online" 2>/dev/null || adp_online=0
+      if [[ "$adp_online" == "1" ]]; then
+        online=true
+        break
+      fi
     fi
   done
 
@@ -132,23 +165,23 @@ EOF
 get_epp() {
   local val="balance_power"
   if [[ -r /sys/devices/system/cpu/cpu0/power/energy_performance_preference ]]; then
-    val=$(tr -d '\n' < /sys/devices/system/cpu/cpu0/power/energy_performance_preference)
+    read -r val < /sys/devices/system/cpu/cpu0/power/energy_performance_preference 2>/dev/null || val="balance_power"
   elif [[ -r /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference ]]; then
-    val=$(tr -d '\n' < /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference)
+    read -r val < /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null || val="balance_power"
   fi
-  echo "$val"
+  echo "${val:-balance_power}"
 }
 
 get_aspm() {
   local val="default"
   if [[ -r /sys/module/pcie_aspm/parameters/policy ]]; then
     local raw
-    raw=$(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null || true)
+    read -r raw < /sys/module/pcie_aspm/parameters/policy 2>/dev/null || raw=""
     if [[ "$raw" =~ \[([a-zA-Z0-9_-]+)\] ]]; then
       val="${BASH_REMATCH[1]}"
     fi
   fi
-  echo "$val"
+  echo "${val:-default}"
 }
 
 get_wifi_powersave() {
@@ -201,18 +234,20 @@ get_mem_sleep() {
   local val="deep"
   if [[ -r /sys/power/mem_sleep ]]; then
     local raw
-    raw=$(cat /sys/power/mem_sleep 2>/dev/null || true)
+    read -r raw < /sys/power/mem_sleep 2>/dev/null || raw=""
     if [[ "$raw" =~ \[([a-zA-Z0-9_-]+)\] ]]; then
       val="${BASH_REMATCH[1]}"
     fi
   fi
-  echo "$val"
+  echo "${val:-deep}"
 }
 
 get_mem_sleep_modes_json() {
-  local raw modes=()
+  local raw="" modes=()
   if [[ -r /sys/power/mem_sleep ]]; then
-    raw=$(tr -d '[]' < /sys/power/mem_sleep 2>/dev/null || true)
+    read -r raw < /sys/power/mem_sleep 2>/dev/null || raw=""
+    raw="${raw//\[/}"
+    raw="${raw//\]/}"
     for m in $raw; do
       [[ -n "$m" ]] && modes+=("\"$m\"")
     done
@@ -226,9 +261,11 @@ get_mem_sleep_modes_json() {
 }
 
 get_audio_powersave() {
-  local val
-  val=$(cat /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || echo 0)
-  if (( val > 0 )); then
+  local val=0
+  if [[ -r /sys/module/snd_hda_intel/parameters/power_save ]]; then
+    read -r val < /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || val=0
+  fi
+  if [[ "$val" =~ ^[0-9]+$ ]] && (( val > 0 )); then
     echo true
   else
     echo false
@@ -236,9 +273,11 @@ get_audio_powersave() {
 }
 
 get_usb_autosuspend() {
-  local val
-  val=$(cat /sys/module/usbcore/parameters/autosuspend 2>/dev/null || echo -1)
-  if (( val > 0 )); then
+  local val=-1
+  if [[ -r /sys/module/usbcore/parameters/autosuspend ]]; then
+    read -r val < /sys/module/usbcore/parameters/autosuspend 2>/dev/null || val=-1
+  fi
+  if [[ "$val" =~ ^-?[0-9]+$ ]] && (( val > 0 )); then
     echo true
   else
     echo false
@@ -256,32 +295,36 @@ get_wake_state() {
 
 get_lid_action() {
   local action="suspend"
-  for f in /etc/systemd/logind.conf.d/*.conf /etc/systemd/logind.conf; do
-    if [[ -r "$f" ]]; then
-      local match
-      match=$(grep -E '^[[:space:]]*HandleLidSwitch=' "$f" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '[:space:]' || true)
-      if [[ -n "$match" ]]; then
-        if [[ "$match" == "suspend-then-hibernate" ]]; then
-          action="suspend"
-        else
-          action="$match"
+  for f in /etc/systemd/logind.conf /etc/systemd/logind.conf.d/*.conf; do
+    [[ -r "$f" ]] || continue
+    while IFS='=' read -r key val; do
+      key="${key//[[:space:]]/}"
+      if [[ "$key" == "HandleLidSwitch" ]]; then
+        val="${val//[[:space:]]/}"
+        if [[ -n "$val" ]]; then
+          if [[ "$val" == "suspend-then-hibernate" ]]; then
+            action="suspend"
+          else
+            action="$val"
+          fi
         fi
       fi
-    fi
+    done < "$f" 2>/dev/null || true
   done
   echo "$action"
 }
 
 get_clamshell_mode() {
   local mode="ignore"
-  for f in /etc/systemd/logind.conf.d/*.conf /etc/systemd/logind.conf; do
-    if [[ -r "$f" ]]; then
-      local match
-      match=$(grep -E '^[[:space:]]*HandleLidSwitchExternalPower=' "$f" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '[:space:]' || true)
-      if [[ -n "$match" ]]; then
-        mode="$match"
+  for f in /etc/systemd/logind.conf /etc/systemd/logind.conf.d/*.conf; do
+    [[ -r "$f" ]] || continue
+    while IFS='=' read -r key val; do
+      key="${key//[[:space:]]/}"
+      if [[ "$key" == "HandleLidSwitchExternalPower" ]]; then
+        val="${val//[[:space:]]/}"
+        [[ -n "$val" ]] && mode="$val"
       fi
-    fi
+    done < "$f" 2>/dev/null || true
   done
   if [[ "$mode" == "ignore" ]]; then
     echo true
@@ -292,31 +335,36 @@ get_clamshell_mode() {
 
 get_hibernate_delay() {
   local delay="off"
-  for f in /etc/systemd/sleep.conf.d/*.conf /etc/systemd/sleep.conf; do
-    if [[ -r "$f" ]]; then
-      local match
-      match=$(grep -E '^[[:space:]]*HibernateDelaySec=' "$f" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '[:space:]' || true)
-      if [[ -n "$match" ]]; then
-        case "$match" in
+  for f in /etc/systemd/sleep.conf /etc/systemd/sleep.conf.d/*.conf; do
+    [[ -r "$f" ]] || continue
+    while IFS='=' read -r key val; do
+      key="${key//[[:space:]]/}"
+      if [[ "$key" == "HibernateDelaySec" ]]; then
+        val="${val//[[:space:]]/}"
+        case "$val" in
           1800|1800s|30m|30min) delay="30min" ;;
           3600|3600s|60m|1h|1hour) delay="1hour" ;;
           7200|7200s|120m|2h|2hours) delay="2hours" ;;
           0|off) delay="off" ;;
-          *) delay="$match" ;;
+          *) [[ -n "$val" ]] && delay="$val" ;;
         esac
       fi
-    fi
+    done < "$f" 2>/dev/null || true
   done
   echo "$delay"
 }
 
 get_setting() {
   local key="$1" default="$2"
-  if [[ -f "$SETTINGS_FILE" ]]; then
-    jq -r --arg k "$key" --arg d "$default" '.[$k] // $d' "$SETTINGS_FILE" 2>/dev/null || echo "$default"
-  else
-    echo "$default"
+  if [[ -f "$SETTINGS_FILE" && -r "$SETTINGS_FILE" ]]; then
+    local res
+    res=$(jq -r --arg k "$key" '.[$k] // empty' "$SETTINGS_FILE" 2>/dev/null || true)
+    if [[ -n "$res" && "$res" != "null" ]]; then
+      echo "$res"
+      return
+    fi
   fi
+  echo "$default"
 }
 
 print_status_json() {
@@ -406,15 +454,32 @@ run_privileged() {
 
 save_user_setting() {
   local key="$1" val="$2"
-  local tmp
   mkdir -p "$(dirname "$SETTINGS_FILE")"
-  tmp=$(mktemp)
-  if [[ -f "$SETTINGS_FILE" ]]; then
-    jq --arg k "$key" --arg v "$val" '.[$k] = $v' "$SETTINGS_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$SETTINGS_FILE"
-  else
-    printf '{"%s":"%s"}\n' "$key" "$val" > "$SETTINGS_FILE"
-  fi
-  rm -f "$tmp"
+  python3 - "$SETTINGS_FILE" "$key" "$val" <<'PYEOF'
+import sys, os, json
+
+file_path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
+data = {}
+if os.path.isfile(file_path):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+
+val_lower = val.lower().strip()
+if val_lower == 'true':
+    data[key] = True
+elif val_lower == 'false':
+    data[key] = False
+else:
+    data[key] = val
+
+tmp_file = file_path + ".tmp." + str(os.getpid())
+with open(tmp_file, 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp_file, file_path)
+PYEOF
 }
 
 # ---------------------------------------------------------------------------
@@ -429,7 +494,11 @@ apply_epp() {
     fi
   done
   mkdir -p /etc/tmpfiles.d
-  echo "w /sys/devices/system/cpu/cpu*/power/energy_performance_preference - - - - $val" > /etc/tmpfiles.d/omarchy-t2-epp.conf
+  if compgen -G "/sys/devices/system/cpu/cpu*/power/energy_performance_preference" >/dev/null; then
+    echo "w /sys/devices/system/cpu/cpu*/power/energy_performance_preference - - - - $val" > /etc/tmpfiles.d/omarchy-t2-epp.conf
+  elif compgen -G "/sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference" >/dev/null; then
+    echo "w /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference - - - - $val" > /etc/tmpfiles.d/omarchy-t2-epp.conf
+  fi
 }
 
 apply_aspm() {
@@ -448,11 +517,19 @@ apply_wifi_powersave() {
   if [[ -n "$iface" ]]; then
     iw dev "$iface" set power_save "$state" 2>/dev/null || true
   fi
+  local nm_val=2
+  [[ "$state" == "on" || "$state" == "true" ]] && nm_val=3
+  mkdir -p /etc/NetworkManager/conf.d
+  cat <<CONF > /etc/NetworkManager/conf.d/omarchy-wifi-powersave.conf
+[connection]
+wifi.powersave = $nm_val
+CONF
 }
 
 apply_ethernet_managed() {
   local dev="$1"
   local mode="$2" # yes | no
+  [[ -z "$dev" ]] && return 0
 
   if command -v nmcli >/dev/null 2>&1; then
     nmcli device set "$dev" managed "$mode" 2>/dev/null || true
@@ -475,12 +552,13 @@ apply_pcie_ports_compat() {
   local mode="$1" # on | off | true | false | add | remove
   local conf="/etc/limine-entry-tool.d/t2-mac.conf"
 
-  python3 - <<PYEOF
+  python3 - "$conf" "$mode" <<'PYEOF'
+import sys
 import re
 import os
 
-path = "$conf"
-mode = "$mode"
+path = sys.argv[1]
+mode = sys.argv[2]
 
 content = ""
 if os.path.exists(path):
@@ -518,16 +596,13 @@ else:
     new_content = add_compat(content)
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(path, "w", encoding="utf-8") as f:
+tmp_path = path + ".tmp." + str(os.getpid())
+with open(tmp_path, "w", encoding="utf-8") as f:
     f.write(new_content)
+os.replace(tmp_path, path)
 PYEOF
 
-  # Run sudo limine-update after every change to the file
-  if command -v sudo >/dev/null 2>&1; then
-    sudo limine-update
-  else
-    limine-update
-  fi
+  run_limine_update
 }
 
 apply_mem_sleep() {
@@ -561,12 +636,13 @@ CONF
 
   # 4. Kernel command line persistence in /etc/limine-entry-tool.d/t2-mac.conf
   local limine_conf="/etc/limine-entry-tool.d/t2-mac.conf"
-  python3 - <<PYEOF
+  python3 - "$limine_conf" "$val" <<'PYEOF'
+import sys
 import re
 import os
 
-path = "$limine_conf"
-val = "$val"
+path = sys.argv[1]
+val = sys.argv[2]
 
 content = ""
 if os.path.exists(path):
@@ -590,17 +666,15 @@ def update_mem_sleep_default(text, val):
 
 new_content = update_mem_sleep_default(content, val)
 os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(path, "w", encoding="utf-8") as f:
+tmp_path = path + ".tmp." + str(os.getpid())
+with open(tmp_path, "w", encoding="utf-8") as f:
     f.write(new_content)
+os.replace(tmp_path, path)
 PYEOF
 
   # 5. Update bootloader if requested
   if [[ "$update_limine" == "true" ]]; then
-    if command -v sudo >/dev/null 2>&1; then
-      sudo limine-update
-    else
-      limine-update
-    fi
+    run_limine_update
   fi
 }
 
@@ -715,13 +789,14 @@ CONF
 install_system_helper() {
   mkdir -p /usr/local/libexec /etc/polkit-1/rules.d
   install -Dm755 "$PLUGIN_ROOT/scripts/t2-helper" "$SYSTEM_HELPER"
+  install -Dm755 "$PLUGIN_ROOT/scripts/t2-plugins-helper.py" /usr/local/libexec/t2-plugins-helper.py
   install -Dm644 "$PLUGIN_ROOT/system/90-omarchy-t2-linux.rules" "/etc/polkit-1/rules.d/90-omarchy-t2-linux.rules"
-  echo "Installed system helper and polkit rules successfully."
+  echo "Installed system helper, plugins helper, and polkit rules successfully."
 }
 
 uninstall_system_helper() {
-  rm -f "$SYSTEM_HELPER" "/etc/polkit-1/rules.d/90-omarchy-t2-linux.rules"
-  echo "Removed system helper and polkit rules."
+  rm -f "$SYSTEM_HELPER" /usr/local/libexec/t2-plugins-helper.py "/etc/polkit-1/rules.d/90-omarchy-t2-linux.rules"
+  echo "Removed system helper, plugins helper, and polkit rules."
 }
 
 # ---------------------------------------------------------------------------
@@ -905,23 +980,33 @@ case "${1:-status}" in
 
   plugins-list|plugins)
     shift
-    exec python3 "$SCRIPT_DIR/t2-plugins-helper.py" list "$@"
+    helper_py=$(find_plugins_helper)
+    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"t2-plugins-helper.py not found"}' >&2; exit 1; }
+    exec python3 "$helper_py" list "$@"
     ;;
   plugin-install)
     shift
-    exec python3 "$SCRIPT_DIR/t2-plugins-helper.py" install "$@"
+    helper_py=$(find_plugins_helper)
+    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"t2-plugins-helper.py not found"}' >&2; exit 1; }
+    exec python3 "$helper_py" install "$@"
     ;;
   plugin-update)
     shift
-    exec python3 "$SCRIPT_DIR/t2-plugins-helper.py" update "$@"
+    helper_py=$(find_plugins_helper)
+    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"t2-plugins-helper.py not found"}' >&2; exit 1; }
+    exec python3 "$helper_py" update "$@"
     ;;
   plugin-remove)
     shift
-    exec python3 "$SCRIPT_DIR/t2-plugins-helper.py" remove "$@"
+    helper_py=$(find_plugins_helper)
+    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"t2-plugins-helper.py not found"}' >&2; exit 1; }
+    exec python3 "$helper_py" remove "$@"
     ;;
   plugin-toggle)
     shift
-    exec python3 "$SCRIPT_DIR/t2-plugins-helper.py" toggle "$@"
+    helper_py=$(find_plugins_helper)
+    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"t2-plugins-helper.py not found"}' >&2; exit 1; }
+    exec python3 "$helper_py" toggle "$@"
     ;;
 
   *)

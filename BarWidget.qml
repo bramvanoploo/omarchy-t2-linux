@@ -41,9 +41,24 @@ BarWidget {
   property string pluginActionStatus: ""
   property string activePluginOpId: ""
   property string pluginFilterQuery: ""
-  property int pluginFilterMode: 0 // 0: T2 Direct Matches (q=T2), 1: Installed, 2: All Hardware
+  property int pluginFilterMode: 0 // 0: All T2 Plugins, 1: Installed
 
-  readonly property var filteredPlugins: root.pluginList || []
+  readonly property var filteredPlugins: {
+    var list = root.pluginList || []
+    if (root.pluginFilterMode === 1) {
+      list = list.filter(function(p) { return Boolean(p && p.installed) })
+    }
+    if (root.pluginFilterQuery && root.pluginFilterQuery.trim() !== "") {
+      var q = root.pluginFilterQuery.trim().toLowerCase()
+      list = list.filter(function(p) {
+        if (!p) return false
+        return (p.name && p.name.toLowerCase().indexOf(q) !== -1) ||
+               (p.id && p.id.toLowerCase().indexOf(q) !== -1) ||
+               (p.description && p.description.toLowerCase().indexOf(q) !== -1)
+      })
+    }
+    return list
+  }
 
   function refresh() {
     if (statusProc.running) return
@@ -124,6 +139,7 @@ BarWidget {
       s.pciePortsCompat = enable
       root.status = s
     }
+    noticeTimer.stop()
     root.lastNotice = "Updating Limine boot configuration (limine-update)…"
     limineProc.command = ["bash", helper, "set", "pcie_ports_compat", enable ? "on" : "off"]
     limineProc.running = true
@@ -137,6 +153,7 @@ BarWidget {
       s.memSleep = mode
       root.status = s
     }
+    noticeTimer.stop()
     root.lastNotice = "Updating Limine boot configuration (limine-update)…"
     limineProc.command = ["bash", helper, "set", "mem_sleep", mode]
     limineProc.running = true
@@ -170,6 +187,7 @@ BarWidget {
       root.status = s
     }
 
+    noticeTimer.stop()
     root.lastNotice = "Applying recommended power and suspend settings…"
     limineProc.command = ["bash", helper, "apply-recommended"]
     limineProc.running = true
@@ -192,6 +210,7 @@ BarWidget {
     }
     if (actionProc.running) actionProc.running = false
     applying = true
+    noticeTimer.stop()
     lastNotice = "Applying " + key + "…"
 
     // Optimistically update status for instant UI feedback
@@ -358,6 +377,9 @@ BarWidget {
       if (root.status && root.status.isT2 && !root.status.recommendedPromptShown && !root.limineUpdating && !root.rebootConfirmOpen) {
         root.recommendedConfirmOpen = true
       }
+    } else {
+      root.lastNotice = ""
+      noticeTimer.stop()
     }
   }
 
@@ -378,6 +400,14 @@ BarWidget {
   // Process to execute mutation actions
   Process {
     id: actionProc
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (text && text.trim().length > 0) {
+          console.warn("T2 action error:", text)
+        }
+      }
+    }
     onExited: function(exitCode) {
       root.applying = false
       if (exitCode === 0) {
@@ -385,6 +415,7 @@ BarWidget {
       } else {
         root.lastNotice = "Operation cancelled or failed."
       }
+      noticeTimer.restart()
       refreshTimer.restart()
     }
   }
@@ -414,6 +445,7 @@ BarWidget {
       } else {
         root.lastNotice = "limine-update failed (exit code " + exitCode + ")."
       }
+      noticeTimer.restart()
       refreshTimer.restart()
     }
   }
@@ -443,13 +475,34 @@ BarWidget {
   // Process to execute plugin actions
   Process {
     id: pluginActionProc
+    stdout: StdioCollector {
+      id: pluginActionStdout
+      waitForEnd: true
+    }
+    stderr: StdioCollector {
+      id: pluginActionStderr
+      waitForEnd: true
+    }
     onExited: function(exitCode) {
       var opId = root.activePluginOpId
       root.activePluginOpId = ""
+      var msg = ""
+      if (pluginActionStdout.text && pluginActionStdout.text.trim()) {
+        try {
+          var res = JSON.parse(pluginActionStdout.text)
+          if (res.message) msg = res.message
+          else if (res.error) msg = res.error
+        } catch (e) {
+          msg = pluginActionStdout.text.trim()
+        }
+      }
+      if (!msg && pluginActionStderr.text && pluginActionStderr.text.trim()) {
+        msg = pluginActionStderr.text.trim()
+      }
       if (exitCode === 0) {
-        root.pluginActionStatus = "Plugin operation completed successfully."
+        root.pluginActionStatus = msg || "Plugin operation completed successfully."
       } else {
-        root.pluginActionStatus = "Plugin operation failed (exit code " + exitCode + ")."
+        root.pluginActionStatus = msg || ("Plugin operation failed (exit code " + exitCode + ").")
       }
       root.fetchPlugins(true)
     }
@@ -460,6 +513,13 @@ BarWidget {
     interval: 600
     repeat: false
     onTriggered: root.refresh()
+  }
+
+  Timer {
+    id: noticeTimer
+    interval: 6000
+    repeat: false
+    onTriggered: root.lastNotice = ""
   }
 
   Timer {
@@ -1195,14 +1255,16 @@ BarWidget {
                             width: Style.space(120)
                             spacing: Style.space(2)
                             Text {
-                              text: root.status.battery.health + "%"
+                              text: (root.status && root.status.battery && root.status.battery.health !== undefined)
+                                ? Math.min(100, Math.max(0, Math.round(Number(root.status.battery.health) || 0))) + "%"
+                                : "—"
                               color: root.foreground
                               font.family: root.fontFamily
                               font.pixelSize: Style.font.body
                               font.bold: true
                             }
                             Text {
-                              text: "Health (" + root.status.battery.cycles + " cycles)"
+                              text: "Health (" + ((root.status && root.status.battery) ? root.status.battery.cycles : 0) + " cycles)"
                               color: root.dim
                               font.family: root.fontFamily
                               font.pixelSize: Style.font.caption
@@ -1324,8 +1386,10 @@ BarWidget {
                           ToggleSwitch {
                             id: wifiSwitch
                             anchors.verticalCenter: parent.verticalCenter
-                            checked: root.status.wifiPowerSave
-                            onToggled: root.setOption("wifi_powersave", !root.status.wifiPowerSave ? "on" : "off")
+                            checked: Boolean(root.status && root.status.wifiPowerSave)
+                            accent: root.accent
+                            foreground: checked ? root.accent : root.foreground
+                            onToggled: root.setOption("wifi_powersave", !(root.status && root.status.wifiPowerSave) ? "on" : "off")
                           }
                         }
                       }
@@ -1415,7 +1479,9 @@ BarWidget {
                                   ToggleSwitch {
                                     id: ethDevSwitch
                                     anchors.verticalCenter: parent.verticalCenter
-                                    checked: modelData.managed
+                                    checked: Boolean(modelData && modelData.managed)
+                                    accent: root.accent
+                                    foreground: checked ? root.accent : root.foreground
                                     onToggled: root.setOption("ethernet_managed", modelData.device + ":" + (!modelData.managed ? "yes" : "no"))
                                   }
                                 }
@@ -1444,22 +1510,12 @@ BarWidget {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 2
 
-                            Row {
-                              spacing: Style.space(8)
-                              Text {
-                                text: "PCIe Ports Compatibility"
-                                color: root.foreground
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.body
-                                font.bold: true
-                              }
-                              Text {
-                                text: (root.status && root.status.pciePortsCompat) ? "Enabled" : "Disabled"
-                                color: (root.status && root.status.pciePortsCompat) ? root.accent : root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                                anchors.verticalCenter: parent.verticalCenter
-                              }
+                            Text {
+                              text: "PCIe Ports Compatibility"
+                              color: root.foreground
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.body
+                              font.bold: true
                             }
 
                             Text {
@@ -1475,7 +1531,9 @@ BarWidget {
                           ToggleSwitch {
                             id: pcieSwitch
                             anchors.verticalCenter: parent.verticalCenter
-                            checked: root.status && !!root.status.pciePortsCompat
+                            checked: Boolean(root.status && root.status.pciePortsCompat)
+                            accent: root.accent
+                            foreground: checked ? root.accent : root.foreground
                             enabled: !root.limineUpdating
                             onToggled: root.togglePciePortsCompat(!(root.status && root.status.pciePortsCompat))
                           }
@@ -1518,8 +1576,10 @@ BarWidget {
                           ToggleSwitch {
                             id: audioSwitch
                             anchors.verticalCenter: parent.verticalCenter
-                            checked: root.status.audioPowerSave
-                            onToggled: root.setOption("audio_powersave", !root.status.audioPowerSave ? "true" : "false")
+                            checked: Boolean(root.status && root.status.audioPowerSave)
+                            accent: root.accent
+                            foreground: checked ? root.accent : root.foreground
+                            onToggled: root.setOption("audio_powersave", !(root.status && root.status.audioPowerSave) ? "true" : "false")
                           }
                         }
                       }
@@ -1560,8 +1620,10 @@ BarWidget {
                           ToggleSwitch {
                             id: usbSwitch
                             anchors.verticalCenter: parent.verticalCenter
-                            checked: root.status.usbAutosuspend
-                            onToggled: root.setOption("usb_autosuspend", !root.status.usbAutosuspend ? "true" : "false")
+                            checked: Boolean(root.status && root.status.usbAutosuspend)
+                            accent: root.accent
+                            foreground: checked ? root.accent : root.foreground
+                            onToggled: root.setOption("usb_autosuspend", !(root.status && root.status.usbAutosuspend) ? "true" : "false")
                           }
                         }
                       }
@@ -1915,8 +1977,10 @@ BarWidget {
                           ToggleSwitch {
                             id: wakeLidSwitch
                             anchors.verticalCenter: parent.verticalCenter
-                            checked: root.status.wakeOnLid
-                            onToggled: root.setOption("wake_lid", !root.status.wakeOnLid ? "on" : "off")
+                            checked: Boolean(root.status && root.status.wakeOnLid)
+                            accent: root.accent
+                            foreground: checked ? root.accent : root.foreground
+                            onToggled: root.setOption("wake_lid", !(root.status && root.status.wakeOnLid) ? "on" : "off")
                           }
                         }
                       }
@@ -1957,8 +2021,10 @@ BarWidget {
                           ToggleSwitch {
                             id: wakeAcSwitch
                             anchors.verticalCenter: parent.verticalCenter
-                            checked: root.status.wakeOnAc
-                            onToggled: root.setOption("wake_ac", !root.status.wakeOnAc ? "on" : "off")
+                            checked: Boolean(root.status && root.status.wakeOnAc)
+                            accent: root.accent
+                            foreground: checked ? root.accent : root.foreground
+                            onToggled: root.setOption("wake_ac", !(root.status && root.status.wakeOnAc) ? "on" : "off")
                           }
                         }
                       }
@@ -2075,8 +2141,10 @@ BarWidget {
                           ToggleSwitch {
                             id: tbSwitch
                             anchors.verticalCenter: parent.verticalCenter
-                            checked: root.status.touchbarBlank
-                            onToggled: root.setOption("touchbar_blank", !root.status.touchbarBlank ? "true" : "false")
+                            checked: Boolean(root.status && root.status.touchbarBlank)
+                            accent: root.accent
+                            foreground: checked ? root.accent : root.foreground
+                            onToggled: root.setOption("touchbar_blank", !(root.status && root.status.touchbarBlank) ? "true" : "false")
                           }
                         }
                       }
@@ -2363,16 +2431,18 @@ BarWidget {
                                 // Toggle Switch to enable/disable plugin (for installed plugins)
                                 ToggleSwitch {
                                   id: cardToggleSwitch
-                                  visible: modelData.installed
+                                  visible: Boolean(modelData && modelData.installed)
                                   anchors.verticalCenter: parent.verticalCenter
-                                  checked: Boolean(modelData.installed && modelData.enabled)
+                                  checked: Boolean(modelData && modelData.installed && modelData.enabled)
+                                  accent: root.accent
+                                  foreground: checked ? root.accent : root.foreground
                                   busy: pluginCard.isBusy
                                   enabled: !pluginCard.isBusy && root.activePluginOpId === ""
                                   onToggled: root.togglePlugin(modelData.id, !modelData.enabled)
 
                                   PanelToolTip {
                                     visible: cardToggleSwitch.containsMouse
-                                    text: modelData.enabled ? "Enabled" : "Disabled"
+                                    text: (modelData && modelData.enabled) ? "Enabled" : "Disabled"
                                   }
                                 }
                               }
@@ -2605,7 +2675,7 @@ BarWidget {
                     id: summaryText
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
-                    text: "Applying the recommended defaults means that the macbook will wake from suspend easier and will have a longer battery life, up to 42% less battery drain compared to the default configuration. Depending on the system load."
+                    text: "Applying the recommended defaults means that the macbook will wake from suspend easier and will have a longer battery life, up to 40% less battery drain compared to the default configuration. Depending on the system load."
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
                     color: root.foreground
@@ -2627,6 +2697,10 @@ BarWidget {
                   anchors.rightMargin: Style.space(20)
                   contentWidth: width
                   contentHeight: optContentCol.implicitHeight
+                  boundsBehavior: Flickable.StopAtBounds
+                  flickableDirection: Flickable.VerticalFlick
+                  interactive: contentHeight > height
+                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                   clip: true
 
                   Column {
