@@ -2282,6 +2282,11 @@ BarWidget {
                                   busy: pluginCard.isBusy
                                   enabled: !pluginCard.isBusy && root.activePluginOpId === ""
                                   onToggled: root.togglePlugin(modelData.id, !modelData.enabled)
+
+                                  PanelToolTip {
+                                    visible: cardToggleSwitch.containsMouse
+                                    text: modelData.enabled ? "Enabled" : "Disabled"
+                                  }
                                 }
                               }
                             }
