@@ -12,6 +12,7 @@ import re
 import time
 import subprocess
 import urllib.request
+import urllib.parse
 import urllib.error
 
 CATALOG_URL = "https://plugins.omarchy.org/catalog.json"
@@ -447,6 +448,7 @@ def list_plugins(force_refresh=False):
                 "copies": p_stats.get("copies", 0),
                 "hearts": p_stats.get("hearts", 0),
                 "accent": p.get("accent", "cyan"),
+                "webUrl": f"https://plugins.omarchy.org/plugin.html?id={urllib.parse.quote(pid)}",
                 "isExactT2": is_exact,
                 "category": "T2 Direct Match" if is_exact else "MacBook Hardware"
             }
@@ -488,6 +490,7 @@ def list_plugins(force_refresh=False):
                 "copies": p_stats.get("copies", fb.get("copies", 0)),
                 "hearts": p_stats.get("hearts", fb.get("hearts", 0)),
                 "accent": fb.get("accent", "lime"),
+                "webUrl": f"https://plugins.omarchy.org/plugin.html?id={urllib.parse.quote(pid)}",
                 "isExactT2": True,
                 "category": "T2 Direct Match"
             }

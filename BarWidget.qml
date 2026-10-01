@@ -2214,6 +2214,18 @@ BarWidget {
                                 height: 1
                               }
 
+                              // External link to Omarchy Plugins website page
+                              Button {
+                                text: "Plugins page ↗"
+                                iconText: "󰖟"
+                                bordered: true
+                                tooltipText: "Open plugin page on plugins.omarchy.org"
+                                onClicked: {
+                                  var pageUrl = modelData.webUrl || ("https://plugins.omarchy.org/plugin.html?id=" + encodeURIComponent(modelData.id))
+                                  Qt.openUrlExternally(pageUrl)
+                                }
+                              }
+
                               // External link to repository
                               Button {
                                 visible: modelData.repo && modelData.repo.length > 0
