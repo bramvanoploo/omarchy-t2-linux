@@ -875,7 +875,7 @@ BarWidget {
                     width: parent.width
                     height: Style.space(36)
                     text: "Apply recommended options"
-                    iconText: "󰄲"
+                    iconText: "󰁨"
                     bordered: true
                     accent: root.accent
                     fontSize: Style.font.bodySmall
