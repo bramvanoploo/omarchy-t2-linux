@@ -2298,8 +2298,9 @@ BarWidget {
                               // Install button (if not installed)
                               Button {
                                 visible: !modelData.installed
-                                text: pluginCard.isBusy ? "Installing..." : "Install"
-                                iconText: "󰏔"
+                                tooltipText: pluginCard.isBusy ? "Installing..." : "Install"
+                                iconText: pluginCard.isBusy ? "󰑐" : "󰏔"
+                                iconSpinning: pluginCard.isBusy
                                 bordered: true
                                 accent: root.accent
                                 enabled: !pluginCard.isBusy && root.activePluginOpId === ""
@@ -2309,20 +2310,21 @@ BarWidget {
                               // Update button (if update available)
                               Button {
                                 visible: modelData.installed && modelData.updateAvailable
-                                text: pluginCard.isBusy ? "Updating..." : ("Update to v" + modelData.version)
-                                iconText: "󰚰"
+                                tooltipText: pluginCard.isBusy ? "Updating..." : ("Update to v" + modelData.version)
+                                iconText: pluginCard.isBusy ? "󰑐" : "󰚰"
+                                iconSpinning: pluginCard.isBusy
                                 bordered: true
                                 accent: root.accent
                                 enabled: !pluginCard.isBusy && root.activePluginOpId === ""
                                 onClicked: root.updatePlugin(modelData.id)
                               }
 
-
                               // Remove button (if installed)
                               Button {
                                 visible: modelData.installed
-                                text: pluginCard.isBusy ? "Removing..." : "Remove"
-                                iconText: "󰆴"
+                                tooltipText: pluginCard.isBusy ? "Removing..." : "Remove"
+                                iconText: pluginCard.isBusy ? "󰑐" : "󰆴"
+                                iconSpinning: pluginCard.isBusy
                                 bordered: true
                                 enabled: !pluginCard.isBusy && root.activePluginOpId === ""
                                 onClicked: root.removePlugin(modelData.id)
@@ -2335,10 +2337,9 @@ BarWidget {
 
                               // External link to Omarchy Plugins website page
                               Button {
-                                text: "Plugins page ↗"
+                                tooltipText: "Plugins page ↗"
                                 iconText: "󰖟"
                                 bordered: true
-                                tooltipText: "Open plugin page on plugins.omarchy.org"
                                 onClicked: {
                                   var pageUrl = modelData.webUrl || ("https://plugins.omarchy.org/plugin.html?id=" + encodeURIComponent(modelData.id))
                                   Qt.openUrlExternally(pageUrl)
@@ -2348,7 +2349,7 @@ BarWidget {
                               // External link to repository
                               Button {
                                 visible: modelData.repo && modelData.repo.length > 0
-                                text: "GitHub ↗"
+                                tooltipText: "GitHub ↗"
                                 iconText: "󰌹"
                                 bordered: true
                                 onClicked: Qt.openUrlExternally(modelData.repo)
