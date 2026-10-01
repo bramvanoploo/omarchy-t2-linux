@@ -758,151 +758,178 @@ BarWidget {
                 spacing: Style.space(20)
 
               // -------------------------------------------------------------
-              // Left Sidebar: Vertical Tabs
+              // Left Sidebar: Vertical Tabs & Hardware Info
               // -------------------------------------------------------------
-              Column {
+              Item {
                 id: verticalTabsCol
                 width: Style.space(220)
                 height: parent.height
-                spacing: Style.space(10)
 
-                Repeater {
-                  model: root.tabs
+                // Top: Navigation Tabs
+                Column {
+                  id: navTabsCol
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.top: parent.top
+                  spacing: Style.space(10)
 
-                  delegate: BorderSurface {
-                    id: tabButton
-                    width: verticalTabsCol.width
-                    height: Style.space(62)
-                    radius: Style.cornerRadius
+                  Repeater {
+                    model: root.tabs
 
-                    readonly property bool active: root.activeTab === index
-                    readonly property bool hovered: tabMouseArea.containsMouse
+                    delegate: BorderSurface {
+                      id: tabButton
+                      width: navTabsCol.width
+                      height: Style.space(62)
+                      radius: Style.cornerRadius
 
-                    color: active
-                      ? Style.selectedFillFor(root.foreground, root.accent)
-                      : (hovered ? Style.hoverFillFor(root.foreground, root.accent) : "transparent")
+                      readonly property bool active: root.activeTab === index
+                      readonly property bool hovered: tabMouseArea.containsMouse
 
-                    borderSpec: active
-                      ? Border.flat(root.accent, Style.normalBorderWidth)
-                      : (hovered ? Border.controlSpec("hover-cursor", root.foreground, root.accent) : Border.controlSpec("normal", root.foreground, root.accent))
+                      color: active
+                        ? Style.selectedFillFor(root.foreground, root.accent)
+                        : (hovered ? Style.hoverFillFor(root.foreground, root.accent) : "transparent")
 
-                    // Left active accent strip
-                    Rectangle {
-                      anchors.left: parent.left
-                      anchors.leftMargin: Style.space(3)
-                      anchors.verticalCenter: parent.verticalCenter
-                      width: Style.space(4)
-                      height: Style.space(34)
-                      radius: 2
-                      color: root.accent
-                      visible: tabButton.active
-                    }
+                      borderSpec: active
+                        ? Border.flat(root.accent, Style.normalBorderWidth)
+                        : (hovered ? Border.controlSpec("hover-cursor", root.foreground, root.accent) : Border.controlSpec("normal", root.foreground, root.accent))
 
-                    Row {
-                      anchors.fill: parent
-                      anchors.leftMargin: Style.space(14)
-                      anchors.rightMargin: Style.space(12)
-                      spacing: Style.space(12)
-
-                      Text {
+                      // Left active accent strip
+                      Rectangle {
+                        anchors.left: parent.left
+                        anchors.leftMargin: Style.space(3)
                         anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.icon
-                        color: tabButton.active ? root.accent : root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.title
+                        width: Style.space(4)
+                        height: Style.space(34)
+                        radius: 2
+                        color: root.accent
+                        visible: tabButton.active
                       }
 
-                      Column {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: parent.width - Style.space(42)
-                        spacing: Style.space(2)
+                      Row {
+                        anchors.fill: parent
+                        anchors.leftMargin: Style.space(14)
+                        anchors.rightMargin: Style.space(12)
+                        spacing: Style.space(12)
 
                         Text {
-                          width: parent.width
-                          text: modelData.title
-                          color: tabButton.active ? root.foreground : root.dim
+                          anchors.verticalCenter: parent.verticalCenter
+                          text: modelData.icon
+                          color: tabButton.active ? root.accent : root.foreground
                           font.family: root.fontFamily
-                          font.pixelSize: Style.font.body
-                          font.bold: tabButton.active
-                          elide: Text.ElideRight
+                          font.pixelSize: Style.font.title
                         }
 
-                        Text {
-                          width: parent.width
-                          text: modelData.desc
-                          color: Qt.darker(root.foreground, 1.55)
-                          font.family: root.fontFamily
-                          font.pixelSize: Style.font.caption
-                          elide: Text.ElideRight
+                        Column {
+                          anchors.verticalCenter: parent.verticalCenter
+                          width: parent.width - Style.space(42)
+                          spacing: Style.space(2)
+
+                          Text {
+                            width: parent.width
+                            text: modelData.title
+                            color: tabButton.active ? root.foreground : root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.body
+                            font.bold: tabButton.active
+                            elide: Text.ElideRight
+                          }
+
+                          Text {
+                            width: parent.width
+                            text: modelData.desc
+                            color: Qt.darker(root.foreground, 1.55)
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            elide: Text.ElideRight
+                          }
                         }
                       }
-                    }
 
-                    MouseArea {
-                      id: tabMouseArea
-                      anchors.fill: parent
-                      hoverEnabled: true
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: {
-                        root.activeTab = index
-                        if (index === 2) {
-                          root.fetchPlugins(true)
+                      MouseArea {
+                        id: tabMouseArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          root.activeTab = index
+                          if (index === 2) {
+                            root.fetchPlugins(true)
+                          }
                         }
                       }
                     }
                   }
                 }
 
-                Item {
-                  width: 1
-                  height: Style.space(12)
-                }
+                // Bottom: "Apply recommended options" button + T2 Subsystem summary
+                Column {
+                  id: sidebarFooterCol
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.bottom: parent.bottom
+                  spacing: Style.space(10)
 
-                // Hardware Summary in sidebar footer
-                BorderSurface {
-                  width: verticalTabsCol.width
-                  implicitHeight: hwSummaryCol.implicitHeight + Style.space(20)
-                  height: implicitHeight
-                  color: Util.alpha(root.foreground, 0.04)
-                  radius: Style.cornerRadius
-
-                  Column {
-                    id: hwSummaryCol
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: Style.space(10)
-                    spacing: Style.space(4)
-
-                    Text {
-                      text: "T2 SUBSYSTEM"
-                      color: root.accent
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.bold: true
-                      font.letterSpacing: 0.8
+                  Button {
+                    id: applyRecommendedBtn
+                    width: parent.width
+                    height: Style.space(36)
+                    text: "Apply recommended options"
+                    iconText: "󰄲"
+                    bordered: true
+                    accent: root.accent
+                    fontSize: Style.font.bodySmall
+                    horizontalPadding: Style.space(8)
+                    onClicked: {
+                      // Action will be specified by user
                     }
+                  }
 
-                    Text {
-                      text: "Model: " + (root.status.model || "MacBook")
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                      elide: Text.ElideRight
-                    }
+                  // Hardware Summary in sidebar footer
+                  BorderSurface {
+                    width: parent.width
+                    implicitHeight: hwSummaryCol.implicitHeight + Style.space(20)
+                    height: implicitHeight
+                    color: Util.alpha(root.foreground, 0.04)
+                    radius: Style.cornerRadius
 
-                    Text {
-                      text: "Kernel: T2 Patched"
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
+                    Column {
+                      id: hwSummaryCol
+                      anchors.left: parent.left
+                      anchors.right: parent.right
+                      anchors.top: parent.top
+                      anchors.margins: Style.space(10)
+                      spacing: Style.space(4)
 
-                    Text {
-                      text: "Chip: Apple T2 (106b:1801)"
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
+                      Text {
+                        text: "T2 SUBSYSTEM"
+                        color: root.accent
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                        font.letterSpacing: 0.8
+                      }
+
+                      Text {
+                        text: "Model: " + (root.status.model || "MacBook")
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                      }
+
+                      Text {
+                        text: "Kernel: T2 Patched"
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      Text {
+                        text: "Chip: Apple T2 (106b:1801)"
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
                     }
                   }
                 }
