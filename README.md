@@ -52,25 +52,32 @@ The dialog clearly informs the user that the Apple T2 Security Chip was not foun
 
 ## Installation & Setup
 
-### 1. Link or Copy into Omarchy Plugins
+### 1. Enable in Omarchy Shell
 ```bash
-ln -s /home/bram/Projects/omarchy-t2-linux ~/.config/omarchy/plugins/bramvanoploo.omarchy-t2-linux
+omarchy plugin add https://github.com/bramvanoploo/omarchy-t2-linux.git --enable
 ```
 
-### 2. Enable in Omarchy Shell
-```bash
-omarchy plugin enable bramvanoploo.omarchy-t2-linux
-```
-Or add `"bramvanoploo.omarchy-t2-linux"` to `~/.config/omarchy/shell.json` in `bar.layout.right`.
-
-### 3. (Optional) Install System Polkit Rule
+### 2. (Optional) Install System Polkit Rule
 To allow modifying privileged hardware settings (such as PCIe ASPM, CPU EPP, and sleep modes) without repetitive authentication prompts:
 ```bash
-sudo ./setup-system
+sudo ~/.config/omarchy/plugins/bramvanoploo.omarchy-t2-linux/setup-system
 ```
 To remove the polkit rule and privileged helper:
 ```bash
-sudo ./teardown-system
+sudo ~/.config/omarchy/plugins/bramvanoploo.omarchy-t2-linux/teardown-system
+```
+---
+
+## Uninstall
+
+### 1. Remove System Polkit Rule (if added)
+```bash
+sudo ~/.config/omarchy/plugins/bramvanoploo.omarchy-t2-linux/teardown-system
+```
+
+### 2. Remove plugin from Omarchy Shell
+```bash
+omarchy plugin remove bramvanoploo.omarchy-t2-linux
 ```
 
 ---
