@@ -162,6 +162,29 @@ get_wifi_powersave() {
   echo false
 }
 
+get_inactive_ethernet_json() {
+  local json="[]"
+  if command -v nmcli >/dev/null 2>&1; then
+    local items=()
+    while IFS=: read -r dev type state rest; do
+      if [[ "$type" == "ethernet" ]]; then
+        if [[ "$state" != "connected" && "$state" != "connecting" ]]; then
+          local managed=true
+          if [[ "$state" == "unmanaged" ]]; then
+            managed=false
+          fi
+          items+=("{\"device\":\"$dev\",\"managed\":$managed,\"state\":\"$state\"}")
+        fi
+      fi
+    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+
+    if (( ${#items[@]} > 0 )); then
+      json=$(printf '%s\n' "${items[@]}" | jq -s -c '.')
+    fi
+  fi
+  echo "$json"
+}
+
 get_mem_sleep() {
   local val="deep"
   if [[ -r /sys/power/mem_sleep ]]; then
@@ -284,9 +307,10 @@ print_status_json() {
   clamshell=$(get_clamshell_mode)
   hib_delay=$(get_hibernate_delay)
 
-  local kbd_timeout touchbar_blank
+  local kbd_timeout touchbar_blank inactive_eth
   kbd_timeout=$(get_setting "kbdTimeout" "1m")
   touchbar_blank=$(get_setting "touchbarBlank" "true")
+  inactive_eth=$(get_inactive_ethernet_json)
 
   local helper_installed=false
   if [[ -x "$SYSTEM_HELPER" ]]; then
@@ -304,6 +328,7 @@ print_status_json() {
   "epp": "$epp",
   "aspm": "$aspm",
   "wifiPowerSave": $wifi_ps,
+  "inactiveEthernet": $inactive_eth,
   "audioPowerSave": $audio_ps,
   "usbAutosuspend": $usb_ps,
   "kbdTimeout": "$kbd_timeout",
@@ -378,6 +403,27 @@ apply_wifi_powersave() {
   iface=$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}' || true)
   if [[ -n "$iface" ]]; then
     iw dev "$iface" set power_save "$state" 2>/dev/null || true
+  fi
+}
+
+apply_ethernet_managed() {
+  local dev="$1"
+  local mode="$2" # yes | no
+
+  if command -v nmcli >/dev/null 2>&1; then
+    nmcli device set "$dev" managed "$mode" 2>/dev/null || true
+    nmcli device set "$dev" managed --permanent "$mode" 2>/dev/null || true
+  fi
+
+  local conf="/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf"
+  if [[ "$mode" == "no" ]]; then
+    mkdir -p /etc/NetworkManager/conf.d
+    cat <<CONF > "$conf"
+[keyfile]
+unmanaged-devices=interface-name:$dev
+CONF
+  else
+    rm -f "$conf"
   fi
 }
 
@@ -548,6 +594,24 @@ case "${1:-status}" in
       wifi_powersave)
         run_privileged apply-wifi-powersave "$val"
         ;;
+      ethernet_managed)
+        dev=""
+        mode=""
+        if [[ "$val" == *:* ]]; then
+          dev="${val%%:*}"
+          mode="${val##*:}"
+        else
+          dev="$val"
+          mode="${3:-no}"
+        fi
+        [[ "$mode" == "true" || "$mode" == "on" ]] && mode="yes"
+        [[ "$mode" == "false" || "$mode" == "off" ]] && mode="no"
+
+        if command -v nmcli >/dev/null 2>&1; then
+          nmcli device set "$dev" managed "$mode" 2>/dev/null || true
+        fi
+        run_privileged apply-ethernet-managed "$dev" "$mode"
+        ;;
       mem_sleep)
         run_privileged apply-mem-sleep "$val"
         ;;
@@ -591,6 +655,8 @@ case "${1:-status}" in
     shift; apply_aspm "$1" ;;
   apply-wifi-powersave)
     shift; apply_wifi_powersave "$1" ;;
+  apply-ethernet-managed)
+    shift; apply_ethernet_managed "$1" "$2" ;;
   apply-mem-sleep)
     shift; apply_mem_sleep "$1" ;;
   apply-lid-action)

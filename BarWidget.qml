@@ -123,6 +123,18 @@ BarWidget {
         s.aspm = val
       } else if (key === "wifi_powersave") {
         s.wifiPowerSave = (val === "on" || val === "true")
+      } else if (key === "ethernet_managed") {
+        var parts = String(val).split(":")
+        var ethDev = parts[0]
+        var isEthManaged = (parts[1] === "yes" || parts[1] === "true" || parts[1] === "on")
+        if (s.inactiveEthernet) {
+          s.inactiveEthernet = s.inactiveEthernet.map(function(item) {
+            if (item.device === ethDev) {
+              return { device: item.device, managed: isEthManaged, state: isEthManaged ? "disconnected" : "unmanaged" }
+            }
+            return item
+          })
+        }
       } else if (key === "audio_powersave") {
         s.audioPowerSave = (val === "true" || val === "on")
       } else if (key === "usb_autosuspend") {
@@ -1129,6 +1141,66 @@ BarWidget {
                             anchors.verticalCenter: parent.verticalCenter
                             checked: root.status.wifiPowerSave
                             onToggled: root.setOption("wifi_powersave", !root.status.wifiPowerSave ? "on" : "off")
+                          }
+                        }
+                      }
+
+                      // Inactive Ethernet Adapters (e.g. enp2s0f1u1 Apple T2 iBridge CDC-NCM)
+                      Repeater {
+                        model: (root.status && root.status.inactiveEthernet) ? root.status.inactiveEthernet : []
+
+                        delegate: BorderSurface {
+                          width: parent.width
+                          height: Math.max(Style.space(62), ethCol.implicitHeight + Style.space(20))
+                          color: Util.alpha(root.foreground, 0.03)
+                          radius: Style.cornerRadius
+
+                          Row {
+                            anchors.fill: parent
+                            anchors.leftMargin: Style.space(14)
+                            anchors.rightMargin: Style.space(14)
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            Column {
+                              id: ethCol
+                              width: parent.width - ethSwitch.width - Style.space(14)
+                              anchors.verticalCenter: parent.verticalCenter
+                              spacing: 2
+
+                              Row {
+                                spacing: Style.space(8)
+                                Text {
+                                  text: "Ethernet Management (" + modelData.device + ")"
+                                  color: root.foreground
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.body
+                                  font.bold: true
+                                }
+                                Text {
+                                  text: modelData.managed ? "Managed" : "Unmanaged"
+                                  color: modelData.managed ? root.foreground : root.dim
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.caption
+                                  anchors.verticalCenter: parent.verticalCenter
+                                }
+                              }
+
+                              Text {
+                                text: "Prevent NetworkManager from attempting DHCP transactions on inactive network interface after resume."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: ethSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: modelData.managed
+                              onToggled: root.setOption("ethernet_managed", modelData.device + ":" + (!modelData.managed ? "yes" : "no"))
+                            }
                           }
                         }
                       }

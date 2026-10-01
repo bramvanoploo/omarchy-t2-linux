@@ -19,6 +19,7 @@ function emptyStatus() {
     epp: "balance_power",
     aspm: "default",
     wifiPowerSave: false,
+    inactiveEthernet: [],
     audioPowerSave: true,
     usbAutosuspend: true,
     kbdTimeout: "1m",
