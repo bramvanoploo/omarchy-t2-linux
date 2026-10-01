@@ -250,6 +250,7 @@ BarWidget {
     }
     function setPluginFilter(query: string): void { root.pluginFilterQuery = query }
     function setPluginMode(mode: int): void { root.pluginFilterMode = mode }
+    function scroll(y: real): void { flickable.contentY = y }
     function refreshPlugins(): void { root.fetchPlugins(true) }
     function togglePlugin(pluginId: string, enable: bool): void { root.togglePlugin(pluginId, enable) }
     function setOption(key: string, val: string): void { root.setOption(key, val) }
@@ -2290,53 +2291,14 @@ BarWidget {
                                 }
 
                                 // Toggle Switch to enable/disable plugin (for installed plugins)
-                                Item {
+                                ToggleSwitch {
                                   id: cardToggleSwitch
                                   visible: modelData.installed
                                   anchors.verticalCenter: parent.verticalCenter
-                                  width: Style.space(38)
-                                  height: Style.space(20)
-
-                                  readonly property bool isChecked: Boolean(modelData.installed && modelData.enabled)
-                                  readonly property bool isBusy: pluginCard.isBusy
-
-                                  Rectangle {
-                                    id: switchTrack
-                                    anchors.fill: parent
-                                    radius: height / 2
-                                    color: cardToggleSwitch.isChecked
-                                      ? Color.accent
-                                      : Util.alpha(root.foreground, 0.15)
-                                    border.color: cardToggleSwitch.isChecked
-                                      ? Color.accent
-                                      : Util.alpha(root.foreground, 0.25)
-                                    border.width: 1
-
-                                    Behavior on color { ColorAnimation { duration: 150 } }
-                                    Behavior on border.color { ColorAnimation { duration: 150 } }
-
-                                    // Sliding Knob: on the right when checked, on the left when unchecked
-                                    Rectangle {
-                                      id: switchKnob
-                                      width: parent.height - 4
-                                      height: width
-                                      radius: width / 2
-                                      anchors.verticalCenter: parent.verticalCenter
-                                      x: cardToggleSwitch.isChecked ? parent.width - width - 2 : 2
-                                      color: cardToggleSwitch.isChecked ? "#ffffff" : Qt.darker(root.foreground, 1.3)
-
-                                      Behavior on x { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
-                                    }
-                                  }
-
-                                  MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    enabled: !cardToggleSwitch.isBusy && root.activePluginOpId === ""
-                                    onClicked: {
-                                      root.togglePlugin(modelData.id, !modelData.enabled)
-                                    }
-                                  }
+                                  checked: Boolean(modelData.installed && modelData.enabled)
+                                  busy: pluginCard.isBusy
+                                  enabled: !pluginCard.isBusy && root.activePluginOpId === ""
+                                  onToggled: root.togglePlugin(modelData.id, !modelData.enabled)
                                 }
                               }
                             }
