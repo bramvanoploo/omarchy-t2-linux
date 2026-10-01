@@ -2414,7 +2414,7 @@ BarWidget {
 
               Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Updating Boot Configuration"
+                text: "Applying System Changes"
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.title
                 font.bold: true
@@ -2423,7 +2423,7 @@ BarWidget {
 
               Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Applying changes to /etc/limine-entry-tool.d/t2-mac.conf and executing sudo limine-update.\n\nThis rebuilds the bootloader entries and UKI kernel images. It can take a little while before it's finished, so please be patient while the changes are being applied."
+                text: "Updating system startup and power settings.\n\nThis process takes a moment to safely apply the changes. Please be patient while it finishes."
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
                 color: root.dim
@@ -2478,14 +2478,14 @@ BarWidget {
                   Column {
                     spacing: 2
                     Text {
-                      text: "Reboot Required"
+                      text: "Restart Required"
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.title
                       font.bold: true
                       color: root.foreground
                     }
                     Text {
-                      text: "Limine boot configuration updated successfully"
+                      text: "System changes saved successfully"
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       color: root.dim
@@ -2494,7 +2494,7 @@ BarWidget {
                 }
 
                 Text {
-                  text: "The kernel command line entries in /etc/limine-entry-tool.d/t2-mac.conf were updated and limine-update finished successfully.\n\nWould you like to reboot the computer now to apply the changes?"
+                  text: "Your hardware and power settings have been updated.\n\nTo apply these changes, your computer needs to be restarted. Would you like to restart now?"
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                   color: root.foreground
@@ -2513,7 +2513,7 @@ BarWidget {
                   }
 
                   Button {
-                    text: "Reboot Now"
+                    text: "Restart Now"
                     iconText: "󰜉"
                     bordered: true
                     accent: root.accent
