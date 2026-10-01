@@ -1,0 +1,645 @@
+#!/usr/bin/env bash
+# scripts/t2-helper: Hardware query and mutation backend for Omarchy T2 Linux plugin
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/t2-linux"
+SETTINGS_FILE="$CONFIG_DIR/settings.json"
+SYSTEM_HELPER="/usr/local/libexec/omarchy-t2-helper"
+
+mkdir -p "$CONFIG_DIR"
+if [[ ! -f "$SETTINGS_FILE" ]]; then
+  echo '{"kbdTimeout":"1m","touchbarBlank":true}' > "$SETTINGS_FILE"
+fi
+
+# ---------------------------------------------------------------------------
+# Hardware Detection
+# ---------------------------------------------------------------------------
+
+detect_t2() {
+  # 1. Primary check: Apple T2 Bridge Controller (PCI Vendor 106b, Device 1801 or 1802)
+  local dev
+  for dev in /sys/bus/pci/devices/*; do
+    if [[ -r "$dev/vendor" && -r "$dev/device" ]]; then
+      local vendor device
+      vendor=$(cat "$dev/vendor" 2>/dev/null || true)
+      device=$(cat "$dev/device" 2>/dev/null || true)
+      if [[ "$vendor" == "0x106b" && ("$device" == "0x1801" || "$device" == "0x1802") ]]; then
+        return 0
+      fi
+    fi
+  done
+
+  # 2. Secondary check: T2 VHCI or Apple T2 drivers loaded
+  if [[ -d "/sys/bus/platform/drivers/apple-bce" || -d "/sys/bus/platform/drivers/t2bce" ]]; then
+    return 0
+  fi
+
+  # 3. Kernel cmdline check (apple-t2 kernel)
+  if grep -qi "Watanare-T2\|apple-t2" /proc/version 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
+get_model_name() {
+  local model="Unknown Device"
+  if [[ -r /sys/class/dmi/id/product_name ]]; then
+    model=$(tr -d '\n' < /sys/class/dmi/id/product_name)
+  fi
+  echo "$model"
+}
+
+get_sys_vendor() {
+  local vendor="Unknown"
+  if [[ -r /sys/class/dmi/id/sys_vendor ]]; then
+    vendor=$(tr -d '\n' < /sys/class/dmi/id/sys_vendor)
+  fi
+  echo "$vendor"
+}
+
+# ---------------------------------------------------------------------------
+# Status Query
+# ---------------------------------------------------------------------------
+
+get_battery_info() {
+  local bat_dir=""
+  for b in /sys/class/power_supply/BAT*; do
+    if [[ -d "$b" ]]; then
+      bat_dir="$b"
+      break
+    fi
+  done
+
+  local present=false percent=0 status="Unknown" watts=0.0 health=100 cycles=0 online=false
+
+  if [[ -n "$bat_dir" && -r "$bat_dir/capacity" ]]; then
+    present=true
+    percent=$(cat "$bat_dir/capacity" 2>/dev/null || echo 0)
+    status=$(cat "$bat_dir/status" 2>/dev/null || echo "Unknown")
+    cycles=$(cat "$bat_dir/cycle_count" 2>/dev/null || echo 0)
+
+    local v_now=0 c_now=0 p_now=0
+    if [[ -r "$bat_dir/power_now" ]]; then
+      p_now=$(cat "$bat_dir/power_now" 2>/dev/null || echo 0)
+      watts=$(awk -v p="$p_now" 'BEGIN { printf "%.1f", p / 1000000 }')
+    elif [[ -r "$bat_dir/voltage_now" && -r "$bat_dir/current_now" ]]; then
+      v_now=$(cat "$bat_dir/voltage_now" 2>/dev/null || echo 0)
+      c_now=$(cat "$bat_dir/current_now" 2>/dev/null || echo 0)
+      watts=$(awk -v v="$v_now" -v c="$c_now" 'BEGIN { printf "%.1f", (v * c) / 1000000000000 }')
+    fi
+
+    local full=0 design=0
+    if [[ -r "$bat_dir/charge_full" && -r "$bat_dir/charge_full_design" ]]; then
+      full=$(cat "$bat_dir/charge_full" 2>/dev/null || echo 0)
+      design=$(cat "$bat_dir/charge_full_design" 2>/dev/null || echo 0)
+    elif [[ -r "$bat_dir/energy_full" && -r "$bat_dir/energy_full_design" ]]; then
+      full=$(cat "$bat_dir/energy_full" 2>/dev/null || echo 0)
+      design=$(cat "$bat_dir/energy_full_design" 2>/dev/null || echo 0)
+    fi
+
+    if (( design > 0 && full > 0 )); then
+      health=$(awk -v f="$full" -v d="$design" 'BEGIN { printf "%d", (f / d) * 100 }')
+    fi
+  fi
+
+  for adp in /sys/class/power_supply/ADP* /sys/class/power_supply/AC*; do
+    if [[ -r "$adp/online" && "$(< "$adp/online")" == "1" ]]; then
+      online=true
+      break
+    fi
+  done
+
+  cat <<EOF
+{
+  "present": $present,
+  "percent": $percent,
+  "status": "$status",
+  "watts": $watts,
+  "health": $health,
+  "cycles": $cycles,
+  "online": $online
+}
+EOF
+}
+
+get_epp() {
+  local val="balance_power"
+  if [[ -r /sys/devices/system/cpu/cpu0/power/energy_performance_preference ]]; then
+    val=$(tr -d '\n' < /sys/devices/system/cpu/cpu0/power/energy_performance_preference)
+  elif [[ -r /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference ]]; then
+    val=$(tr -d '\n' < /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference)
+  fi
+  echo "$val"
+}
+
+get_aspm() {
+  local val="default"
+  if [[ -r /sys/module/pcie_aspm/parameters/policy ]]; then
+    local raw
+    raw=$(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null || true)
+    if [[ "$raw" =~ \[([a-zA-Z0-9_-]+)\] ]]; then
+      val="${BASH_REMATCH[1]}"
+    fi
+  fi
+  echo "$val"
+}
+
+get_wifi_powersave() {
+  local iface
+  iface=$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}' || true)
+  if [[ -n "$iface" ]]; then
+    local res
+    res=$(iw dev "$iface" get power_save 2>/dev/null || true)
+    if echo "$res" | grep -qi "on"; then
+      echo true
+      return
+    fi
+  fi
+  echo false
+}
+
+get_mem_sleep() {
+  local val="deep"
+  if [[ -r /sys/power/mem_sleep ]]; then
+    local raw
+    raw=$(cat /sys/power/mem_sleep 2>/dev/null || true)
+    if [[ "$raw" =~ \[([a-zA-Z0-9_-]+)\] ]]; then
+      val="${BASH_REMATCH[1]}"
+    fi
+  fi
+  echo "$val"
+}
+
+get_audio_powersave() {
+  local val
+  val=$(cat /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || echo 0)
+  if (( val > 0 )); then
+    echo true
+  else
+    echo false
+  fi
+}
+
+get_usb_autosuspend() {
+  local val
+  val=$(cat /sys/module/usbcore/parameters/autosuspend 2>/dev/null || echo -1)
+  if (( val > 0 )); then
+    echo true
+  else
+    echo false
+  fi
+}
+
+get_wake_state() {
+  local dev="$1"
+  if grep -E "^${dev}[[:space:]]" /proc/acpi/wakeup 2>/dev/null | grep -q "\*enabled"; then
+    echo true
+  else
+    echo false
+  fi
+}
+
+get_lid_action() {
+  local action="suspend"
+  for f in /etc/systemd/logind.conf.d/*.conf /etc/systemd/logind.conf; do
+    if [[ -r "$f" ]]; then
+      local match
+      match=$(grep -E '^[[:space:]]*HandleLidSwitch=' "$f" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '[:space:]' || true)
+      if [[ -n "$match" ]]; then
+        action="$match"
+      fi
+    fi
+  done
+  echo "$action"
+}
+
+get_clamshell_mode() {
+  local mode="ignore"
+  for f in /etc/systemd/logind.conf.d/*.conf /etc/systemd/logind.conf; do
+    if [[ -r "$f" ]]; then
+      local match
+      match=$(grep -E '^[[:space:]]*HandleLidSwitchExternalPower=' "$f" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '[:space:]' || true)
+      if [[ -n "$match" ]]; then
+        mode="$match"
+      fi
+    fi
+  done
+  if [[ "$mode" == "ignore" ]]; then
+    echo true
+  else
+    echo false
+  fi
+}
+
+get_hibernate_delay() {
+  local delay="off"
+  for f in /etc/systemd/sleep.conf.d/*.conf /etc/systemd/sleep.conf; do
+    if [[ -r "$f" ]]; then
+      local match
+      match=$(grep -E '^[[:space:]]*HibernateDelaySec=' "$f" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '[:space:]' || true)
+      if [[ -n "$match" ]]; then
+        delay="$match"
+      fi
+    fi
+  done
+  echo "$delay"
+}
+
+get_setting() {
+  local key="$1" default="$2"
+  if [[ -f "$SETTINGS_FILE" ]]; then
+    jq -r --arg k "$key" --arg d "$default" '.[$k] // $d' "$SETTINGS_FILE" 2>/dev/null || echo "$default"
+  else
+    echo "$default"
+  fi
+}
+
+print_status_json() {
+  local is_t2=false
+  if detect_t2; then
+    is_t2=true
+  fi
+
+  local model vendor
+  model=$(get_model_name)
+  vendor=$(get_sys_vendor)
+
+  local battery_json
+  battery_json=$(get_battery_info)
+
+  local epp aspm wifi_ps mem_sleep audio_ps usb_ps wake_lid wake_ac lid_act clamshell hib_delay
+  epp=$(get_epp)
+  aspm=$(get_aspm)
+  wifi_ps=$(get_wifi_powersave)
+  mem_sleep=$(get_mem_sleep)
+  audio_ps=$(get_audio_powersave)
+  usb_ps=$(get_usb_autosuspend)
+  wake_lid=$(get_wake_state "LID0")
+  wake_ac=$(get_wake_state "ADP1")
+  lid_act=$(get_lid_action)
+  clamshell=$(get_clamshell_mode)
+  hib_delay=$(get_hibernate_delay)
+
+  local kbd_timeout touchbar_blank
+  kbd_timeout=$(get_setting "kbdTimeout" "1m")
+  touchbar_blank=$(get_setting "touchbarBlank" "true")
+
+  local helper_installed=false
+  if [[ -x "$SYSTEM_HELPER" ]]; then
+    helper_installed=true
+  fi
+
+  cat <<EOF
+{
+  "isT2": $is_t2,
+  "model": "$model",
+  "vendor": "$vendor",
+  "chip": "Apple T2 Security Chip",
+  "helperInstalled": $helper_installed,
+  "battery": $battery_json,
+  "epp": "$epp",
+  "aspm": "$aspm",
+  "wifiPowerSave": $wifi_ps,
+  "audioPowerSave": $audio_ps,
+  "usbAutosuspend": $usb_ps,
+  "kbdTimeout": "$kbd_timeout",
+  "memSleep": "$mem_sleep",
+  "lidAction": "$lid_act",
+  "clamshellMode": $clamshell,
+  "wakeOnLid": $wake_lid,
+  "wakeOnAc": $wake_ac,
+  "hibernateDelay": "$hib_delay",
+  "touchbarBlank": $touchbar_blank
+}
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Privilege Execution Helper
+# ---------------------------------------------------------------------------
+
+run_privileged() {
+  local target="$SCRIPT_DIR/t2-helper"
+  if [[ -x "$SYSTEM_HELPER" ]]; then
+    target="$SYSTEM_HELPER"
+  fi
+
+  if (( EUID == 0 )); then
+    "$target" "$@"
+  else
+    pkexec "$target" "$@"
+  fi
+}
+
+save_user_setting() {
+  local key="$1" val="$2"
+  local tmp
+  mkdir -p "$(dirname "$SETTINGS_FILE")"
+  tmp=$(mktemp)
+  if [[ -f "$SETTINGS_FILE" ]]; then
+    jq --arg k "$key" --arg v "$val" '.[$k] = $v' "$SETTINGS_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$SETTINGS_FILE"
+  else
+    printf '{"%s":"%s"}\n' "$key" "$val" > "$SETTINGS_FILE"
+  fi
+  rm -f "$tmp"
+}
+
+# ---------------------------------------------------------------------------
+# Apply Actions (Privileged)
+# ---------------------------------------------------------------------------
+
+apply_epp() {
+  local val="$1"
+  for f in /sys/devices/system/cpu/cpu*/power/energy_performance_preference /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+    if [[ -w "$f" ]]; then
+      echo "$val" > "$f" 2>/dev/null || true
+    fi
+  done
+  mkdir -p /etc/tmpfiles.d
+  echo "w /sys/devices/system/cpu/cpu*/power/energy_performance_preference - - - - $val" > /etc/tmpfiles.d/omarchy-t2-epp.conf
+}
+
+apply_aspm() {
+  local val="$1"
+  if [[ -w /sys/module/pcie_aspm/parameters/policy ]]; then
+    echo "$val" > /sys/module/pcie_aspm/parameters/policy 2>/dev/null || true
+  fi
+  mkdir -p /etc/tmpfiles.d
+  echo "w /sys/module/pcie_aspm/parameters/policy - - - - $val" > /etc/tmpfiles.d/omarchy-t2-aspm.conf
+}
+
+apply_wifi_powersave() {
+  local state="$1" # on | off
+  local iface
+  iface=$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}' || true)
+  if [[ -n "$iface" ]]; then
+    iw dev "$iface" set power_save "$state" 2>/dev/null || true
+  fi
+}
+
+apply_mem_sleep() {
+  local val="$1" # deep | s2idle
+  if [[ -w /sys/power/mem_sleep ]]; then
+    echo "$val" > /sys/power/mem_sleep 2>/dev/null || true
+  fi
+  mkdir -p /etc/systemd/sleep.conf.d
+  cat <<CONF > /etc/systemd/sleep.conf.d/30-t2-sleep.conf
+[Sleep]
+MemorySleepMode=$val
+CONF
+}
+
+apply_lid_action() {
+  local action="$1" # suspend | ignore | lock | hibernate
+  mkdir -p /etc/systemd/logind.conf.d
+  cat <<CONF > /etc/systemd/logind.conf.d/30-t2-lid.conf
+[Login]
+HandleLidSwitch=$action
+CONF
+  systemctl kill -s HUP systemd-logind 2>/dev/null || true
+}
+
+apply_clamshell() {
+  local enable="$1" # true | false
+  local mode="ignore"
+  [[ "$enable" == "false" ]] && mode="suspend"
+  mkdir -p /etc/systemd/logind.conf.d
+  cat <<CONF > /etc/systemd/logind.conf.d/35-t2-clamshell.conf
+[Login]
+HandleLidSwitchExternalPower=$mode
+HandleLidSwitchDocked=$mode
+CONF
+  systemctl kill -s HUP systemd-logind 2>/dev/null || true
+}
+
+apply_wake_toggle() {
+  local dev="$1" desired="$2" # on | off
+  local current
+  current=$(get_wake_state "$dev")
+  if [[ ("$desired" == "on" && "$current" == "false") || ("$desired" == "off" && "$current" == "true") ]]; then
+    echo "$dev" > /proc/acpi/wakeup 2>/dev/null || true
+  fi
+}
+
+apply_audio_powersave() {
+  local enable="$1" # true | false
+  local val=1
+  [[ "$enable" == "false" ]] && val=0
+  if [[ -w /sys/module/snd_hda_intel/parameters/power_save ]]; then
+    echo "$val" > /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || true
+  fi
+  mkdir -p /etc/modprobe.d
+  cat <<CONF > /etc/modprobe.d/omarchy-t2-audio.conf
+options snd_hda_intel power_save=$val power_save_controller=$([[ $val -gt 0 ]] && echo Y || echo N)
+CONF
+}
+
+apply_usb_autosuspend() {
+  local enable="$1" # true | false
+  local val=2
+  [[ "$enable" == "false" ]] && val=-1
+  if [[ -w /sys/module/usbcore/parameters/autosuspend ]]; then
+    echo "$val" > /sys/module/usbcore/parameters/autosuspend 2>/dev/null || true
+  fi
+  mkdir -p /etc/modprobe.d
+  cat <<CONF > /etc/modprobe.d/omarchy-usb-autosuspend.conf
+options usbcore autosuspend=$val
+CONF
+}
+
+apply_hibernate_delay() {
+  local delay="$1" # off | 30min | 1hour | 2hours
+  mkdir -p /etc/systemd/sleep.conf.d
+  local cfg="/etc/systemd/sleep.conf.d/30-t2-sleep.conf"
+  if [[ "$delay" == "off" ]]; then
+    if [[ -f "$cfg" ]]; then
+      sed -i '/HibernateDelaySec=/d' "$cfg"
+    fi
+  else
+    local sec="1800"
+    case "$delay" in
+      30min|30m) sec="1800" ;;
+      1hour|1h)  sec="3600" ;;
+      2hours|2h) sec="7200" ;;
+    esac
+    if grep -q "\[Sleep\]" "$cfg" 2>/dev/null; then
+      sed -i '/HibernateDelaySec=/d' "$cfg"
+      sed -i "/\[Sleep\]/a HibernateDelaySec=$sec" "$cfg"
+    else
+      cat <<CONF >> "$cfg"
+[Sleep]
+HibernateDelaySec=$sec
+CONF
+    fi
+  fi
+}
+
+install_system_helper() {
+  mkdir -p /usr/local/libexec /etc/polkit-1/rules.d
+  install -Dm755 "$PLUGIN_ROOT/scripts/t2-helper" "$SYSTEM_HELPER"
+  install -Dm644 "$PLUGIN_ROOT/system/90-omarchy-t2-linux.rules" "/etc/polkit-1/rules.d/90-omarchy-t2-linux.rules"
+  echo "Installed system helper and polkit rules successfully."
+}
+
+uninstall_system_helper() {
+  rm -f "$SYSTEM_HELPER" "/etc/polkit-1/rules.d/90-omarchy-t2-linux.rules"
+  echo "Removed system helper and polkit rules."
+}
+
+# ---------------------------------------------------------------------------
+# CLI Command Dispatcher
+# ---------------------------------------------------------------------------
+
+case "${1:-status}" in
+  status)
+    print_status_json
+    ;;
+
+  detect)
+    if detect_t2; then
+      echo "T2 detected"
+      exit 0
+    else
+      echo "No T2 chip found"
+      exit 1
+    fi
+    ;;
+
+  set)
+    shift
+    key="${1:-}"
+    val="${2:-}"
+    case "$key" in
+      epp)
+        save_user_setting "epp" "$val"
+        pp_done=false
+        if command -v powerprofilesctl >/dev/null 2>&1; then
+          case "$val" in
+            power|power-saver)
+              powerprofilesctl set power-saver >/dev/null 2>&1 && pp_done=true
+              ;;
+            performance)
+              powerprofilesctl set performance >/dev/null 2>&1 && pp_done=true
+              ;;
+            balance_power|balance_performance|balanced)
+              powerprofilesctl set balanced >/dev/null 2>&1 && pp_done=true
+              ;;
+          esac
+        fi
+
+        for f in /sys/devices/system/cpu/cpu*/power/energy_performance_preference /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+          if [[ -w "$f" ]]; then
+            echo "$val" > "$f" 2>/dev/null || true
+          fi
+        done
+
+        curr=$(get_epp)
+        if [[ "$curr" != "$val" && "$pp_done" != "true" ]]; then
+          run_privileged apply-epp "$val"
+        fi
+        ;;
+      aspm)
+        run_privileged apply-aspm "$val"
+        ;;
+      wifi_powersave)
+        run_privileged apply-wifi-powersave "$val"
+        ;;
+      mem_sleep)
+        run_privileged apply-mem-sleep "$val"
+        ;;
+      lid_action)
+        run_privileged apply-lid-action "$val"
+        ;;
+      clamshell)
+        run_privileged apply-clamshell "$val"
+        ;;
+      wake_lid)
+        run_privileged apply-wake-lid "$val"
+        ;;
+      wake_ac)
+        run_privileged apply-wake-ac "$val"
+        ;;
+      audio_powersave)
+        run_privileged apply-audio-powersave "$val"
+        ;;
+      usb_autosuspend)
+        run_privileged apply-usb-autosuspend "$val"
+        ;;
+      hibernate_delay)
+        run_privileged apply-hibernate-delay "$val"
+        ;;
+      kbd_timeout)
+        save_user_setting "kbdTimeout" "$val"
+        ;;
+      touchbar_blank)
+        save_user_setting "touchbarBlank" "$val"
+        ;;
+      *)
+        echo "Unknown setting key: $key" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+
+  apply-epp)
+    shift; apply_epp "$1" ;;
+  apply-aspm)
+    shift; apply_aspm "$1" ;;
+  apply-wifi-powersave)
+    shift; apply_wifi_powersave "$1" ;;
+  apply-mem-sleep)
+    shift; apply_mem_sleep "$1" ;;
+  apply-lid-action)
+    shift; apply_lid_action "$1" ;;
+  apply-clamshell)
+    shift; apply_clamshell "$1" ;;
+  apply-wake-lid)
+    shift; apply_wake_toggle "LID0" "$1" ;;
+  apply-wake-ac)
+    shift; apply_wake_toggle "ADP1" "$1" ;;
+  apply-audio-powersave)
+    shift; apply_audio_powersave "$1" ;;
+  apply-usb-autosuspend)
+    shift; apply_usb_autosuspend "$1" ;;
+  apply-hibernate-delay)
+    shift; apply_hibernate_delay "$1" ;;
+  install-system)
+    run_privileged do-install-system ;;
+  do-install-system)
+    install_system_helper ;;
+  uninstall-system)
+    run_privileged do-uninstall-system ;;
+  do-uninstall-system)
+    uninstall_system_helper ;;
+
+  plugins-list|plugins)
+    shift
+    exec python3 "$SCRIPT_DIR/t2-plugins-helper.py" list "$@"
+    ;;
+  plugin-install)
+    shift
+    exec python3 "$SCRIPT_DIR/t2-plugins-helper.py" install "$@"
+    ;;
+  plugin-update)
+    shift
+    exec python3 "$SCRIPT_DIR/t2-plugins-helper.py" update "$@"
+    ;;
+  plugin-remove)
+    shift
+    exec python3 "$SCRIPT_DIR/t2-plugins-helper.py" remove "$@"
+    ;;
+  plugin-toggle)
+    shift
+    exec python3 "$SCRIPT_DIR/t2-plugins-helper.py" toggle "$@"
+    ;;
+
+  *)
+    echo "Usage: $0 {status|detect|set <key> <val>|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle}" >&2
+    exit 1
+    ;;
+esac
+
