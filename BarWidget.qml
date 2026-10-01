@@ -1091,82 +1091,7 @@ BarWidget {
                         }
                       }
 
-                      // 2. PCIe ASPM Policy
-                      BorderSurface {
-                        width: parent.width
-                        height: aspmCol.implicitHeight + Style.space(28)
-                        color: Util.alpha(root.foreground, 0.03)
-                        radius: Style.cornerRadius
-
-                        Column {
-                          id: aspmCol
-                          anchors.left: parent.left
-                          anchors.right: parent.right
-                          anchors.top: parent.top
-                          anchors.margins: Style.space(14)
-                          spacing: Style.space(10)
-
-                          Row {
-                            width: parent.width
-                            Item {
-                              width: parent.width - aspmStatusText.implicitWidth
-                              height: aspmTitle.implicitHeight + aspmDesc.implicitHeight
-                              Column {
-                                anchors.fill: parent
-                                spacing: 2
-                                Text {
-                                  id: aspmTitle
-                                  text: "PCIe Active State Power Management (ASPM)"
-                                  color: root.foreground
-                                  font.family: root.fontFamily
-                                  font.pixelSize: Style.font.body
-                                  font.bold: true
-                                }
-                                Text {
-                                  id: aspmDesc
-                                  text: "Enables L0s/L1 link states across NVMe storage, T2 bridge, and PCIe devices."
-                                  color: root.dim
-                                  font.family: root.fontFamily
-                                  font.pixelSize: Style.font.caption
-                                }
-                              }
-                            }
-
-                            Text {
-                              id: aspmStatusText
-                              text: Model.formatAspm(root.status.aspm)
-                              color: root.accent
-                              font.family: root.fontFamily
-                              font.pixelSize: Style.font.caption
-                              font.bold: true
-                            }
-                          }
-
-                          Row {
-                            width: parent.width
-                            spacing: Style.space(8)
-                            readonly property real btnWidth: (width - spacing * 2) / 3
-
-                            Repeater {
-                              model: [
-                                { val: "powersave", label: "Powersave" },
-                                { val: "default", label: "Default" },
-                                { val: "performance", label: "Full Power" }
-                              ]
-
-                              delegate: Button {
-                                width: parent.btnWidth
-                                text: modelData.label
-                                bordered: true
-                                selected: root.status.aspm === modelData.val
-                                onClicked: root.setOption("aspm", modelData.val)
-                              }
-                            }
-                          }
-                        }
-                      }
-
-                      // 3. Wi-Fi Power Save Toggle
+                      // 2. Wi-Fi Power Save Toggle
                       BorderSurface {
                         width: parent.width
                         height: Style.space(62)
@@ -1208,7 +1133,7 @@ BarWidget {
                         }
                       }
 
-                      // 4. Audio Controller Power Save
+                      // 3. Audio Controller Power Save
                       BorderSurface {
                         width: parent.width
                         height: Style.space(62)
