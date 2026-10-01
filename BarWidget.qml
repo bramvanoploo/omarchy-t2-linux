@@ -17,6 +17,8 @@ BarWidget {
   property bool nonT2DialogOpen: false
   property bool applying: false
   property string lastNotice: ""
+  property bool limineUpdating: false
+  property bool rebootConfirmOpen: false
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string helper: pluginDir + "/scripts/t2-helper"
@@ -100,6 +102,7 @@ BarWidget {
   }
 
   function close() {
+    if (root.limineUpdating) return
     opened = false
     nonT2DialogOpen = false
   }
@@ -107,6 +110,19 @@ BarWidget {
   function showNonT2Dialog() {
     if (root.opened) root.close()
     nonT2DialogOpen = true
+  }
+
+  function togglePciePortsCompat(enable) {
+    if (root.limineUpdating) return
+    root.limineUpdating = true
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      s.pciePortsCompat = enable
+      root.status = s
+    }
+    root.lastNotice = "Updating Limine boot configuration (limine-update)…"
+    limineProc.command = ["bash", helper, "set", "pcie_ports_compat", enable ? "on" : "off"]
+    limineProc.running = true
   }
 
   function setOption(key, val) {
@@ -123,6 +139,8 @@ BarWidget {
         s.aspm = val
       } else if (key === "wifi_powersave") {
         s.wifiPowerSave = (val === "on" || val === "true")
+      } else if (key === "pcie_ports_compat") {
+        s.pciePortsCompat = (val === "on" || val === "true")
       } else if (key === "ethernet_managed") {
         var parts = String(val).split(":")
         var ethDev = parts[0]
@@ -223,6 +241,7 @@ BarWidget {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
+    function showRebootDialog(): void { root.open(); root.rebootConfirmOpen = true }
     function selectTab(index: int): void {
       root.activeTab = index
       if (index === 2 && root.opened) {
@@ -289,6 +308,41 @@ BarWidget {
       }
       refreshTimer.restart()
     }
+  }
+
+  // Process to execute bootloader update (limine-update)
+  Process {
+    id: limineProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.lastNotice = "Boot configuration updated."
+      }
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (text && text.trim().length > 0) {
+          console.warn("limine-update output:", text)
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      root.limineUpdating = false
+      if (exitCode === 0) {
+        root.lastNotice = "Limine boot configuration updated successfully."
+        root.rebootConfirmOpen = true
+      } else {
+        root.lastNotice = "limine-update failed (exit code " + exitCode + ")."
+      }
+      refreshTimer.restart()
+    }
+  }
+
+  // Process to reboot computer
+  Process {
+    id: rebootProc
+    command: ["systemctl", "reboot"]
   }
 
   // Process to fetch plugins catalog
@@ -556,6 +610,17 @@ BarWidget {
       focus: true
 
       Keys.onPressed: function(event) {
+        if (root.limineUpdating) {
+          event.accepted = true
+          return
+        }
+        if (root.rebootConfirmOpen) {
+          if (event.key === Qt.Key_Escape) {
+            root.rebootConfirmOpen = false
+            event.accepted = true
+            return
+          }
+        }
         if (event.key === Qt.Key_Escape) {
           root.close()
           event.accepted = true
@@ -569,7 +634,11 @@ BarWidget {
 
         MouseArea {
           anchors.fill: parent
-          onClicked: root.close()
+          onClicked: {
+            if (!root.limineUpdating && !root.rebootConfirmOpen) {
+              root.close()
+            }
+          }
         }
 
         // Centered Card (Large, 880x620)
@@ -658,6 +727,7 @@ BarWidget {
                     fontFamily: root.fontFamily
                     fontSize: Style.font.subtitle
                     size: Style.space(30)
+                    enabled: !root.limineUpdating
                     onClicked: root.refresh()
                   }
 
@@ -668,6 +738,7 @@ BarWidget {
                     fontFamily: root.fontFamily
                     fontSize: Style.font.subtitle
                     size: Style.space(30)
+                    enabled: !root.limineUpdating
                     onClicked: root.close()
                   }
                 }
@@ -960,7 +1031,7 @@ BarWidget {
                                 font.pixelSize: Style.font.title
                               }
                               Text {
-                                text: root.status.battery.percent + "%"
+                                text: Math.min(100, Math.max(0, root.status.battery.percent)) + "%"
                                 color: root.foreground
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.title
@@ -1201,6 +1272,63 @@ BarWidget {
                               checked: modelData.managed
                               onToggled: root.setOption("ethernet_managed", modelData.device + ":" + (!modelData.managed ? "yes" : "no"))
                             }
+                          }
+                        }
+                      }
+
+                      // PCIe Ports Compatibility (pcie_ports=compat in /etc/limine-entry-tool.d/t2-mac.conf)
+                      BorderSurface {
+                        width: parent.width
+                        height: Math.max(Style.space(62), pcieCol.implicitHeight + Style.space(20))
+                        color: Util.alpha(root.foreground, 0.03)
+                        radius: Style.cornerRadius
+
+                        Row {
+                          anchors.fill: parent
+                          anchors.leftMargin: Style.space(14)
+                          anchors.rightMargin: Style.space(14)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Column {
+                            id: pcieCol
+                            width: parent.width - pcieSwitch.width - Style.space(14)
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 2
+
+                            Row {
+                              spacing: Style.space(8)
+                              Text {
+                                text: "PCIe Ports Compatibility"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+                              Text {
+                                text: (root.status && root.status.pciePortsCompat) ? "Enabled" : "Disabled"
+                                color: (root.status && root.status.pciePortsCompat) ? root.accent : root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+                            }
+
+                            Text {
+                              text: "Enables low-power states on internal PCIe buses to reduce battery drain and prevent power glitches on T2 MacBooks. Automatically updates the bootloader."
+                              color: root.dim
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.caption
+                              wrapMode: Text.WordWrap
+                              width: parent.width
+                            }
+                          }
+
+                          ToggleSwitch {
+                            id: pcieSwitch
+                            anchors.verticalCenter: parent.verticalCenter
+                            checked: root.status && !!root.status.pciePortsCompat
+                            enabled: !root.limineUpdating
+                            onToggled: root.togglePciePortsCompat(!(root.status && root.status.pciePortsCompat))
                           }
                         }
                       }
@@ -2238,6 +2366,161 @@ BarWidget {
                           }
                         }
                       }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Blocking overlay when limine-update is in progress
+          Rectangle {
+            id: limineBlockingOverlay
+            visible: root.limineUpdating
+            anchors.fill: parent
+            radius: Style.cornerRadius
+            color: Qt.rgba(0, 0, 0, 0.85)
+            z: 9999
+
+            // Block all mouse interaction with the panel
+            MouseArea {
+              anchors.fill: parent
+              hoverEnabled: true
+              preventStealing: true
+              onClicked: {}
+            }
+
+            Column {
+              anchors.centerIn: parent
+              spacing: Style.space(16)
+              width: Math.min(parent.width - Style.space(64), Style.space(520))
+
+              Text {
+                id: spinnerIcon
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "󰑮"
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.title * 2.2
+                color: root.accent
+
+                RotationAnimation on rotation {
+                  from: 0
+                  to: 360
+                  duration: 1200
+                  loops: Animation.Infinite
+                  running: root.limineUpdating
+                }
+              }
+
+              Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "Updating Boot Configuration"
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.title
+                font.bold: true
+                color: root.foreground
+              }
+
+              Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "Applying changes to /etc/limine-entry-tool.d/t2-mac.conf and executing sudo limine-update.\n\nThis rebuilds the bootloader entries and UKI kernel images. It can take a little while before it's finished, so please be patient while the changes are being applied."
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                color: root.dim
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                width: parent.width
+                lineHeight: 1.2
+              }
+            }
+          }
+
+          // Reboot confirmation dialog after limine-update
+          Rectangle {
+            id: rebootDialogOverlay
+            visible: root.rebootConfirmOpen
+            anchors.fill: parent
+            radius: Style.cornerRadius
+            color: Qt.rgba(0, 0, 0, 0.75)
+            z: 9998
+
+            // Absorb background clicks
+            MouseArea {
+              anchors.fill: parent
+              onClicked: {}
+            }
+
+            BorderSurface {
+              anchors.centerIn: parent
+              width: Math.min(parent.width - Style.space(48), Style.space(500))
+              height: rebootCol.implicitHeight + Style.space(48)
+              color: Color.popups.background
+              borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
+              radius: Style.cornerRadius
+
+              Column {
+                id: rebootCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: Style.space(20)
+                spacing: Style.space(16)
+
+                Row {
+                  spacing: Style.space(12)
+                  Text {
+                    text: "󰜉"
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title * 1.5
+                    color: root.accent
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                  Column {
+                    spacing: 2
+                    Text {
+                      text: "Reboot Required"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.title
+                      font.bold: true
+                      color: root.foreground
+                    }
+                    Text {
+                      text: "Limine boot configuration updated successfully"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      color: root.dim
+                    }
+                  }
+                }
+
+                Text {
+                  text: "The kernel command line entries in /etc/limine-entry-tool.d/t2-mac.conf were updated and limine-update finished successfully.\n\nWould you like to reboot the computer now to apply the changes?"
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  color: root.foreground
+                  wrapMode: Text.WordWrap
+                  width: parent.width
+                }
+
+                Row {
+                  anchors.right: parent.right
+                  spacing: Style.space(10)
+
+                  Button {
+                    text: "Later"
+                    bordered: true
+                    onClicked: root.rebootConfirmOpen = false
+                  }
+
+                  Button {
+                    text: "Reboot Now"
+                    iconText: "󰜉"
+                    bordered: true
+                    accent: root.accent
+                    selected: true
+                    onClicked: {
+                      root.rebootConfirmOpen = false
+                      rebootProc.running = true
                     }
                   }
                 }

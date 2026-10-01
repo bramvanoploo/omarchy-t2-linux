@@ -20,6 +20,7 @@ function emptyStatus() {
     aspm: "default",
     wifiPowerSave: false,
     inactiveEthernet: [],
+    pciePortsCompat: false,
     audioPowerSave: true,
     usbAutosuspend: true,
     kbdTimeout: "1m",
@@ -38,6 +39,9 @@ function parseStatus(raw) {
   try {
     var data = JSON.parse(raw);
     if (data && typeof data === "object") {
+      if (data.battery && typeof data.battery.percent === "number") {
+        data.battery.percent = Math.min(100, Math.max(0, Math.round(data.battery.percent)));
+      }
       return data;
     }
   } catch (e) {
@@ -60,7 +64,8 @@ function tooltip(status) {
   }
   var tip = "Omarchy T2 Linux (" + (status.model || "T2 MacBook") + ")";
   if (status.battery && status.battery.present) {
-    tip += "\nBattery: " + status.battery.percent + "% (" + status.battery.status + ")";
+    var pct = Math.min(100, Math.max(0, status.battery.percent || 0));
+    tip += "\nBattery: " + pct + "% (" + status.battery.status + ")";
     if (status.battery.watts > 0) {
       tip += " · " + status.battery.watts + "W";
     }

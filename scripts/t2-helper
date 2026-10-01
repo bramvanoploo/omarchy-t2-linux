@@ -79,6 +79,9 @@ get_battery_info() {
   if [[ -n "$bat_dir" && -r "$bat_dir/capacity" ]]; then
     present=true
     percent=$(cat "$bat_dir/capacity" 2>/dev/null || echo 0)
+    if (( percent > 100 )); then
+      percent=100
+    fi
     status=$(cat "$bat_dir/status" 2>/dev/null || echo "Unknown")
     cycles=$(cat "$bat_dir/cycle_count" 2>/dev/null || echo 0)
 
@@ -183,6 +186,15 @@ get_inactive_ethernet_json() {
     fi
   fi
   echo "$json"
+}
+
+get_pcie_ports_compat() {
+  local conf="/etc/limine-entry-tool.d/t2-mac.conf"
+  if [[ -r "$conf" ]] && grep -q '\bpcie_ports=compat\b' "$conf" 2>/dev/null; then
+    echo true
+  else
+    echo false
+  fi
 }
 
 get_mem_sleep() {
@@ -307,10 +319,11 @@ print_status_json() {
   clamshell=$(get_clamshell_mode)
   hib_delay=$(get_hibernate_delay)
 
-  local kbd_timeout touchbar_blank inactive_eth
+  local kbd_timeout touchbar_blank inactive_eth pcie_compat
   kbd_timeout=$(get_setting "kbdTimeout" "1m")
   touchbar_blank=$(get_setting "touchbarBlank" "true")
   inactive_eth=$(get_inactive_ethernet_json)
+  pcie_compat=$(get_pcie_ports_compat)
 
   local helper_installed=false
   if [[ -x "$SYSTEM_HELPER" ]]; then
@@ -329,6 +342,7 @@ print_status_json() {
   "aspm": "$aspm",
   "wifiPowerSave": $wifi_ps,
   "inactiveEthernet": $inactive_eth,
+  "pciePortsCompat": $pcie_compat,
   "audioPowerSave": $audio_ps,
   "usbAutosuspend": $usb_ps,
   "kbdTimeout": "$kbd_timeout",
@@ -424,6 +438,65 @@ unmanaged-devices=interface-name:$dev
 CONF
   else
     rm -f "$conf"
+  fi
+}
+
+apply_pcie_ports_compat() {
+  local mode="$1" # on | off | true | false | add | remove
+  local conf="/etc/limine-entry-tool.d/t2-mac.conf"
+
+  python3 - <<PYEOF
+import re
+import os
+
+path = "$conf"
+mode = "$mode"
+
+content = ""
+if os.path.exists(path):
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+def remove_compat(text):
+    def repl(m):
+        prefix = m.group(1)
+        val = m.group(2)
+        closing = m.group(3)
+        val = re.sub(r"\bpcie_ports=compat\b", "", val)
+        val = re.sub(r"[ \t]+", " ", val).rstrip()
+        return f"{prefix}{val}{closing}"
+    return re.sub(r"^([ \t]*KERNEL_CMDLINE[^=\n]*=[+ \t]*[\"'])([^\"']*)([\"'])", repl, text, flags=re.M)
+
+def add_compat(text):
+    if re.search(r"\bpcie_ports=compat\b", text):
+        return text
+    def repl(m):
+        prefix = m.group(1)
+        val = m.group(2).rstrip()
+        closing = m.group(3)
+        sep = " " if val and not val.endswith(" ") else ""
+        return f"{prefix}{val}{sep}pcie_ports=compat{closing}"
+    new_text, count = re.subn(r"^([ \t]*KERNEL_CMDLINE[^=\n]*=[+ \t]*[\"'])([^\"']*)([\"'])", repl, text, flags=re.M)
+    if count == 0:
+        sep = "\n" if text and not text.endswith("\n") else ""
+        new_text = text + sep + 'KERNEL_CMDLINE[default]+=" pcie_ports=compat"\n'
+    return new_text
+
+if mode in ("off", "false", "remove", "no"):
+    new_content = remove_compat(content)
+else:
+    new_content = add_compat(content)
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w", encoding="utf-8") as f:
+    f.write(new_content)
+PYEOF
+
+  # Run sudo limine-update after every change to the file
+  if command -v sudo >/dev/null 2>&1; then
+    sudo limine-update
+  else
+    limine-update
   fi
 }
 
@@ -612,6 +685,9 @@ case "${1:-status}" in
         fi
         run_privileged apply-ethernet-managed "$dev" "$mode"
         ;;
+      pcie_ports_compat)
+        run_privileged apply-pcie-ports-compat "$val"
+        ;;
       mem_sleep)
         run_privileged apply-mem-sleep "$val"
         ;;
@@ -657,6 +733,8 @@ case "${1:-status}" in
     shift; apply_wifi_powersave "$1" ;;
   apply-ethernet-managed)
     shift; apply_ethernet_managed "$1" "$2" ;;
+  apply-pcie-ports-compat)
+    shift; apply_pcie_ports_compat "$1" ;;
   apply-mem-sleep)
     shift; apply_mem_sleep "$1" ;;
   apply-lid-action)
