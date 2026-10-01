@@ -452,8 +452,74 @@ run_privileged() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Input Validation & Security Helpers
+# ---------------------------------------------------------------------------
+
+validate_no_control_chars() {
+  local val="$1"
+  local name="${2:-argument}"
+  if [[ "$val" =~ [[:cntrl:]] ]]; then
+    echo "Security Error: $name contains forbidden control characters." >&2
+    exit 1
+  fi
+}
+
+atomic_write_file() {
+  local target="$1"
+  local content="$2"
+  local mode="${3:-0644}"
+  local dir tmp
+
+  dir="$(dirname "$target")"
+  mkdir -p "$dir"
+  tmp="${target}.tmp.$$"
+  printf "%s\n" "$content" > "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$target"
+}
+
 save_user_setting() {
-  local key="$1" val="$2"
+  local key="${1:-}" val="${2:-}"
+  validate_no_control_chars "$key" "setting_key"
+  validate_no_control_chars "$val" "setting_val"
+
+  case "$key" in
+    kbdTimeout)
+      case "$val" in
+        off|never|0|10s|15s|30s|1m|2m|5m|10m) ;;
+        *)
+          if [[ ! "$val" =~ ^[0-9]+[smh]?$ ]]; then
+            echo "Error: Invalid kbdTimeout value '$val'" >&2
+            exit 1
+          fi
+          ;;
+      esac
+      ;;
+    touchbarBlank|recommendedPromptShown)
+      case "$val" in
+        true|false|True|False) ;;
+        *)
+          echo "Error: Invalid boolean value for $key: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    epp)
+      case "$val" in
+        default|performance|balance_performance|balance_power|power|balanced) ;;
+        *)
+          echo "Error: Invalid epp setting: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    *)
+      echo "Error: Unauthorized setting key '$key'" >&2
+      exit 1
+      ;;
+  esac
+
   mkdir -p "$(dirname "$SETTINGS_FILE")"
   python3 - "$SETTINGS_FILE" "$key" "$val" <<'PYEOF'
 import sys, os, json
@@ -487,49 +553,105 @@ PYEOF
 # ---------------------------------------------------------------------------
 
 apply_epp() {
-  local val="$1"
+  local val="${1:-}"
+  validate_no_control_chars "$val" "epp"
+  val=$(echo "$val" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$val" in
+    balanced)
+      val="balance_power"
+      ;;
+    default|performance|balance_performance|balance_power|power)
+      ;;
+    *)
+      echo "Error: Invalid EPP value '$val'. Allowed values: default, performance, balance_performance, balance_power, power, balanced" >&2
+      exit 1
+      ;;
+  esac
+
   for f in /sys/devices/system/cpu/cpu*/power/energy_performance_preference /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
     if [[ -w "$f" ]]; then
       echo "$val" > "$f" 2>/dev/null || true
     fi
   done
-  mkdir -p /etc/tmpfiles.d
+
   if compgen -G "/sys/devices/system/cpu/cpu*/power/energy_performance_preference" >/dev/null; then
-    echo "w /sys/devices/system/cpu/cpu*/power/energy_performance_preference - - - - $val" > /etc/tmpfiles.d/omarchy-t2-epp.conf
+    atomic_write_file /etc/tmpfiles.d/omarchy-t2-epp.conf "w /sys/devices/system/cpu/cpu*/power/energy_performance_preference - - - - $val"
   elif compgen -G "/sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference" >/dev/null; then
-    echo "w /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference - - - - $val" > /etc/tmpfiles.d/omarchy-t2-epp.conf
+    atomic_write_file /etc/tmpfiles.d/omarchy-t2-epp.conf "w /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference - - - - $val"
   fi
 }
 
 apply_aspm() {
-  local val="$1"
+  local val="${1:-}"
+  validate_no_control_chars "$val" "aspm"
+  val=$(echo "$val" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$val" in
+    default|performance|powersave|powersupersave)
+      ;;
+    *)
+      echo "Error: Invalid ASPM policy '$val'. Allowed values: default, performance, powersave, powersupersave" >&2
+      exit 1
+      ;;
+  esac
+
   if [[ -w /sys/module/pcie_aspm/parameters/policy ]]; then
     echo "$val" > /sys/module/pcie_aspm/parameters/policy 2>/dev/null || true
   fi
-  mkdir -p /etc/tmpfiles.d
-  echo "w /sys/module/pcie_aspm/parameters/policy - - - - $val" > /etc/tmpfiles.d/omarchy-t2-aspm.conf
+  atomic_write_file /etc/tmpfiles.d/omarchy-t2-aspm.conf "w /sys/module/pcie_aspm/parameters/policy - - - - $val"
 }
 
 apply_wifi_powersave() {
-  local state="$1" # on | off
+  local state="${1:-}" # on | off
+  validate_no_control_chars "$state" "wifi_powersave"
+  state=$(echo "$state" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  local nm_val=2
+  case "$state" in
+    on|true|1|enable|enabled)
+      state="on"
+      nm_val=3
+      ;;
+    off|false|0|disable|disabled)
+      state="off"
+      nm_val=2
+      ;;
+    *)
+      echo "Error: Invalid wifi powersave state '$state'. Allowed values: on, off" >&2
+      exit 1
+      ;;
+  esac
+
   local iface
   iface=$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}' || true)
-  if [[ -n "$iface" ]]; then
+  if [[ -n "$iface" && "$iface" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
     iw dev "$iface" set power_save "$state" 2>/dev/null || true
   fi
-  local nm_val=2
-  [[ "$state" == "on" || "$state" == "true" ]] && nm_val=3
-  mkdir -p /etc/NetworkManager/conf.d
-  cat <<CONF > /etc/NetworkManager/conf.d/omarchy-wifi-powersave.conf
-[connection]
-wifi.powersave = $nm_val
-CONF
+
+  local content="[connection]
+wifi.powersave = $nm_val"
+  atomic_write_file /etc/NetworkManager/conf.d/omarchy-wifi-powersave.conf "$content"
 }
 
 apply_ethernet_managed() {
-  local dev="$1"
-  local mode="$2" # yes | no
+  local dev="${1:-}"
+  local mode="${2:-no}" # yes | no
+  validate_no_control_chars "$dev" "ethernet_dev"
+  validate_no_control_chars "$mode" "ethernet_mode"
   [[ -z "$dev" ]] && return 0
+
+  if [[ ! "$dev" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,14}$ ]]; then
+    echo "Error: Invalid ethernet interface name '$dev'" >&2
+    exit 1
+  fi
+
+  mode=$(echo "$mode" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$mode" in
+    yes|true|on|1) mode="yes" ;;
+    no|false|off|0) mode="no" ;;
+    *)
+      echo "Error: Invalid ethernet managed mode '$mode'. Allowed values: yes, no" >&2
+      exit 1
+      ;;
+  esac
 
   if command -v nmcli >/dev/null 2>&1; then
     nmcli device set "$dev" managed "$mode" 2>/dev/null || true
@@ -538,20 +660,28 @@ apply_ethernet_managed() {
 
   local conf="/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf"
   if [[ "$mode" == "no" ]]; then
-    mkdir -p /etc/NetworkManager/conf.d
-    cat <<CONF > "$conf"
-[keyfile]
-unmanaged-devices=interface-name:$dev
-CONF
+    local content="[keyfile]
+unmanaged-devices=interface-name:$dev"
+    atomic_write_file "$conf" "$content"
   else
     rm -f "$conf"
   fi
 }
 
 apply_pcie_ports_compat() {
-  local mode="$1" # on | off | true | false | add | remove
-  local conf="/etc/limine-entry-tool.d/t2-mac.conf"
+  local mode="${1:-}" # on | off
+  validate_no_control_chars "$mode" "pcie_ports_compat"
+  mode=$(echo "$mode" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$mode" in
+    on|true|add|yes|1) mode="on" ;;
+    off|false|remove|no|0) mode="off" ;;
+    *)
+      echo "Error: Invalid pcie_ports_compat mode '$mode'. Allowed values: on, off" >&2
+      exit 1
+      ;;
+  esac
 
+  local conf="/etc/limine-entry-tool.d/t2-mac.conf"
   python3 - "$conf" "$mode" <<'PYEOF'
 import sys
 import re
@@ -590,7 +720,7 @@ def add_compat(text):
         new_text = text + sep + 'KERNEL_CMDLINE[default]+=" pcie_ports=compat"\n'
     return new_text
 
-if mode in ("off", "false", "remove", "no"):
+if mode == "off":
     new_content = remove_compat(content)
 else:
     new_content = add_compat(content)
@@ -606,8 +736,25 @@ PYEOF
 }
 
 apply_mem_sleep() {
-  local val="$1" # deep | s2idle
+  local val="${1:-}" # deep | s2idle | standby | shallow
   local update_limine="${2:-true}"
+  validate_no_control_chars "$val" "mem_sleep"
+  validate_no_control_chars "$update_limine" "update_limine"
+
+  val=$(echo "$val" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$val" in
+    deep|s2idle|standby|shallow)
+      ;;
+    *)
+      echo "Error: Invalid mem_sleep mode '$val'. Allowed values: deep, s2idle, standby, shallow" >&2
+      exit 1
+      ;;
+  esac
+
+  case "$update_limine" in
+    true|false) ;;
+    *) update_limine="true" ;;
+  esac
 
   # 1. Active immediately in sysfs
   if [[ -w /sys/power/mem_sleep ]]; then
@@ -615,8 +762,7 @@ apply_mem_sleep() {
   fi
 
   # 2. tmpfiles.d persistence rule
-  mkdir -p /etc/tmpfiles.d
-  echo "w /sys/power/mem_sleep - - - - $val" > /etc/tmpfiles.d/omarchy-t2-mem-sleep.conf
+  atomic_write_file /etc/tmpfiles.d/omarchy-t2-mem-sleep.conf "w /sys/power/mem_sleep - - - - $val"
 
   # 3. systemd-sleep configuration
   mkdir -p /etc/systemd/sleep.conf.d
@@ -628,10 +774,9 @@ apply_mem_sleep() {
       sed -i "/\[Sleep\]/a MemorySleepMode=$val" "$cfg"
     fi
   else
-    cat <<CONF > "$cfg"
-[Sleep]
-MemorySleepMode=$val
-CONF
+    local content="[Sleep]
+MemorySleepMode=$val"
+    atomic_write_file "$cfg" "$content"
   fi
 
   # 4. Kernel command line persistence in /etc/limine-entry-tool.d/t2-mac.conf
@@ -679,7 +824,18 @@ PYEOF
 }
 
 apply_lid_action() {
-  local action="$1" # suspend | ignore | lock | hibernate
+  local action="${1:-}" # suspend | ignore | lock | hibernate | poweroff
+  validate_no_control_chars "$action" "lid_action"
+  action=$(echo "$action" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$action" in
+    suspend|ignore|lock|hibernate|poweroff|suspend-then-hibernate|hybrid-sleep)
+      ;;
+    *)
+      echo "Error: Invalid lid action '$action'. Allowed values: suspend, ignore, lock, hibernate, poweroff" >&2
+      exit 1
+      ;;
+  esac
+
   local target_action="$action"
   if [[ "$action" == "suspend" ]]; then
     local hib_delay
@@ -688,29 +844,58 @@ apply_lid_action() {
       target_action="suspend-then-hibernate"
     fi
   fi
-  mkdir -p /etc/systemd/logind.conf.d
-  cat <<CONF > /etc/systemd/logind.conf.d/30-t2-lid.conf
-[Login]
-HandleLidSwitch=$target_action
-CONF
+
+  local content="[Login]
+HandleLidSwitch=$target_action"
+  atomic_write_file /etc/systemd/logind.conf.d/30-t2-lid.conf "$content"
   systemctl kill -s HUP systemd-logind 2>/dev/null || true
 }
 
 apply_clamshell() {
-  local enable="$1" # true | false
+  local enable="${1:-}" # true | false
+  validate_no_control_chars "$enable" "clamshell"
+  enable=$(echo "$enable" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
   local mode="ignore"
-  [[ "$enable" == "false" ]] && mode="suspend"
-  mkdir -p /etc/systemd/logind.conf.d
-  cat <<CONF > /etc/systemd/logind.conf.d/35-t2-clamshell.conf
-[Login]
+  case "$enable" in
+    true|on|yes|1) mode="ignore" ;;
+    false|off|no|0) mode="suspend" ;;
+    *)
+      echo "Error: Invalid clamshell setting '$enable'. Allowed values: true, false" >&2
+      exit 1
+      ;;
+  esac
+
+  local content="[Login]
 HandleLidSwitchExternalPower=$mode
-HandleLidSwitchDocked=$mode
-CONF
+HandleLidSwitchDocked=$mode"
+  atomic_write_file /etc/systemd/logind.conf.d/35-t2-clamshell.conf "$content"
   systemctl kill -s HUP systemd-logind 2>/dev/null || true
 }
 
 apply_wake_toggle() {
-  local dev="$1" desired="$2" # on | off
+  local dev="${1:-}"
+  local desired="${2:-}" # on | off
+  validate_no_control_chars "$dev" "wake_dev"
+  validate_no_control_chars "$desired" "wake_desired"
+
+  case "$dev" in
+    LID0|ADP1) ;;
+    *)
+      echo "Error: Invalid wake device '$dev'. Allowed devices: LID0, ADP1" >&2
+      exit 1
+      ;;
+  esac
+
+  desired=$(echo "$desired" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$desired" in
+    on|true|yes|1) desired="on" ;;
+    off|false|no|0) desired="off" ;;
+    *)
+      echo "Error: Invalid wake desired state '$desired'. Allowed values: on, off" >&2
+      exit 1
+      ;;
+  esac
+
   local current
   current=$(get_wake_state "$dev")
   if [[ ("$desired" == "on" && "$current" == "false") || ("$desired" == "off" && "$current" == "true") ]]; then
@@ -719,38 +904,96 @@ apply_wake_toggle() {
 }
 
 apply_audio_powersave() {
-  local enable="$1" # true | false
+  local enable="${1:-}" # true | false
+  validate_no_control_chars "$enable" "audio_powersave"
+  enable=$(echo "$enable" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
   local val=1
-  [[ "$enable" == "false" ]] && val=0
+  case "$enable" in
+    true|on|yes|1) val=1 ;;
+    false|off|no|0) val=0 ;;
+    *)
+      echo "Error: Invalid audio_powersave setting '$enable'. Allowed values: true, false" >&2
+      exit 1
+      ;;
+  esac
+
   if [[ -w /sys/module/snd_hda_intel/parameters/power_save ]]; then
     echo "$val" > /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || true
   fi
-  mkdir -p /etc/modprobe.d
-  cat <<CONF > /etc/modprobe.d/omarchy-t2-audio.conf
-options snd_hda_intel power_save=$val power_save_controller=$([[ $val -gt 0 ]] && echo Y || echo N)
-CONF
+
+  local controller_val="N"
+  [[ $val -gt 0 ]] && controller_val="Y"
+  local content="options snd_hda_intel power_save=$val power_save_controller=$controller_val"
+  atomic_write_file /etc/modprobe.d/omarchy-t2-audio.conf "$content"
 }
 
 apply_usb_autosuspend() {
-  local enable="$1" # true | false
+  local enable="${1:-}" # true | false
+  validate_no_control_chars "$enable" "usb_autosuspend"
+  enable=$(echo "$enable" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
   local val=2
-  [[ "$enable" == "false" ]] && val=-1
+  case "$enable" in
+    true|on|yes|1) val=2 ;;
+    false|off|no|0) val=-1 ;;
+    *)
+      echo "Error: Invalid usb_autosuspend setting '$enable'. Allowed values: true, false" >&2
+      exit 1
+      ;;
+  esac
+
   if [[ -w /sys/module/usbcore/parameters/autosuspend ]]; then
     echo "$val" > /sys/module/usbcore/parameters/autosuspend 2>/dev/null || true
   fi
-  mkdir -p /etc/modprobe.d
-  cat <<CONF > /etc/modprobe.d/omarchy-usb-autosuspend.conf
-options usbcore autosuspend=$val
-CONF
+
+  local content="options usbcore autosuspend=$val"
+  atomic_write_file /etc/modprobe.d/omarchy-usb-autosuspend.conf "$content"
 }
 
 apply_hibernate_delay() {
-  local delay="$1" # off | 30min | 1hour | 2hours
-  mkdir -p /etc/systemd/sleep.conf.d
+  local delay="${1:-off}" # off | 30min | 1hour | 2hours | seconds
+  validate_no_control_chars "$delay" "hibernate_delay"
+  delay=$(echo "$delay" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+
+  local sec=0
+  case "$delay" in
+    off|0|never|false)
+      sec=0
+      ;;
+    15min|15m|900|900s)
+      sec=900
+      ;;
+    30min|30m|1800|1800s)
+      sec=1800
+      ;;
+    1hour|1h|60min|60m|3600|3600s)
+      sec=3600
+      ;;
+    2hours|2h|120min|120m|7200|7200s)
+      sec=7200
+      ;;
+    4hours|4h|14400|14400s)
+      sec=14400
+      ;;
+    8hours|8h|28800|28800s)
+      sec=28800
+      ;;
+    24hours|24h|86400|86400s)
+      sec=86400
+      ;;
+    *)
+      if [[ "$delay" =~ ^[0-9]+$ ]] && (( delay >= 0 && delay <= 604800 )); then
+        sec="$delay"
+      else
+        echo "Error: Invalid hibernate delay '$delay'. Allowed values: off, 30min, 1hour, 2hours, or numeric seconds (0-604800)" >&2
+        exit 1
+      fi
+      ;;
+  esac
+
   local cfg="/etc/systemd/sleep.conf.d/30-t2-sleep.conf"
   local lid_cfg="/etc/systemd/logind.conf.d/30-t2-lid.conf"
 
-  if [[ "$delay" == "off" || "$delay" == "0" ]]; then
+  if [[ "$sec" -eq 0 ]]; then
     if [[ -f "$cfg" ]]; then
       sed -i '/HibernateDelaySec=/d' "$cfg"
     fi
@@ -759,37 +1002,33 @@ apply_hibernate_delay() {
       systemctl kill -s HUP systemd-logind 2>/dev/null || true
     fi
   else
-    local sec="1800"
-    case "$delay" in
-      30min|30m|1800) sec="1800" ;;
-      1hour|1h|3600)  sec="3600" ;;
-      2hours|2h|7200) sec="7200" ;;
-    esac
+    mkdir -p /etc/systemd/sleep.conf.d
     if [[ -f "$cfg" ]] && grep -q "\[Sleep\]" "$cfg" 2>/dev/null; then
       sed -i '/HibernateDelaySec=/d' "$cfg"
       sed -i "/\[Sleep\]/a HibernateDelaySec=$sec" "$cfg"
     else
-      cat <<CONF >> "$cfg"
-[Sleep]
-HibernateDelaySec=$sec
-CONF
+      local content="[Sleep]
+HibernateDelaySec=$sec"
+      atomic_write_file "$cfg" "$content"
     fi
 
-    mkdir -p /etc/systemd/logind.conf.d
-    if [[ ! -f "$lid_cfg" ]] || grep -q -E "HandleLidSwitch=(suspend|suspend-then-hibernate)" "$lid_cfg" 2>/dev/null; then
-      cat <<CONF > "$lid_cfg"
-[Login]
-HandleLidSwitch=suspend-then-hibernate
-CONF
-      systemctl kill -s HUP systemd-logind 2>/dev/null || true
-    fi
+    local lid_content="[Login]
+HandleLidSwitch=suspend-then-hibernate"
+    atomic_write_file "$lid_cfg" "$lid_content"
+    systemctl kill -s HUP systemd-logind 2>/dev/null || true
   fi
 }
 
 install_system_helper() {
+  if [[ ! -f "$PLUGIN_ROOT/scripts/t2-helper" || ! -f "$PLUGIN_ROOT/system/90-omarchy-t2-linux.rules" ]]; then
+    echo "Error: Cannot locate helper source files in $PLUGIN_ROOT" >&2
+    exit 1
+  fi
   mkdir -p /usr/local/libexec /etc/polkit-1/rules.d
   install -Dm755 "$PLUGIN_ROOT/scripts/t2-helper" "$SYSTEM_HELPER"
-  install -Dm755 "$PLUGIN_ROOT/scripts/t2-plugins-helper.py" /usr/local/libexec/t2-plugins-helper.py
+  if [[ -f "$PLUGIN_ROOT/scripts/t2-plugins-helper.py" ]]; then
+    install -Dm755 "$PLUGIN_ROOT/scripts/t2-plugins-helper.py" /usr/local/libexec/t2-plugins-helper.py
+  fi
   install -Dm644 "$PLUGIN_ROOT/system/90-omarchy-t2-linux.rules" "/etc/polkit-1/rules.d/90-omarchy-t2-linux.rules"
   echo "Installed system helper, plugins helper, and polkit rules successfully."
 }
@@ -802,6 +1041,11 @@ uninstall_system_helper() {
 # ---------------------------------------------------------------------------
 # CLI Command Dispatcher
 # ---------------------------------------------------------------------------
+
+# Validate all incoming command-line arguments against control characters / newlines
+for arg in "$@"; do
+  validate_no_control_chars "$arg" "Argument"
+done
 
 case "${1:-status}" in
   status)
@@ -822,6 +1066,8 @@ case "${1:-status}" in
     shift
     key="${1:-}"
     val="${2:-}"
+    validate_no_control_chars "$key" "set_key"
+    validate_no_control_chars "$val" "set_val"
     case "$key" in
       epp)
         save_user_setting "epp" "$val"
@@ -919,31 +1165,31 @@ case "${1:-status}" in
     ;;
 
   apply-epp)
-    shift; apply_epp "$1" ;;
+    shift; apply_epp "${1:-}" ;;
   apply-aspm)
-    shift; apply_aspm "$1" ;;
+    shift; apply_aspm "${1:-}" ;;
   apply-wifi-powersave)
-    shift; apply_wifi_powersave "$1" ;;
+    shift; apply_wifi_powersave "${1:-}" ;;
   apply-ethernet-managed)
-    shift; apply_ethernet_managed "$1" "$2" ;;
+    shift; apply_ethernet_managed "${1:-}" "${2:-}" ;;
   apply-pcie-ports-compat)
-    shift; apply_pcie_ports_compat "$1" ;;
+    shift; apply_pcie_ports_compat "${1:-}" ;;
   apply-mem-sleep)
-    shift; apply_mem_sleep "$1" ;;
+    shift; apply_mem_sleep "${1:-}" "${2:-true}" ;;
   apply-lid-action)
-    shift; apply_lid_action "$1" ;;
+    shift; apply_lid_action "${1:-}" ;;
   apply-clamshell)
-    shift; apply_clamshell "$1" ;;
+    shift; apply_clamshell "${1:-}" ;;
   apply-wake-lid)
-    shift; apply_wake_toggle "LID0" "$1" ;;
+    shift; apply_wake_toggle "LID0" "${1:-}" ;;
   apply-wake-ac)
-    shift; apply_wake_toggle "ADP1" "$1" ;;
+    shift; apply_wake_toggle "ADP1" "${1:-}" ;;
   apply-audio-powersave)
-    shift; apply_audio_powersave "$1" ;;
+    shift; apply_audio_powersave "${1:-}" ;;
   apply-usb-autosuspend)
-    shift; apply_usb_autosuspend "$1" ;;
+    shift; apply_usb_autosuspend "${1:-}" ;;
   apply-hibernate-delay)
-    shift; apply_hibernate_delay "$1" ;;
+    shift; apply_hibernate_delay "${1:-}" ;;
   apply-recommended)
     save_user_setting "kbdTimeout" "1m"
     save_user_setting "touchbarBlank" "true"
@@ -979,30 +1225,50 @@ case "${1:-status}" in
     uninstall_system_helper ;;
 
   plugins-list|plugins)
+    if (( EUID == 0 )); then
+      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
+      exit 1
+    fi
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"t2-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 "$helper_py" list "$@"
     ;;
   plugin-install)
+    if (( EUID == 0 )); then
+      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
+      exit 1
+    fi
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"t2-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 "$helper_py" install "$@"
     ;;
   plugin-update)
+    if (( EUID == 0 )); then
+      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
+      exit 1
+    fi
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"t2-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 "$helper_py" update "$@"
     ;;
   plugin-remove)
+    if (( EUID == 0 )); then
+      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
+      exit 1
+    fi
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"t2-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 "$helper_py" remove "$@"
     ;;
   plugin-toggle)
+    if (( EUID == 0 )); then
+      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
+      exit 1
+    fi
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"t2-plugins-helper.py not found"}' >&2; exit 1; }
