@@ -38,7 +38,8 @@ function emptyStatus() {
     keybindingFind: "CTRL + F",
     keybindingFullscreen: "SUPER + F",
     keybindingUndo: "CTRL + Z",
-    keybindingRedo: "CTRL + SHIFT + Z"
+    keybindingRedo: "CTRL + SHIFT + Z",
+    keybindingSave: "CTRL + S"
   };
 }
 
@@ -87,6 +88,7 @@ function parseStatus(raw) {
       data.keybindingFullscreen = data.keybindingFullscreen ? String(data.keybindingFullscreen).trim() : "SUPER + F";
       data.keybindingUndo = data.keybindingUndo ? String(data.keybindingUndo).trim() : "CTRL + Z";
       data.keybindingRedo = data.keybindingRedo ? String(data.keybindingRedo).trim() : "CTRL + SHIFT + Z";
+      data.keybindingSave = data.keybindingSave ? String(data.keybindingSave).trim() : "CTRL + S";
 
       if (data.hibernateDelay !== undefined) {
         var hd = String(data.hibernateDelay).toLowerCase().trim();
@@ -331,6 +333,7 @@ function getTaskFriendlyName(taskKey) {
   if (key === "keybindingfullscreen") return "Toggle Fullscreen";
   if (key === "keybindingundo") return "Undo";
   if (key === "keybindingredo") return "Redo";
+  if (key === "keybindingsave") return "Save";
   return taskKey || "Keybinding";
 }
 
@@ -355,6 +358,9 @@ function getRecommendedAlternative(taskKey, conflictingChord) {
   if (key === "keybindingredo") {
     return (norm === normalizeChord("SUPER + SHIFT + Z")) ? "CTRL + SHIFT + Z" : "SUPER + SHIFT + Z";
   }
+  if (key === "keybindingsave") {
+    return (norm === normalizeChord("SUPER + S")) ? "CTRL + S" : "SUPER + S";
+  }
   return "";
 }
 
@@ -365,7 +371,8 @@ function findPluginConflict(targetTaskKey, newChord, currentStatus) {
     { key: "keybinding_find", name: "Find in Document", chord: (currentStatus && currentStatus.keybindingFind) ? currentStatus.keybindingFind : "CTRL + F" },
     { key: "keybinding_fullscreen", name: "Toggle Fullscreen", chord: (currentStatus && currentStatus.keybindingFullscreen) ? currentStatus.keybindingFullscreen : "SUPER + F" },
     { key: "keybinding_undo", name: "Undo", chord: (currentStatus && currentStatus.keybindingUndo) ? currentStatus.keybindingUndo : "CTRL + Z" },
-    { key: "keybinding_redo", name: "Redo", chord: (currentStatus && currentStatus.keybindingRedo) ? currentStatus.keybindingRedo : "CTRL + SHIFT + Z" }
+    { key: "keybinding_redo", name: "Redo", chord: (currentStatus && currentStatus.keybindingRedo) ? currentStatus.keybindingRedo : "CTRL + SHIFT + Z" },
+    { key: "keybinding_save", name: "Save", chord: (currentStatus && currentStatus.keybindingSave) ? currentStatus.keybindingSave : "CTRL + S" }
   ];
 
   var normTarget = normalizeChord(newChord);
@@ -428,7 +435,7 @@ function findSystemConflict(targetTaskKey, newChord, currentStatus) {
         continue;
       }
       // If this is the plugin task's own counterpart, ignore
-      if (actNorm2 === friendly || (actNorm2 === "fullscreen" && friendly === "togglefullscreen") || (actNorm2 === "find" && friendly === "findindocument") || (actNorm2 === "selectall" && friendly === "selectall") || (actNorm2 === "undo" && friendly === "undo") || (actNorm2 === "redo" && friendly === "redo")) {
+      if (actNorm2 === friendly || (actNorm2 === "fullscreen" && friendly === "togglefullscreen") || (actNorm2 === "find" && friendly === "findindocument") || (actNorm2 === "selectall" && friendly === "selectall") || (actNorm2 === "undo" && friendly === "undo") || (actNorm2 === "redo" && friendly === "redo") || (actNorm2 === "save" && friendly === "save") || (actNorm2 === "delete" && friendly === "forwarddelete")) {
         continue;
       }
       return {
@@ -470,7 +477,8 @@ function getActiveConflicts(status) {
     { key: "keybinding_find", prop: "keybindingFind", name: "Find in Document", chord: (status && status.keybindingFind) ? status.keybindingFind : "CTRL + F" },
     { key: "keybinding_fullscreen", prop: "keybindingFullscreen", name: "Toggle Fullscreen", chord: (status && status.keybindingFullscreen) ? status.keybindingFullscreen : "SUPER + F" },
     { key: "keybinding_undo", prop: "keybindingUndo", name: "Undo", chord: (status && status.keybindingUndo) ? status.keybindingUndo : "CTRL + Z" },
-    { key: "keybinding_redo", prop: "keybindingRedo", name: "Redo", chord: (status && status.keybindingRedo) ? status.keybindingRedo : "CTRL + SHIFT + Z" }
+    { key: "keybinding_redo", prop: "keybindingRedo", name: "Redo", chord: (status && status.keybindingRedo) ? status.keybindingRedo : "CTRL + SHIFT + Z" },
+    { key: "keybinding_save", prop: "keybindingSave", name: "Save", chord: (status && status.keybindingSave) ? status.keybindingSave : "CTRL + S" }
   ];
 
   // 1. Check pairwise intra-plugin conflicts
@@ -504,7 +512,7 @@ function getActiveConflicts(status) {
   // 2. Check plugin tasks vs system keybindings
   var overrides = status.systemKeybindingOverrides || {};
   var systemMap = status.systemKeybindings || {};
-  var pluginActionNorms = ["togglefullscreen", "fullscreen", "findindocument", "find", "selectall", "undo", "redo"];
+  var pluginActionNorms = ["togglefullscreen", "fullscreen", "findindocument", "find", "selectall", "undo", "redo", "save", "forwarddelete", "delete"];
 
   for (var k = 0; k < tasks.length; k++) {
     var task = tasks[k];
@@ -576,4 +584,79 @@ function getActiveConflicts(status) {
   }
 
   return conflicts;
+}
+
+function areAllMacShortcutsApplied(status) {
+  if (!status) return false;
+  var sel = normalizeChord(status.keybindingSelectAll);
+  var del = normalizeChord(status.keybindingDelete);
+  var find = normalizeChord(status.keybindingFind);
+  var full = normalizeChord(status.keybindingFullscreen);
+  var undo = normalizeChord(status.keybindingUndo);
+  var redo = normalizeChord(status.keybindingRedo);
+  var save = normalizeChord(status.keybindingSave);
+
+  return (
+    sel === normalizeChord("SUPER + A") &&
+    del === normalizeChord("SUPER + BACKSPACE") &&
+    find === normalizeChord("SUPER + F") &&
+    full === normalizeChord("SUPER + CTRL + F") &&
+    undo === normalizeChord("SUPER + Z") &&
+    redo === normalizeChord("SUPER + SHIFT + Z") &&
+    save === normalizeChord("SUPER + S")
+  );
+}
+
+function areAllSuspendRecommendedApplied(status) {
+  if (!status) return false;
+  var mem = String(status.memSleep || "").toLowerCase();
+  var lid = String(status.lidAction || "").toLowerCase();
+  var clam = Boolean(status.clamshellMode);
+  var wakeLid = Boolean(status.wakeOnLid);
+  var wakeAc = Boolean(status.wakeOnAc);
+  var hib = String(status.hibernateDelay || "").toLowerCase();
+  var tb = Boolean(status.touchbarBlank);
+
+  var memOk = true;
+  if (status.memSleepModes && status.memSleepModes.indexOf("deep") !== -1) {
+    memOk = (mem === "deep");
+  }
+
+  return (
+    memOk &&
+    (lid === "suspend" || lid === "suspend-then-hibernate") &&
+    clam === true &&
+    wakeLid === true &&
+    wakeAc === false &&
+    (hib === "off" || hib === "0" || hib === "never") &&
+    tb === true
+  );
+}
+
+function areAllBatteryRecommendedApplied(status) {
+  if (!status) return false;
+  var wifi = Boolean(status.wifiPowerSave);
+  var audio = Boolean(status.audioPowerSave);
+  var usb = Boolean(status.usbAutosuspend);
+  var pcie = Boolean(status.pciePortsCompat);
+  var kbd = String(status.kbdTimeout || "").toLowerCase();
+
+  var ethOk = true;
+  if (Array.isArray(status.inactiveEthernet) && status.inactiveEthernet.length > 0) {
+    for (var i = 0; i < status.inactiveEthernet.length; i++) {
+      if (status.inactiveEthernet[i].managed) {
+        ethOk = false;
+        break;
+      }
+    }
+  }
+
+  return (
+    wifi === false &&
+    audio === true &&
+    usb === true &&
+    pcie === true &&
+    kbd === "1m" &&
+    ethOk
+  );
 }

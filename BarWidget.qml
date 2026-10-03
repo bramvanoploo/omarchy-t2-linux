@@ -13,7 +13,8 @@ BarWidget {
 
   property bool opened: false
   property var status: Model.emptyStatus()
-  property int activeTab: 0 // 0 = "Battery life", 1 = "Suspend behaviour", 2 = "Keybindings", 3 = "Sound", 4 = "Plugins"
+  property int activeTab: 0
+  readonly property string currentTabId: (tabs && tabs[activeTab] ? tabs[activeTab].id : "battery")
   property bool nonT2DialogOpen: false
   property bool applying: false
   property string lastNotice: ""
@@ -61,7 +62,7 @@ BarWidget {
     { id: "battery", title: "Battery life", icon: "󰁹", desc: "Energy & power settings" },
     { id: "suspend", title: "Suspend behaviour", icon: "󰤄", desc: "Sleep states & lid actions" },
     { id: "keybindings", title: "Keybindings", icon: "󰌘", desc: "Keyboard shortcuts & layout" },
-    { id: "sound", title: "Sound", icon: "󰕾", desc: "Audio devices & configuration" },
+    // { id: "sound", title: "Sound", icon: "󰕾", desc: "Audio devices & configuration" }, // Hidden for now
     { id: "plugins", title: "Plugins", icon: "󰏓", desc: "T2 community plugins" }
   ]
 
@@ -208,6 +209,44 @@ BarWidget {
       s.kbdTimeout = "1m"
       s.pciePortsCompat = true
       s.recommendedPromptShown = true
+      s.keybindingSelectAll = "SUPER + A"
+      s.keybindingDelete = "SUPER + BACKSPACE"
+      s.keybindingFind = "SUPER + F"
+      s.keybindingFullscreen = "SUPER + CTRL + F"
+      s.keybindingUndo = "SUPER + Z"
+      s.keybindingRedo = "SUPER + SHIFT + Z"
+      s.keybindingSave = "SUPER + S"
+
+      var ov = Object.assign({}, s.systemKeybindingOverrides || {})
+      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S"]
+      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save"]
+      if (s.systemKeybindings) {
+        for (var rc = 0; rc < recChords.length; rc++) {
+          var rNorm = Model.normalizeChord(recChords[rc])
+          var sysKeys = Object.keys(s.systemKeybindings)
+          for (var sk = 0; sk < sysKeys.length; sk++) {
+            var sysChord = sysKeys[sk]
+            if (Model.normalizeChord(sysChord) === rNorm) {
+              var sItem = s.systemKeybindings[sysChord]
+              var sAct = sItem.action || ""
+              var sActNorm = sAct.toLowerCase().replace(/\s+/g, "")
+              if (recTaskNames.indexOf(sActNorm) === -1) {
+                var recAlt = sItem.recommendedChord || ("SUPER + ALT + " + rNorm.split("+").pop().trim())
+                ov[sAct] = {
+                  action: sAct,
+                  defaultChord: sItem.defaultChord || sysChord,
+                  currentChord: recAlt,
+                  recommendedChord: recAlt,
+                  dispatcher: sItem.dispatcher || "exec",
+                  arg: sItem.arg || ""
+                }
+              }
+            }
+          }
+        }
+      }
+      s.systemKeybindingOverrides = ov
+
       if (s.inactiveEthernet) {
         s.inactiveEthernet = s.inactiveEthernet.map(function(item) {
           return { device: item.device, managed: false, state: "unmanaged" }
@@ -217,8 +256,106 @@ BarWidget {
     }
 
     noticeTimer.stop()
-    root.lastNotice = "Applying recommended power and suspend settings…"
+    root.lastNotice = "Applying recommended power, suspend, and keybinding settings…"
     limineProc.command = ["bash", helper, "apply-recommended"]
+    limineProc.running = true
+  }
+
+  function applyRecommendedSuspend() {
+    if (root.limineUpdating || limineProc.running) return
+    root.limineUpdating = true
+    noticeTimer.stop()
+
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      if (s.memSleepModes && s.memSleepModes.indexOf("deep") !== -1) {
+        s.memSleep = "deep"
+      }
+      s.lidAction = "suspend"
+      s.clamshellMode = true
+      s.wakeOnLid = true
+      s.wakeOnAc = false
+      s.hibernateDelay = "off"
+      s.touchbarBlank = true
+      root.status = s
+    }
+
+    root.lastNotice = "Applying recommended suspend settings…"
+    limineProc.command = ["bash", helper, "apply-recommended-suspend"]
+    limineProc.running = true
+  }
+
+  function resetSuspendToDefaults() {
+    if (root.limineUpdating || limineProc.running) return
+    root.limineUpdating = true
+    noticeTimer.stop()
+
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      if (s.memSleepModes && s.memSleepModes.indexOf("s2idle") !== -1) {
+        s.memSleep = "s2idle"
+      }
+      s.lidAction = "suspend"
+      s.clamshellMode = false
+      s.wakeOnLid = false
+      s.wakeOnAc = true
+      s.hibernateDelay = "off"
+      s.touchbarBlank = false
+      root.status = s
+    }
+
+    root.lastNotice = "Restoring suspend settings to defaults…"
+    limineProc.command = ["bash", helper, "reset-suspend-to-defaults"]
+    limineProc.running = true
+  }
+
+  function applyRecommendedBattery() {
+    if (root.limineUpdating || limineProc.running) return
+    root.limineUpdating = true
+    noticeTimer.stop()
+
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      s.wifiPowerSave = false
+      s.audioPowerSave = true
+      s.usbAutosuspend = true
+      s.pciePortsCompat = true
+      s.kbdTimeout = "1m"
+      if (s.inactiveEthernet) {
+        s.inactiveEthernet = s.inactiveEthernet.map(function(item) {
+          return { device: item.device, managed: false, state: "unmanaged" }
+        })
+      }
+      root.status = s
+    }
+
+    root.lastNotice = "Applying recommended battery life settings…"
+    limineProc.command = ["bash", helper, "apply-recommended-battery"]
+    limineProc.running = true
+  }
+
+  function resetBatteryToDefaults() {
+    if (root.limineUpdating || limineProc.running) return
+    root.limineUpdating = true
+    noticeTimer.stop()
+
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      s.wifiPowerSave = true
+      s.audioPowerSave = false
+      s.usbAutosuspend = false
+      s.pciePortsCompat = false
+      s.kbdTimeout = "off"
+      if (s.inactiveEthernet) {
+        s.inactiveEthernet = s.inactiveEthernet.map(function(item) {
+          return { device: item.device, managed: true, state: "managed" }
+        })
+      }
+      root.status = s
+    }
+
+    root.lastNotice = "Restoring battery settings to defaults…"
+    limineProc.command = ["bash", helper, "reset-battery-to-defaults"]
     limineProc.running = true
   }
 
@@ -299,6 +436,8 @@ BarWidget {
         s.keybindingUndo = val
       } else if (key === "keybinding_redo") {
         s.keybindingRedo = val
+      } else if (key === "keybinding_save") {
+        s.keybindingSave = val
       }
       root.status = s
     }
@@ -443,6 +582,7 @@ BarWidget {
           else if (tKey === "keybinding_fullscreen") s.keybindingFullscreen = tChord
           else if (tKey === "keybinding_undo") s.keybindingUndo = tChord
           else if (tKey === "keybinding_redo") s.keybindingRedo = tChord
+          else if (tKey === "keybinding_save") s.keybindingSave = tChord
 
           var ov = Object.assign({}, s.systemKeybindingOverrides || {})
           ov[action] = {
@@ -489,6 +629,7 @@ BarWidget {
         else if (task === "keybinding_fullscreen") s2.keybindingFullscreen = chord
         else if (task === "keybinding_undo") s2.keybindingUndo = chord
         else if (task === "keybinding_redo") s2.keybindingRedo = chord
+        else if (task === "keybinding_save") s2.keybindingSave = chord
 
         if (tKey2 === "keybinding_select_all") s2.keybindingSelectAll = tChord2
         else if (tKey2 === "keybinding_delete") s2.keybindingDelete = tChord2
@@ -496,6 +637,7 @@ BarWidget {
         else if (tKey2 === "keybinding_fullscreen") s2.keybindingFullscreen = tChord2
         else if (tKey2 === "keybinding_undo") s2.keybindingUndo = tChord2
         else if (tKey2 === "keybinding_redo") s2.keybindingRedo = tChord2
+        else if (tKey2 === "keybinding_save") s2.keybindingSave = tChord2
 
         root.status = s2
       }
@@ -593,6 +735,7 @@ BarWidget {
         else if (targetKey === "keybinding_fullscreen") s.keybindingFullscreen = targetChord
         else if (targetKey === "keybinding_undo") s.keybindingUndo = targetChord
         else if (targetKey === "keybinding_redo") s.keybindingRedo = targetChord
+        else if (targetKey === "keybinding_save") s.keybindingSave = targetChord
 
         var overrides = Object.assign({}, s.systemKeybindingOverrides || {})
         overrides[sysAction] = {
@@ -621,6 +764,7 @@ BarWidget {
         else if (displacedKey === "keybinding_fullscreen") s2.keybindingFullscreen = displacedChord
         else if (displacedKey === "keybinding_undo") s2.keybindingUndo = displacedChord
         else if (displacedKey === "keybinding_redo") s2.keybindingRedo = displacedChord
+        else if (displacedKey === "keybinding_save") s2.keybindingSave = displacedChord
 
         if (targetKey === "keybinding_select_all") s2.keybindingSelectAll = targetChord
         else if (targetKey === "keybinding_delete") s2.keybindingDelete = targetChord
@@ -628,6 +772,7 @@ BarWidget {
         else if (targetKey === "keybinding_fullscreen") s2.keybindingFullscreen = targetChord
         else if (targetKey === "keybinding_undo") s2.keybindingUndo = targetChord
         else if (targetKey === "keybinding_redo") s2.keybindingRedo = targetChord
+        else if (targetKey === "keybinding_save") s2.keybindingSave = targetChord
 
         root.status = s2
       }
@@ -753,6 +898,85 @@ BarWidget {
         conflictDialogCatcher.forceActiveFocus()
       }
     })
+  }
+
+  function applyRecommendedKeybindings() {
+    if (actionProc.running) actionProc.running = false
+    root.applying = true
+    noticeTimer.stop()
+
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      s.keybindingSelectAll = "SUPER + A"
+      s.keybindingDelete = "SUPER + BACKSPACE"
+      s.keybindingFind = "SUPER + F"
+      s.keybindingFullscreen = "SUPER + CTRL + F"
+      s.keybindingUndo = "SUPER + Z"
+      s.keybindingRedo = "SUPER + SHIFT + Z"
+      s.keybindingSave = "SUPER + S"
+
+      var ov = Object.assign({}, s.systemKeybindingOverrides || {})
+      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S"]
+      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save"]
+      if (s.systemKeybindings) {
+        for (var rc = 0; rc < recChords.length; rc++) {
+          var rNorm = Model.normalizeChord(recChords[rc])
+          var sysKeys = Object.keys(s.systemKeybindings)
+          for (var sk = 0; sk < sysKeys.length; sk++) {
+            var sysChord = sysKeys[sk]
+            if (Model.normalizeChord(sysChord) === rNorm) {
+              var sItem = s.systemKeybindings[sysChord]
+              var sAct = sItem.action || ""
+              var sActNorm = sAct.toLowerCase().replace(/\s+/g, "")
+              if (recTaskNames.indexOf(sActNorm) === -1) {
+                var recAlt = sItem.recommendedChord || ("SUPER + ALT + " + rNorm.split("+").pop().trim())
+                ov[sAct] = {
+                  action: sAct,
+                  defaultChord: sItem.defaultChord || sysChord,
+                  currentChord: recAlt,
+                  recommendedChord: recAlt,
+                  dispatcher: sItem.dispatcher || "exec",
+                  arg: sItem.arg || ""
+                }
+              }
+            }
+          }
+        }
+      }
+      s.systemKeybindingOverrides = ov
+      root.status = s
+    }
+
+    root.lastNotice = "Applied recommended Mac shortcuts."
+    noticeTimer.restart()
+
+    actionProc.command = ["bash", helper, "apply-recommended-keybindings"]
+    actionProc.running = true
+  }
+
+  function resetKeybindingsToDefaults() {
+    if (actionProc.running) actionProc.running = false
+    root.applying = true
+    noticeTimer.stop()
+
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      s.keybindingSelectAll = "CTRL + A"
+      s.keybindingDelete = "DELETE"
+      s.keybindingFind = "CTRL + F"
+      s.keybindingFullscreen = "SUPER + F"
+      s.keybindingUndo = "CTRL + Z"
+      s.keybindingRedo = "CTRL + SHIFT + Z"
+      s.keybindingSave = "CTRL + S"
+      s.systemKeybindingOverrides = {}
+      root.status = s
+    }
+
+    root.lastNotice = "Restored keybindings to system defaults."
+    noticeTimer.restart()
+
+    actionProc.command = ["bash", helper, "reset-keybindings-to-defaults"]
+    actionProc.running = true
   }
 
   function applyKeyOverride() {
@@ -1580,15 +1804,17 @@ BarWidget {
                     // Category Title Header
                     Item {
                       width: parent.width
-                      height: Style.space(36)
+                      height: Math.max(Style.space(38), tabRecBtn.implicitHeight)
 
                       Column {
                         anchors.left: parent.left
+                        anchors.right: tabRecRow.left
+                        anchors.rightMargin: Style.space(12)
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: Style.space(2)
 
                         Text {
-                          text: root.tabs[root.activeTab].title.toUpperCase()
+                          text: (root.tabs && root.tabs[root.activeTab]) ? root.tabs[root.activeTab].title.toUpperCase() : ""
                           color: root.accent
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.subtitle
@@ -1597,29 +1823,71 @@ BarWidget {
                         }
 
                         Text {
-                          text: root.activeTab === 0
+                          text: root.currentTabId === "battery"
                             ? "Optimize power consumption, battery health, and background device drain."
-                            : (root.activeTab === 1
+                            : (root.currentTabId === "suspend"
                                 ? "Fine-tune sleep modes, lid behavior, and wake triggers for your MacBook."
-                                : (root.activeTab === 2
+                                : (root.currentTabId === "keybindings"
                                     ? "Configure Apple T2 keyboard shortcuts, function keys, and layout options."
-                                    : (root.activeTab === 3
+                                    : (root.currentTabId === "sound"
                                         ? "Manage Apple T2 audio outputs, power saving, and sound profiles."
                                         : "Discover, install, update, and remove T2-optimized plugins from plugins.omarchy.org.")))
                           color: root.dim
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
+                          elide: Text.ElideRight
+                          width: parent.width
                         }
                       }
 
-                      Text {
+                      Row {
+                        id: tabRecRow
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: root.lastNotice !== ""
-                        text: root.lastNotice
-                        color: Color.accent
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
+                        spacing: Style.space(10)
+
+                        Text {
+                          visible: root.lastNotice !== ""
+                          text: root.lastNotice
+                          color: Color.accent
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Button {
+                          id: tabRecBtn
+                          visible: root.currentTabId === "battery" || root.currentTabId === "suspend" || root.currentTabId === "keybindings"
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          readonly property bool allApplied: {
+                            if (root.currentTabId === "battery") return Model.areAllBatteryRecommendedApplied(root.status)
+                            if (root.currentTabId === "suspend") return Model.areAllSuspendRecommendedApplied(root.status)
+                            if (root.currentTabId === "keybindings") return Model.areAllMacShortcutsApplied(root.status)
+                            return false
+                          }
+
+                          iconText: allApplied ? "󰁌" : (root.currentTabId === "keybindings" ? "" : (root.currentTabId === "battery" ? "󰁹" : "󰤄"))
+                          text: allApplied ? "Reset to Defaults" : "Apply Recommended Defaults"
+                          tooltipText: allApplied
+                            ? ("Reset " + (root.tabs && root.tabs[root.activeTab] ? root.tabs[root.activeTab].title.toLowerCase() : "tab") + " to system defaults")
+                            : ("Set " + (root.tabs && root.tabs[root.activeTab] ? root.tabs[root.activeTab].title.toLowerCase() : "tab") + " to recommended defaults")
+                          bordered: true
+                          fontSize: Style.font.caption
+                          iconSize: Style.font.bodySmall
+                          height: Style.space(30)
+                          accent: root.accent
+                          enabled: !root.limineUpdating
+                          onClicked: {
+                            if (root.currentTabId === "battery") {
+                              if (allApplied) root.resetBatteryToDefaults(); else root.applyRecommendedBattery();
+                            } else if (root.currentTabId === "suspend") {
+                              if (allApplied) root.resetSuspendToDefaults(); else root.applyRecommendedSuspend();
+                            } else if (root.currentTabId === "keybindings") {
+                              if (allApplied) root.resetKeybindingsToDefaults(); else root.applyRecommendedKeybindings();
+                            }
+                          }
+                        }
                       }
                     }
 
@@ -1633,7 +1901,7 @@ BarWidget {
                     // =========================================================
                     Column {
                       id: batteryTabContent
-                      visible: root.activeTab === 0
+                      visible: root.currentTabId === "battery"
                       width: parent.width
                       spacing: Style.space(12)
 
@@ -1648,9 +1916,7 @@ BarWidget {
                         Row {
                           id: batRow
                           anchors.left: parent.left
-                          anchors.right: parent.right
                           anchors.leftMargin: Style.space(16)
-                          anchors.rightMargin: Style.space(16)
                           anchors.verticalCenter: parent.verticalCenter
                           spacing: Style.space(20)
 
@@ -2173,9 +2439,57 @@ BarWidget {
                     // =========================================================
                     Column {
                       id: suspendTabContent
-                      visible: root.activeTab === 1
+                      visible: root.currentTabId === "suspend"
                       width: parent.width
                       spacing: Style.space(12)
+
+                      // Suspend Header & Recommended Defaults Card
+                      BorderSurface {
+                        width: parent.width
+                        height: suspHeaderCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(Color.accent, 0.08)
+                        borderSpec: Border.flat(Util.alpha(Color.accent, 0.3), 1)
+                        radius: Style.cornerRadius
+
+                        Column {
+                          id: suspHeaderCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(16)
+                          spacing: Style.space(6)
+
+                          Row {
+                            spacing: Style.space(10)
+
+                            Text {
+                              text: "󰤄"
+                              color: Color.accent
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.title
+                              anchors.verticalCenter: parent.verticalCenter
+                            }
+
+                            Text {
+                              text: "Apple T2 Suspend Behaviour"
+                              color: root.foreground
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.body
+                              font.bold: true
+                              anchors.verticalCenter: parent.verticalCenter
+                            }
+                          }
+
+                          Text {
+                            width: parent.width
+                            text: "Configure sleep states, lid behavior, and wake triggers tailored for MacBook hardware to optimize sleep wakeups."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            wrapMode: Text.WordWrap
+                          }
+                        }
+                      }
 
                       // 1. System Sleep Mode (mem_sleep)
                       BorderSurface {
@@ -2617,7 +2931,7 @@ BarWidget {
                     // =========================================================
                     Column {
                       id: keybindingsTabContent
-                      visible: root.activeTab === 2
+                      visible: root.currentTabId === "keybindings"
                       width: parent.width
                       spacing: Style.space(12)
 
@@ -2644,15 +2958,16 @@ BarWidget {
                               color: Color.accent
                               font.family: root.fontFamily
                               font.pixelSize: Style.font.title
+                              anchors.verticalCenter: parent.verticalCenter
                             }
 
                             Text {
-                              anchors.verticalCenter: parent.verticalCenter
                               text: "Apple T2 Keyboard & Keybindings"
                               color: root.foreground
                               font.family: root.fontFamily
                               font.pixelSize: Style.font.body
                               font.bold: true
+                              anchors.verticalCenter: parent.verticalCenter
                             }
                           }
 
@@ -2738,8 +3053,8 @@ BarWidget {
                               readonly property real btnWidth: (width - spacing * 2) / 3
 
                               readonly property string cur: root.status && root.status.keybindingSelectAll ? root.status.keybindingSelectAll : "CTRL + A"
-                              readonly property bool isMac: cur === "SUPER + A"
-                              readonly property bool isLinux: cur === "CTRL + A"
+                              readonly property bool isMac: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + A")
+                              readonly property bool isLinux: Model.normalizeChord(cur) === Model.normalizeChord("CTRL + A")
                               readonly property bool isCustom: !isMac && !isLinux
 
                               Button {
@@ -2836,9 +3151,9 @@ BarWidget {
                               spacing: Style.space(6)
                               readonly property real btnWidth: (width - spacing * 2) / 3
 
-                              readonly property string cur: root.status && root.status.keybindingDelete ? root.status.keybindingDelete : "SUPER + BACKSPACE"
-                              readonly property bool isMac: cur === "SUPER + BACKSPACE"
-                              readonly property bool isLinux: cur === "DELETE"
+                              readonly property string cur: root.status && root.status.keybindingDelete ? root.status.keybindingDelete : "DELETE"
+                              readonly property bool isMac: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + BACKSPACE")
+                              readonly property bool isLinux: Model.normalizeChord(cur) === Model.normalizeChord("DELETE")
                               readonly property bool isCustom: !isMac && !isLinux
 
                               Button {
@@ -2936,8 +3251,8 @@ BarWidget {
                               readonly property real btnWidth: (width - spacing * 2) / 3
 
                               readonly property string cur: root.status && root.status.keybindingFind ? root.status.keybindingFind : "CTRL + F"
-                              readonly property bool isMac: cur === "SUPER + F"
-                              readonly property bool isLinux: cur === "CTRL + F"
+                              readonly property bool isMac: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + F")
+                              readonly property bool isLinux: Model.normalizeChord(cur) === Model.normalizeChord("CTRL + F")
                               readonly property bool isCustom: !isMac && !isLinux
 
                               Button {
@@ -3035,8 +3350,8 @@ BarWidget {
                               readonly property real btnWidth: (width - spacing * 2) / 3
 
                               readonly property string cur: root.status && root.status.keybindingFullscreen ? root.status.keybindingFullscreen : "SUPER + F"
-                              readonly property bool isMac: cur === "SUPER + CTRL + F" || cur === "CTRL + SUPER + F"
-                              readonly property bool isLinux: cur === "SUPER + F"
+                              readonly property bool isMac: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + CTRL + F")
+                              readonly property bool isLinux: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + F")
                               readonly property bool isCustom: !isMac && !isLinux
 
                               Button {
@@ -3134,8 +3449,8 @@ BarWidget {
                               readonly property real btnWidth: (width - spacing * 2) / 3
 
                               readonly property string cur: root.status && root.status.keybindingUndo ? root.status.keybindingUndo : "CTRL + Z"
-                              readonly property bool isMac: cur === "SUPER + Z"
-                              readonly property bool isLinux: cur === "CTRL + Z"
+                              readonly property bool isMac: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + Z")
+                              readonly property bool isLinux: Model.normalizeChord(cur) === Model.normalizeChord("CTRL + Z")
                               readonly property bool isCustom: !isMac && !isLinux
 
                               Button {
@@ -3233,8 +3548,8 @@ BarWidget {
                               readonly property real btnWidth: (width - spacing * 2) / 3
 
                               readonly property string cur: root.status && root.status.keybindingRedo ? root.status.keybindingRedo : "CTRL + SHIFT + Z"
-                              readonly property bool isMac: cur === "SUPER + SHIFT + Z" || cur === "SHIFT + SUPER + Z"
-                              readonly property bool isLinux: cur === "CTRL + SHIFT + Z" || cur === "SHIFT + CTRL + Z"
+                              readonly property bool isMac: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + SHIFT + Z")
+                              readonly property bool isLinux: Model.normalizeChord(cur) === Model.normalizeChord("CTRL + SHIFT + Z")
                               readonly property bool isCustom: !isMac && !isLinux
 
                               Button {
@@ -3277,6 +3592,105 @@ BarWidget {
                                 selected: parent.isCustom
                                 accent: root.accent
                                 onClicked: root.openKeyRecorder("keybinding_redo", "Redo")
+                              }
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // 7. Task: Save
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+
+                              Text {
+                                id: t7Icon
+                                text: "󰆓"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                id: t7Title
+                                text: "Save"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                text: "Save current document or file"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                width: Math.max(0, parent.width - t7Icon.implicitWidth - t7Title.implicitWidth - Style.space(16))
+                              }
+                            }
+
+                            Row {
+                              id: t7Btns
+                              width: parent.width
+                              spacing: Style.space(6)
+                              readonly property real btnWidth: (width - spacing * 2) / 3
+
+                              readonly property string cur: root.status && root.status.keybindingSave ? root.status.keybindingSave : "CTRL + S"
+                              readonly property bool isMac: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + S")
+                              readonly property bool isLinux: Model.normalizeChord(cur) === Model.normalizeChord("CTRL + S")
+                              readonly property bool isCustom: !isMac && !isLinux
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CMD + S"
+                                tooltipText: "Mac preset (Command + S)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isMac
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_save", "SUPER + S")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CTRL + S"
+                                tooltipText: "Standard Linux preset (Control + S)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isLinux
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_save", "CTRL + S")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: "󰌌"
+                                text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
+                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isCustom
+                                accent: root.accent
+                                onClicked: root.openKeyRecorder("keybinding_save", "Save")
                               }
                             }
                           }
@@ -3607,54 +4021,6 @@ BarWidget {
                             font.pixelSize: Style.font.bodySmall
                             wrapMode: Text.WordWrap
                           }
-
-                          PanelSeparator {
-                            width: parent.width
-                            foreground: root.foreground
-                          }
-
-                          Row {
-                            width: parent.width
-                            spacing: Style.space(12)
-
-                            Column {
-                              width: (parent.width - Style.space(12)) / 2
-                              spacing: Style.space(6)
-
-                              Text {
-                                text: "Cmd + Return: Terminal"
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                              }
-
-                              Text {
-                                text: "Cmd + Space: Application Launcher"
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                              }
-                            }
-
-                            Column {
-                              width: (parent.width - Style.space(12)) / 2
-                              spacing: Style.space(6)
-
-                              Text {
-                                text: "Cmd + Q: Close Active Window"
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                              }
-
-                              Text {
-                                text: "Cmd + L: Lock Screen"
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                              }
-                            }
-                          }
                         }
                       }
                     }
@@ -3664,7 +4030,7 @@ BarWidget {
                     // =========================================================
                     Column {
                       id: soundTabContent
-                      visible: root.activeTab === 3
+                      visible: root.currentTabId === "sound"
                       width: parent.width
                       spacing: Style.space(12)
 
@@ -3764,7 +4130,7 @@ BarWidget {
                     // =========================================================
                     Column {
                       id: pluginsTabContent
-                      visible: root.activeTab === 4
+                      visible: root.currentTabId === "plugins"
                       width: parent.width
                       spacing: Style.space(12)
 
@@ -4257,7 +4623,7 @@ BarWidget {
                       color: root.foreground
                     }
                     Text {
-                      text: "Optimized suspend and battery life configuration"
+                      text: "Optimized suspend, battery life, and Mac keybindings configuration"
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       color: root.dim
@@ -4284,7 +4650,7 @@ BarWidget {
                     id: summaryText
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
-                    text: "Applying the recommended defaults means that the macbook will wake from suspend easier and will have a longer battery life, up to 40% less battery drain compared to the default configuration. Depending on the system load."
+                    text: "Applying the recommended defaults means that the MacBook will wake from suspend easier, enjoy up to 40% less battery drain depending on system load, and configure standard Mac keyboard shortcuts (Cmd+A, Cmd+Backspace, Cmd+F, Cmd+Ctrl+F, Cmd+Z, Cmd+Shift+Z, Cmd+S) with automatic conflict resolution."
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
                     color: root.foreground
@@ -4427,6 +4793,84 @@ BarWidget {
 
                           Row {
                             id: optRow2
+                            anchors.fill: parent
+                            anchors.margins: Style.space(8)
+                            spacing: Style.space(8)
+
+                            Text {
+                              text: "•"
+                              color: root.accent
+                              font.bold: true
+                            }
+                            Column {
+                              width: parent.width - Style.space(20)
+                              spacing: 2
+                              Row {
+                                spacing: Style.space(8)
+                                Text {
+                                  text: modelData.title + ":"
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.bodySmall
+                                  font.bold: true
+                                  color: root.foreground
+                                }
+                                Text {
+                                  text: modelData.val
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.bodySmall
+                                  font.bold: true
+                                  color: root.accent
+                                }
+                              }
+                              Text {
+                                text: modelData.desc
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                color: root.dim
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    // Group 3: Mac Keybindings
+                    Column {
+                      width: parent.width
+                      spacing: Style.space(6)
+
+                      Text {
+                        text: "KEYBINDINGS"
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                        color: root.accent
+                        font.letterSpacing: 0.8
+                      }
+
+                      Repeater {
+                        model: [
+                          { title: "Select All", val: "CMD + A", desc: "Selects all content or text using standard macOS Cmd + A chord." },
+                          { title: "Delete Forward", val: "CMD + BACKSPACE", desc: "Maps Command + Backspace to forward delete, relocating any conflicting system shortcut." },
+                          { title: "Find in Document", val: "CMD + F", desc: "Standard Mac shortcut for searching text in editors and browsers." },
+                          { title: "Toggle Fullscreen", val: "CMD + CTRL + F", desc: "Standard macOS fullscreen shortcut (Command + Control + F)." },
+                          { title: "Undo", val: "CMD + Z", desc: "Standard Mac shortcut for undoing actions in applications." },
+                          { title: "Redo", val: "CMD + SHIFT + Z", desc: "Standard Mac shortcut for redoing actions in applications." },
+                          { title: "Save", val: "CMD + S", desc: "Standard Mac shortcut for saving documents and files." },
+                          { title: "System Conflict Resolution", val: "Auto-migrated", desc: "Safely relocates any overlapping system shortcuts (such as Super + Backspace) to prevent conflicts." }
+                        ]
+
+                        delegate: BorderSurface {
+                          width: parent.width
+                          implicitHeight: optRow3.implicitHeight + Style.space(12)
+                          height: implicitHeight
+                          color: Util.alpha(root.foreground, 0.03)
+                          radius: Style.cornerRadius
+
+                          Row {
+                            id: optRow3
                             anchors.fill: parent
                             anchors.margins: Style.space(8)
                             spacing: Style.space(8)

@@ -11,7 +11,7 @@ SYSTEM_HELPER="/usr/local/libexec/omarchy-t2-helper"
 
 mkdir -p "$CONFIG_DIR"
 if [[ ! -f "$SETTINGS_FILE" ]]; then
-  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingFullscreen":"SUPER + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z"}' > "$SETTINGS_FILE"
+  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingFullscreen":"SUPER + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S"}' > "$SETTINGS_FILE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -404,6 +404,7 @@ print_status_json() {
   kb_fullscreen=$(get_setting "keybindingFullscreen" "SUPER + F")
   kb_undo=$(get_setting "keybindingUndo" "CTRL + Z")
   kb_redo=$(get_setting "keybindingRedo" "CTRL + SHIFT + Z")
+  kb_save=$(get_setting "keybindingSave" "CTRL + S")
   inactive_eth=$(get_inactive_ethernet_json)
   pcie_compat=$(get_pcie_ports_compat)
 
@@ -425,8 +426,9 @@ cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.recor
 bound_chords = set()
 raw = []
 if cache_files:
+    latest_cache = max(cache_files, key=os.path.getmtime)
     try:
-        with open(cache_files[0], "r", encoding="utf-8") as f:
+        with open(latest_cache, "r", encoding="utf-8") as f:
             for line in f:
                 if "→" in line:
                     parts = line.strip().split("\t")
@@ -519,6 +521,7 @@ PYEOF
   "keybindingFullscreen": "$kb_fullscreen",
   "keybindingUndo": "$kb_undo",
   "keybindingRedo": "$kb_redo",
+  "keybindingSave": "$kb_save",
   "systemKeybindingOverrides": $sys_overrides,
   "systemKeybindings": $sys_map
 }
@@ -604,7 +607,7 @@ save_user_setting() {
           ;;
       esac
       ;;
-    keybindingSelectAll|keybindingDelete|keybindingFind|keybindingFullscreen|keybindingUndo|keybindingRedo)
+    keybindingSelectAll|keybindingDelete|keybindingFind|keybindingFullscreen|keybindingUndo|keybindingRedo|keybindingSave)
       if [[ ! "$val" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
         echo "Error: Invalid keybinding chord for $key: '$val'" >&2
         exit 1
@@ -1163,6 +1166,7 @@ find_key = norm_c(settings.get("keybindingFind", "CTRL + F"))
 fullscreen = norm_c(settings.get("keybindingFullscreen", "SUPER + F"))
 undo_key = norm_c(settings.get("keybindingUndo", "CTRL + Z"))
 redo_key = norm_c(settings.get("keybindingRedo", "CTRL + SHIFT + Z"))
+save_key = norm_c(settings.get("keybindingSave", "CTRL + S"))
 system_overrides = settings.get("systemKeybindingOverrides", {})
 
 is_all_defaults = (
@@ -1172,6 +1176,7 @@ is_all_defaults = (
     (not fullscreen or fullscreen in ("SUPER + F", "NONE")) and
     (not undo_key or undo_key in ("CTRL + Z", "NONE")) and
     (not redo_key or redo_key in ("CTRL + SHIFT + Z", "NONE")) and
+    (not save_key or save_key in ("CTRL + S", "NONE")) and
     len(system_overrides) == 0
 )
 
@@ -1187,8 +1192,10 @@ if is_all_defaults:
     if start_idx != -1 and end_idx != -1:
         end_idx += len(end_marker)
         new_content = content[:start_idx].rstrip() + "\n" + content[end_idx:].lstrip()
-        with open(bindings_file, "w", encoding="utf-8") as f:
+        tmp_file = bindings_file + ".tmp." + str(os.getpid())
+        with open(tmp_file, "w", encoding="utf-8") as f:
             f.write(new_content)
+        os.replace(tmp_file, bindings_file)
     sys.exit(0)
 
 unbinds = []
@@ -1229,6 +1236,11 @@ if redo_key and redo_key not in ("NONE", "CTRL + SHIFT + Z"):
     unbinds.append(redo_key)
     binds.append(f'o.bind("{redo_key}", "Redo", hl.dsp.send_shortcut({{ mods = "CTRL + SHIFT", key = "z" }}))')
 
+# Save
+if save_key and save_key not in ("NONE", "CTRL + S"):
+    unbinds.append(save_key)
+    binds.append(f'o.bind("{save_key}", "Save", hl.dsp.send_shortcut({{ mods = "CTRL", key = "s" }}))')
+
 # System Overrides
 for action, item in system_overrides.items():
     orig = norm_c(item.get("defaultChord", ""))
@@ -1238,11 +1250,13 @@ for action, item in system_overrides.items():
     if orig and cur and cur != orig:
         unbinds.append(orig)
         unbinds.append(cur)
+        safe_action = action.replace('\\', '\\\\').replace('"', '\\"')
+        safe_cur = cur.replace('\\', '\\\\').replace('"', '\\"')
         if disp == "lua":
-            binds.append(f'o.bind("{cur}", "{action}", {arg})')
+            binds.append(f'o.bind("{safe_cur}", "{safe_action}", {arg})')
         else:
             safe_arg = arg.replace('\\', '\\\\').replace('"', '\\"')
-            binds.append(f'o.bind("{cur}", "{action}", "{safe_arg}")')
+            binds.append(f'o.bind("{safe_cur}", "{safe_action}", "{safe_arg}")')
 
 seen = set()
 unique_unbinds = []
@@ -1268,8 +1282,10 @@ if start_idx != -1 and end_idx != -1:
 else:
     new_content = content.rstrip() + "\n\n" + new_block + "\n"
 
-with open(bindings_file, "w", encoding="utf-8") as f:
+tmp_file = bindings_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
     f.write(new_content)
+os.replace(tmp_file, bindings_file)
 PYEOF
 
   if command -v hyprctl >/dev/null 2>&1; then
@@ -1301,12 +1317,167 @@ set_keybindings() {
       keybinding_redo|keybindingRedo)
         save_user_setting "keybindingRedo" "$v"
         ;;
+      keybinding_save|keybindingSave)
+        save_user_setting "keybindingSave" "$v"
+        ;;
       *)
         echo "Unknown keybinding key: $k" >&2
         return 1
         ;;
     esac
   done
+  apply_keybindings
+}
+
+apply_recommended_keybindings() {
+  python3 - "$SETTINGS_FILE" <<'PYEOF'
+import sys, json, os, glob
+
+settings_file = sys.argv[1]
+settings = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+settings["keybindingSelectAll"] = "SUPER + A"
+settings["keybindingDelete"] = "SUPER + BACKSPACE"
+settings["keybindingFind"] = "SUPER + F"
+settings["keybindingFullscreen"] = "SUPER + CTRL + F"
+settings["keybindingUndo"] = "SUPER + Z"
+settings["keybindingRedo"] = "SUPER + SHIFT + Z"
+settings["keybindingSave"] = "SUPER + S"
+
+cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.records"))
+overrides = settings.get("systemKeybindingOverrides", {})
+if cache_files:
+    latest_cache = max(cache_files, key=os.path.getmtime)
+    bound_chords = set()
+    raw = []
+    try:
+        with open(latest_cache, "r", encoding="utf-8") as f:
+            for line in f:
+                if "→" in line:
+                    parts = line.strip().split("\t")
+                    combo, desc = parts[0].split("→", 1)
+                    combo = combo.strip().upper()
+                    desc = desc.strip()
+                    disp = parts[1] if len(parts) > 1 else "exec"
+                    arg = parts[2] if len(parts) > 2 else ""
+                    bound_chords.add(combo)
+                    raw.append((combo, desc, disp, arg))
+    except Exception:
+        pass
+
+    def get_rec(chord):
+        tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
+        if not tokens: return ""
+        key = tokens[-1]
+        mods = set(tokens[:-1])
+        ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
+        cands = []
+        if "ALT" not in mods:
+            m = list(mods | {"ALT"})
+            m.sort(key=lambda x: ord_map.get(x, 10))
+            cands.append(" + ".join(m) + f" + {key}")
+        if "CTRL" not in mods:
+            m = list(mods | {"CTRL"})
+            m.sort(key=lambda x: ord_map.get(x, 10))
+            cands.append(" + ".join(m) + f" + {key}")
+        for c in cands:
+            if c not in bound_chords:
+                return c
+        m = list(mods | {"ALT"})
+        m.sort(key=lambda x: ord_map.get(x, 10))
+        return " + ".join(m) + f" + {key}"
+
+    rec_tasks = {
+        "SUPER + A": "select all",
+        "SUPER + BACKSPACE": "forward delete",
+        "SUPER + F": "find",
+        "SUPER + CTRL + F": "full screen",
+        "SUPER + Z": "undo",
+        "SUPER + SHIFT + Z": "redo",
+        "SUPER + S": "save"
+    }
+
+    def normalize_chord_tokens(c):
+        if not c: return set(), None
+        import re
+        tokens = [t.strip().upper() for t in re.split(r"[\+\s]+", c) if t.strip()]
+        mods = set()
+        key = None
+        for t in tokens:
+            if t in ("SUPER", "LOGO", "WIN", "CMD", "COMMAND"):
+                mods.add("SUPER")
+            elif t in ("CTRL", "CONTROL"):
+                mods.add("CTRL")
+            elif t in ("ALT", "OPTION"):
+                mods.add("ALT")
+            elif t in ("SHIFT",):
+                mods.add("SHIFT")
+            else:
+                key = t
+        return mods, key
+
+    norm_rec = {normalize_chord_tokens(rc): (rc, name) for rc, name in rec_tasks.items()}
+
+    for combo, desc, disp, arg in raw:
+        c_norm = normalize_chord_tokens(combo)
+        if c_norm in norm_rec:
+            r_chord, r_name = norm_rec[c_norm]
+            desc_clean = desc.lower().replace(" ", "").replace("_", "").replace("-", "")
+            r_clean = r_name.replace(" ", "")
+            if desc_clean not in (r_clean, "delete", "fullscreen", "findindocument", "save"):
+                rec_alt = get_rec(combo)
+                overrides[desc] = {
+                    "action": desc,
+                    "defaultChord": combo,
+                    "currentChord": rec_alt,
+                    "recommendedChord": rec_alt,
+                    "dispatcher": disp,
+                    "arg": arg
+                }
+
+settings["systemKeybindingOverrides"] = overrides
+
+tmp_file = settings_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
+    json.dump(settings, f, indent=2)
+os.replace(tmp_file, settings_file)
+PYEOF
+  apply_keybindings
+}
+
+reset_keybindings_to_defaults() {
+  python3 - "$SETTINGS_FILE" <<'PYEOF'
+import sys, json, os
+
+settings_file = sys.argv[1]
+settings = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+settings["keybindingSelectAll"] = "CTRL + A"
+settings["keybindingDelete"] = "DELETE"
+settings["keybindingFind"] = "CTRL + F"
+settings["keybindingFullscreen"] = "SUPER + F"
+settings["keybindingUndo"] = "CTRL + Z"
+settings["keybindingRedo"] = "CTRL + SHIFT + Z"
+settings["keybindingSave"] = "CTRL + S"
+settings["systemKeybindingOverrides"] = {}
+
+tmp_file = settings_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
+    json.dump(settings, f, indent=2)
+os.replace(tmp_file, settings_file)
+PYEOF
   apply_keybindings
 }
 
@@ -1317,6 +1488,15 @@ set_system_keybinding() {
   local disp="${4:-exec}"
   local arg="${5:-}"
   [[ -n "$action" && -n "$new_chord" ]] || return 1
+
+  if [[ ! "$new_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
+    echo "Error: Invalid keybinding chord: '$new_chord'" >&2
+    return 1
+  fi
+  if [[ -n "$def_chord" && ! "$def_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
+    echo "Error: Invalid default chord: '$def_chord'" >&2
+    return 1
+  fi
 
   python3 - "$SETTINGS_FILE" "$action" "$new_chord" "$def_chord" "$disp" "$arg" <<'PYEOF'
 import sys, json, os
@@ -1352,8 +1532,10 @@ else:
     }
 
 settings["systemKeybindingOverrides"] = overrides
-with open(settings_file, "w", encoding="utf-8") as f:
+tmp_file = settings_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2)
+os.replace(tmp_file, settings_file)
 PYEOF
   apply_keybindings
 }
@@ -1375,8 +1557,10 @@ if os.path.exists(settings_file):
     if action in overrides:
         del overrides[action]
         settings["systemKeybindingOverrides"] = overrides
-        with open(settings_file, "w", encoding="utf-8") as f:
+        tmp_file = settings_file + ".tmp." + str(os.getpid())
+        with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2)
+        os.replace(tmp_file, settings_file)
 PYEOF
   apply_keybindings
 }
@@ -1389,6 +1573,15 @@ set_keybinding_with_system_override() {
   local def_chord="${5:-}"
   local disp="${6:-exec}"
   local arg="${7:-}"
+
+  if [[ ! "$task_chord" =~ ^[A-Za-z0-9_\ +-]+$ || ! "$new_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
+    echo "Error: Invalid keybinding chord format" >&2
+    return 1
+  fi
+  if [[ -n "$def_chord" && ! "$def_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
+    echo "Error: Invalid default chord format" >&2
+    return 1
+  fi
 
   python3 - "$SETTINGS_FILE" "$task_key" "$task_chord" "$action" "$new_chord" "$def_chord" "$disp" "$arg" <<'PYEOF'
 import sys, json, os
@@ -1421,10 +1614,12 @@ tk_map = {
     "keybinding_undo": "keybindingUndo",
     "keybindingundo": "keybindingUndo",
     "keybinding_redo": "keybindingRedo",
-    "keybindingredo": "keybindingRedo"
+    "keybindingredo": "keybindingRedo",
+    "keybinding_save": "keybindingSave",
+    "keybindingsave": "keybindingSave"
 }
 norm_tk = tk_map.get(task_key.lower().replace("_", ""), task_key)
-if norm_tk in ("keybindingSelectAll", "keybindingDelete", "keybindingFind", "keybindingFullscreen", "keybindingUndo", "keybindingRedo"):
+if norm_tk in ("keybindingSelectAll", "keybindingDelete", "keybindingFind", "keybindingFullscreen", "keybindingUndo", "keybindingRedo", "keybindingSave"):
     settings[norm_tk] = task_chord
 
 overrides = settings.get("systemKeybindingOverrides", {})
@@ -1446,8 +1641,10 @@ if action:
         }
     settings["systemKeybindingOverrides"] = overrides
 
-with open(settings_file, "w", encoding="utf-8") as f:
+tmp_file = settings_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2)
+os.replace(tmp_file, settings_file)
 PYEOF
   apply_keybindings
 }
@@ -1499,7 +1696,9 @@ friendly_task_names = {
     "keybinding_undo": "Undo",
     "keybindingUndo": "Undo",
     "keybinding_redo": "Redo",
-    "keybindingRedo": "Redo"
+    "keybindingRedo": "Redo",
+    "keybinding_save": "Save",
+    "keybindingSave": "Save"
 }
 
 current_task_friendly = friendly_task_names.get(current_task_key, current_task_key).lower()
@@ -1511,7 +1710,8 @@ plugin_bindings = {
     "keybinding_find": "CTRL + F",
     "keybinding_fullscreen": "SUPER + F",
     "keybinding_undo": "CTRL + Z",
-    "keybinding_redo": "CTRL + SHIFT + Z"
+    "keybinding_redo": "CTRL + SHIFT + Z",
+    "keybinding_save": "CTRL + S"
 }
 sys_overrides = {}
 if settings_path and os.path.isfile(settings_path):
@@ -1547,8 +1747,9 @@ cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.recor
 bound_chords = set()
 raw_records = []
 if cache_files:
+    latest_cache = max(cache_files, key=os.path.getmtime)
     try:
-        with open(cache_files[0], "r", encoding="utf-8") as f:
+        with open(latest_cache, "r", encoding="utf-8") as f:
             for line in f:
                 if "→" in line:
                     parts = line.strip().split("\t")
@@ -1587,10 +1788,12 @@ def get_rec(chord):
 for k_part, desc, disp, arg in raw_records:
     k_mods, k_key = normalize_chord(k_part)
     if k_key == t_key and k_mods == t_mods:
-        is_conflict = (desc.lower() != current_task_friendly)
+        is_conflict = (desc.lower() != current_task_friendly and not (desc.lower() == "delete" and current_task_friendly == "forward delete"))
         # If this action is already overridden to something else, this default chord is freed
-        if desc in sys_overrides and normalize_chord(sys_overrides[desc].get("currentChord", ""))[0] != t_mods:
-            continue
+        if desc in sys_overrides:
+            ov_m, ov_k = normalize_chord(sys_overrides[desc].get("currentChord", ""))
+            if (ov_m, ov_k) != (t_mods, t_key):
+                continue
         print(json.dumps({
             "chord": target_chord,
             "inUse": True,
@@ -1775,6 +1978,10 @@ case "${1:-status}" in
         save_user_setting "keybindingRedo" "$val"
         apply_keybindings
         ;;
+      keybinding_save)
+        save_user_setting "keybindingSave" "$val"
+        apply_keybindings
+        ;;
       *)
         echo "Unknown setting key: $key" >&2
         exit 1
@@ -1784,6 +1991,14 @@ case "${1:-status}" in
 
   apply-keybindings)
     apply_keybindings
+    ;;
+
+  apply-recommended-keybindings)
+    apply_recommended_keybindings
+    ;;
+
+  reset-keybindings-to-defaults)
+    reset_keybindings_to_defaults
     ;;
 
   set-keybindings)
@@ -1831,6 +2046,7 @@ case "${1:-status}" in
     save_user_setting "kbdTimeout" "1m"
     save_user_setting "touchbarBlank" "true"
     save_user_setting "recommendedPromptShown" "true"
+    apply_recommended_keybindings
     run_privileged do-apply-recommended
     ;;
   do-apply-recommended)
@@ -1851,6 +2067,64 @@ case "${1:-status}" in
     apply_audio_powersave "true"
     apply_usb_autosuspend "true"
     apply_pcie_ports_compat "on"
+    ;;
+  apply-recommended-suspend)
+    save_user_setting "touchbarBlank" "true"
+    run_privileged do-apply-recommended-suspend
+    ;;
+  do-apply-recommended-suspend)
+    apply_mem_sleep "deep" "true"
+    apply_lid_action "suspend"
+    apply_clamshell "true"
+    apply_wake_toggle "LID0" "on"
+    apply_wake_toggle "ADP1" "off"
+    apply_hibernate_delay "off"
+    ;;
+  reset-suspend-to-defaults)
+    save_user_setting "touchbarBlank" "false"
+    run_privileged do-reset-suspend-to-defaults
+    ;;
+  do-reset-suspend-to-defaults)
+    apply_mem_sleep "s2idle" "true"
+    apply_lid_action "suspend"
+    apply_clamshell "false"
+    apply_wake_toggle "LID0" "off"
+    apply_wake_toggle "ADP1" "on"
+    apply_hibernate_delay "off"
+    ;;
+  apply-recommended-battery)
+    save_user_setting "kbdTimeout" "1m"
+    run_privileged do-apply-recommended-battery
+    ;;
+  do-apply-recommended-battery)
+    apply_wifi_powersave "off"
+    if command -v nmcli >/dev/null 2>&1; then
+      while IFS=: read -r dev type state rest; do
+        if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
+          apply_ethernet_managed "$dev" "no"
+        fi
+      done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+    fi
+    apply_audio_powersave "true"
+    apply_usb_autosuspend "true"
+    apply_pcie_ports_compat "on"
+    ;;
+  reset-battery-to-defaults)
+    save_user_setting "kbdTimeout" "off"
+    run_privileged do-reset-battery-to-defaults
+    ;;
+  do-reset-battery-to-defaults)
+    apply_wifi_powersave "on"
+    if command -v nmcli >/dev/null 2>&1; then
+      while IFS=: read -r dev type state rest; do
+        if [[ "$type" == "ethernet" ]]; then
+          apply_ethernet_managed "$dev" "yes"
+        fi
+      done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+    fi
+    apply_audio_powersave "false"
+    apply_usb_autosuspend "false"
+    apply_pcie_ports_compat "off"
     ;;
   install-system)
     run_privileged do-install-system ;;
