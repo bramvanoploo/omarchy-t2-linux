@@ -10,7 +10,7 @@ Clicking the bar icon (``) opens a dedicated settings panel featuring vertica
 
 ## Features & Categorized Options
 
-The panel organizes all hardware tunables into two primary vertical tabs:
+The panel organizes all hardware tunables and configurations into dedicated vertical tabs:
 
 ### 1. Battery Life
 - **Live Battery Telemetry**: Real-time battery charge percentage, charging/discharging status, real-time power discharge rate in Watts, and battery health percentage with cycle count.
@@ -31,6 +31,25 @@ The panel organizes all hardware tunables into two primary vertical tabs:
 - **Wake on Charger Connect (ADP1)**: Wake the system from sleep whenever a USB-C or MagSafe charger is connected.
 - **Hibernate Delay (Suspend-Then-Hibernate)**: Automatically transitions from suspend to hibernation after a set duration (`30 min`, `1 hour`, `2 hours`, or `Never`) to avoid battery exhaustion during long sleep intervals.
 - **Touch Bar Blanking on Sleep**: Powers off the OLED Touch Bar display immediately before system sleep.
+
+### 3. Keybindings
+- **Task: Select All**: Change default Linux `CTRL + A` to `SUPER + A` (Command + A) for Mac muscle memory, or assign custom chords.
+- **Task: Forward Delete**: Assign `SUPER + BACKSPACE` (Command + Backspace) as forward delete for Mac keyboards that lack a dedicated Delete key.
+- **Task: Find**: Map `CTRL + F` search to `SUPER + F` (Command + F) or custom chords.
+- **Task: Toggle Fullscreen**: Reassign the active window fullscreen action from `SUPER + F` to `SUPER + CTRL + F` (standard macOS Command + Control + F) or custom chords.
+- **Task: Undo**: Map application undo from default `CTRL + Z` to `SUPER + Z` (Command + Z) or custom chords.
+- **Task: Redo**: Map application redo from default `CTRL + SHIFT + Z` to `SUPER + SHIFT + Z` (Command + Shift + Z) or custom chords.
+- **Intra-Plugin Keybinding Conflict Resolution**: Only prompts when two plugin options actually conflict (e.g. assigning Find in Document to `CMD + F` while Toggle Fullscreen is also assigned to `CMD + F`). Directly offers the recommended alternative preset or recording a custom shortcut without broken in-between states.
+- **Interactive Key Combination Recorder**: Dedicated dialog that captures keystrokes in real time directly from the keyboard without manual typing.
+- **Conflict Detection & Safe Override**: Automatically checks whether a chosen shortcut is already registered in Omarchy Hyprland or within the plugin, alerting the user to existing assignments before applying changes with confirmation to override.
+- **Shortcut Reference**: Built-in guide for standard window manager and system shortcuts on Apple T2 keyboards.
+
+### 4. Sound
+- **Audio Subsystem Overview**: Information on Apple T2 Cirrus Logic audio controller and hardware codecs.
+- **Audio Controller Power Save**: Powers down internal Apple audio hardware when idle to eliminate background battery drain.
+
+### 5. Plugins
+- **T2 Community Plugins**: Discover, install, update, and manage community-built plugins from plugins.omarchy.org.
 
 ---
 

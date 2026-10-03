@@ -20,6 +20,33 @@ BarWidget {
   property bool limineUpdating: false
   property bool rebootConfirmOpen: false
   property bool recommendedConfirmOpen: false
+  property bool keyRecorderOpen: false
+  property string keyRecorderTaskKey: ""
+  property string keyRecorderTaskName: ""
+  property string keyRecorderRecordedChord: ""
+  property string keyRecorderDisplayChord: ""
+  property bool keyRecorderComplete: false
+  property bool keyRecorderChecking: false
+  property bool keyRecorderConflict: false
+  property string keyRecorderConflictAction: ""
+  property bool conflictDialogOpen: false
+  property string conflictTargetTaskKey: ""
+  property string conflictTargetTaskName: ""
+  property string conflictTargetChord: ""
+  property string conflictDisplacedTaskKey: ""
+  property string conflictDisplacedTaskName: ""
+  property string conflictDisplacedChord: ""
+  property string conflictRecommendedChord: ""
+  property bool conflictIsSystem: false
+  property string conflictSystemAction: ""
+  property string conflictSystemDispatcher: ""
+  property string conflictSystemArg: ""
+  property string pendingConflictSystemAction: ""
+  property string pendingConflictSystemDefaultChord: ""
+  property string pendingConflictSystemDispatcher: ""
+  property string pendingConflictSystemArg: ""
+  property string pendingConflictTargetTaskKey: ""
+  property string pendingConflictTargetChord: ""
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string helper: pluginDir + "/scripts/t2-helper"
@@ -260,6 +287,18 @@ BarWidget {
         s.kbdTimeout = val
       } else if (key === "recommended_prompt_shown") {
         s.recommendedPromptShown = (val === "true" || val === "on")
+      } else if (key === "keybinding_select_all") {
+        s.keybindingSelectAll = val
+      } else if (key === "keybinding_delete") {
+        s.keybindingDelete = val
+      } else if (key === "keybinding_find") {
+        s.keybindingFind = val
+      } else if (key === "keybinding_fullscreen") {
+        s.keybindingFullscreen = val
+      } else if (key === "keybinding_undo") {
+        s.keybindingUndo = val
+      } else if (key === "keybinding_redo") {
+        s.keybindingRedo = val
       }
       root.status = s
     }
@@ -352,6 +391,376 @@ BarWidget {
     function setMemSleep(mode: string): void { root.setMemSleep(mode) }
     function refresh(): void { root.refresh() }
     function scrollContent(y: real): void { flickable.contentY = y }
+  }
+
+  function openKeyRecorder(taskKey, taskName) {
+    root.keyRecorderTaskKey = taskKey
+    root.keyRecorderTaskName = taskName
+    root.keyRecorderRecordedChord = ""
+    root.keyRecorderDisplayChord = ""
+    root.keyRecorderComplete = false
+    root.keyRecorderChecking = false
+    root.keyRecorderConflict = false
+    root.keyRecorderConflictAction = ""
+    root.keyRecorderOpen = true
+    Qt.callLater(function() {
+      if (typeof keyRecorderCatcher !== "undefined" && keyRecorderCatcher) {
+        keyRecorderCatcher.forceActiveFocus()
+      }
+    })
+  }
+
+  function confirmKeyRecording() {
+    if (!root.keyRecorderComplete || !root.keyRecorderRecordedChord) return
+    var chord = root.keyRecorderRecordedChord
+    var task = root.keyRecorderTaskKey
+
+    // 1. If recording for a system override
+    if (task.indexOf("system_override:") === 0) {
+      var action = task.substring("system_override:".length)
+      root.keyRecorderOpen = false
+
+      // If resolving a conflict from a pending target task
+      if (root.pendingConflictTargetTaskKey && root.pendingConflictTargetChord) {
+        var tKey = root.pendingConflictTargetTaskKey
+        var tChord = root.pendingConflictTargetChord
+        var sDef = root.pendingConflictSystemDefaultChord || chord
+        var sDisp = root.pendingConflictSystemDispatcher || "exec"
+        var sArg = root.pendingConflictSystemArg || ""
+
+        root.pendingConflictTargetTaskKey = ""
+        root.pendingConflictTargetChord = ""
+        root.pendingConflictSystemAction = ""
+
+        if (actionProc.running) actionProc.running = false
+        root.applying = true
+
+        if (root.status) {
+          var s = Object.assign({}, root.status)
+          if (tKey === "keybinding_select_all") s.keybindingSelectAll = tChord
+          else if (tKey === "keybinding_delete") s.keybindingDelete = tChord
+          else if (tKey === "keybinding_find") s.keybindingFind = tChord
+          else if (tKey === "keybinding_fullscreen") s.keybindingFullscreen = tChord
+          else if (tKey === "keybinding_undo") s.keybindingUndo = tChord
+          else if (tKey === "keybinding_redo") s.keybindingRedo = tChord
+
+          var ov = Object.assign({}, s.systemKeybindingOverrides || {})
+          ov[action] = {
+            action: action,
+            defaultChord: sDef,
+            currentChord: chord,
+            recommendedChord: ov[action] ? ov[action].recommendedChord : chord,
+            dispatcher: sDisp,
+            arg: sArg
+          }
+          s.systemKeybindingOverrides = ov
+          root.status = s
+        }
+
+        root.lastNotice = "Assigned " + Model.getTaskFriendlyName(tKey) + " (" + Model.formatChordForDisplay(tChord) + ") and set " + action + " to " + Model.formatChordForDisplay(chord)
+        noticeTimer.restart()
+
+        actionProc.command = ["bash", helper, "set-keybinding-with-system-override", tKey, tChord, action, chord, sDef, sDisp, sArg]
+        actionProc.running = true
+        return
+      }
+
+      // Standalone system override recording from changed system shortcuts list
+      root.setSystemKeybinding(action, chord, root.pendingConflictSystemDefaultChord, root.pendingConflictSystemDispatcher, root.pendingConflictSystemArg)
+      return
+    }
+
+    // 2. If resolving a pending intra-plugin conflict
+    if (root.pendingConflictTargetTaskKey && root.pendingConflictTargetChord) {
+      var tKey2 = root.pendingConflictTargetTaskKey
+      var tChord2 = root.pendingConflictTargetChord
+      root.pendingConflictTargetTaskKey = ""
+      root.pendingConflictTargetChord = ""
+      root.keyRecorderOpen = false
+
+      if (actionProc.running) actionProc.running = false
+      root.applying = true
+
+      if (root.status) {
+        var s2 = Object.assign({}, root.status)
+        if (task === "keybinding_select_all") s2.keybindingSelectAll = chord
+        else if (task === "keybinding_delete") s2.keybindingDelete = chord
+        else if (task === "keybinding_find") s2.keybindingFind = chord
+        else if (task === "keybinding_fullscreen") s2.keybindingFullscreen = chord
+        else if (task === "keybinding_undo") s2.keybindingUndo = chord
+        else if (task === "keybinding_redo") s2.keybindingRedo = chord
+
+        if (tKey2 === "keybinding_select_all") s2.keybindingSelectAll = tChord2
+        else if (tKey2 === "keybinding_delete") s2.keybindingDelete = tChord2
+        else if (tKey2 === "keybinding_find") s2.keybindingFind = tChord2
+        else if (tKey2 === "keybinding_fullscreen") s2.keybindingFullscreen = tChord2
+        else if (tKey2 === "keybinding_undo") s2.keybindingUndo = tChord2
+        else if (tKey2 === "keybinding_redo") s2.keybindingRedo = tChord2
+
+        root.status = s2
+      }
+
+      root.lastNotice = "Updated " + Model.getTaskFriendlyName(tKey2) + " (" + Model.formatChordForDisplay(tChord2) + ") and " + Model.getTaskFriendlyName(task) + " (" + Model.formatChordForDisplay(chord) + ")"
+      noticeTimer.restart()
+
+      actionProc.command = ["bash", helper, "set-keybindings", task, chord, tKey2, tChord2]
+      actionProc.running = true
+      return
+    }
+
+    // 3. Normal plugin key recording
+    root.keyRecorderChecking = true
+    root.keyRecorderConflict = false
+    checkKeyProc.command = ["bash", root.helper, "check-keybinding", root.keyRecorderRecordedChord, root.keyRecorderTaskKey]
+    checkKeyProc.running = true
+  }
+
+  function checkAndApplyKeybinding(taskKey, newChord) {
+    // 1. Check intra-plugin conflicts
+    var pluginConflict = Model.findPluginConflict(taskKey, newChord, root.status)
+    if (pluginConflict) {
+      root.conflictIsSystem = false
+      root.conflictTargetTaskKey = taskKey
+      root.conflictTargetTaskName = Model.getTaskFriendlyName(taskKey)
+      root.conflictTargetChord = newChord
+      root.conflictDisplacedTaskKey = pluginConflict.key
+      root.conflictDisplacedTaskName = pluginConflict.name
+      root.conflictDisplacedChord = pluginConflict.chord
+      root.conflictRecommendedChord = Model.getRecommendedAlternative(pluginConflict.key, newChord)
+      root.conflictDialogOpen = true
+      Qt.callLater(function() {
+        if (typeof conflictDialogCatcher !== "undefined" && conflictDialogCatcher) {
+          conflictDialogCatcher.forceActiveFocus()
+        }
+      })
+      return
+    }
+
+    // 2. Check system default keybinding conflicts
+    var systemConflict = Model.findSystemConflict(taskKey, newChord, root.status)
+    if (systemConflict) {
+      root.conflictIsSystem = true
+      root.conflictTargetTaskKey = taskKey
+      root.conflictTargetTaskName = Model.getTaskFriendlyName(taskKey)
+      root.conflictTargetChord = newChord
+      root.conflictDisplacedTaskKey = "system_override:" + systemConflict.action
+      root.conflictDisplacedTaskName = systemConflict.action
+      root.conflictDisplacedChord = systemConflict.currentChord
+      root.conflictRecommendedChord = systemConflict.recommendedChord
+      root.conflictSystemAction = systemConflict.action
+      root.conflictSystemDispatcher = systemConflict.dispatcher
+      root.conflictSystemArg = systemConflict.arg
+      root.conflictDialogOpen = true
+      Qt.callLater(function() {
+        if (typeof conflictDialogCatcher !== "undefined" && conflictDialogCatcher) {
+          conflictDialogCatcher.forceActiveFocus()
+        }
+      })
+      return
+    }
+
+    root.setOption(taskKey, newChord)
+    root.lastNotice = "Keybinding for " + Model.getTaskFriendlyName(taskKey) + " set to " + Model.formatChordForDisplay(newChord)
+    noticeTimer.restart()
+  }
+
+  function resolveConflictWithRecommended() {
+    var targetKey = root.conflictTargetTaskKey
+    var targetChord = root.conflictTargetChord
+    var displacedKey = root.conflictDisplacedTaskKey
+    var displacedName = root.conflictDisplacedTaskName
+    var displacedChord = root.conflictRecommendedChord
+    var isSys = root.conflictIsSystem
+    root.conflictDialogOpen = false
+
+    if (!targetKey || !targetChord || !displacedName || !displacedChord) return
+
+    if (actionProc.running) actionProc.running = false
+    root.applying = true
+    noticeTimer.stop()
+
+    if (isSys) {
+      var sysAction = root.conflictSystemAction
+      var sysDef = root.conflictDisplacedChord
+      var sysDisp = root.conflictSystemDispatcher
+      var sysArg = root.conflictSystemArg
+
+      if (root.status) {
+        var s = Object.assign({}, root.status)
+        if (targetKey === "keybinding_select_all") s.keybindingSelectAll = targetChord
+        else if (targetKey === "keybinding_delete") s.keybindingDelete = targetChord
+        else if (targetKey === "keybinding_find") s.keybindingFind = targetChord
+        else if (targetKey === "keybinding_fullscreen") s.keybindingFullscreen = targetChord
+        else if (targetKey === "keybinding_undo") s.keybindingUndo = targetChord
+        else if (targetKey === "keybinding_redo") s.keybindingRedo = targetChord
+
+        var overrides = Object.assign({}, s.systemKeybindingOverrides || {})
+        overrides[sysAction] = {
+          action: sysAction,
+          defaultChord: sysDef,
+          currentChord: displacedChord,
+          recommendedChord: displacedChord,
+          dispatcher: sysDisp,
+          arg: sysArg
+        }
+        s.systemKeybindingOverrides = overrides
+        root.status = s
+      }
+
+      root.lastNotice = "Assigned " + root.conflictTargetTaskName + " (" + Model.formatChordForDisplay(targetChord) + ") and moved " + sysAction + " to " + Model.formatChordForDisplay(displacedChord)
+      noticeTimer.restart()
+
+      actionProc.command = ["bash", helper, "set-keybinding-with-system-override", targetKey, targetChord, sysAction, displacedChord, sysDef, sysDisp, sysArg]
+      actionProc.running = true
+    } else {
+      if (root.status) {
+        var s2 = Object.assign({}, root.status)
+        if (displacedKey === "keybinding_select_all") s2.keybindingSelectAll = displacedChord
+        else if (displacedKey === "keybinding_delete") s2.keybindingDelete = displacedChord
+        else if (displacedKey === "keybinding_find") s2.keybindingFind = displacedChord
+        else if (displacedKey === "keybinding_fullscreen") s2.keybindingFullscreen = displacedChord
+        else if (displacedKey === "keybinding_undo") s2.keybindingUndo = displacedChord
+        else if (displacedKey === "keybinding_redo") s2.keybindingRedo = displacedChord
+
+        if (targetKey === "keybinding_select_all") s2.keybindingSelectAll = targetChord
+        else if (targetKey === "keybinding_delete") s2.keybindingDelete = targetChord
+        else if (targetKey === "keybinding_find") s2.keybindingFind = targetChord
+        else if (targetKey === "keybinding_fullscreen") s2.keybindingFullscreen = targetChord
+        else if (targetKey === "keybinding_undo") s2.keybindingUndo = targetChord
+        else if (targetKey === "keybinding_redo") s2.keybindingRedo = targetChord
+
+        root.status = s2
+      }
+
+      root.lastNotice = "Updated " + root.conflictTargetTaskName + " (" + Model.formatChordForDisplay(targetChord) + ") and " + displacedName + " (" + Model.formatChordForDisplay(displacedChord) + ")"
+      noticeTimer.restart()
+
+      actionProc.command = ["bash", helper, "set-keybindings", displacedKey, displacedChord, targetKey, targetChord]
+      actionProc.running = true
+    }
+  }
+
+  function resolveConflictWithCustom() {
+    var targetKey = root.conflictTargetTaskKey
+    var targetChord = root.conflictTargetChord
+    var displacedKey = root.conflictDisplacedTaskKey
+    var displacedName = root.conflictDisplacedTaskName
+    var isSys = root.conflictIsSystem
+    root.conflictDialogOpen = false
+
+    root.pendingConflictTargetTaskKey = targetKey
+    root.pendingConflictTargetChord = targetChord
+
+    if (isSys) {
+      root.pendingConflictSystemAction = root.conflictSystemAction
+      root.pendingConflictSystemDefaultChord = root.conflictDisplacedChord
+      root.pendingConflictSystemDispatcher = root.conflictSystemDispatcher
+      root.pendingConflictSystemArg = root.conflictSystemArg
+      root.openKeyRecorder("system_override:" + root.conflictSystemAction, displacedName)
+    } else {
+      root.pendingConflictSystemAction = ""
+      root.openKeyRecorder(displacedKey, displacedName)
+    }
+  }
+
+  function openSystemKeyRecorder(action, defaultChord, dispatcher, arg) {
+    root.pendingConflictSystemAction = action
+    root.pendingConflictSystemDefaultChord = defaultChord || ""
+    root.pendingConflictSystemDispatcher = dispatcher || "exec"
+    root.pendingConflictSystemArg = arg || ""
+    root.pendingConflictTargetTaskKey = ""
+    root.pendingConflictTargetChord = ""
+    root.openKeyRecorder("system_override:" + action, action)
+  }
+
+  function resetSystemKeybinding(action) {
+    if (!action) return
+    if (actionProc.running) actionProc.running = false
+    root.applying = true
+
+    if (root.status && root.status.systemKeybindingOverrides) {
+      var s = Object.assign({}, root.status)
+      var ov = Object.assign({}, s.systemKeybindingOverrides)
+      delete ov[action]
+      s.systemKeybindingOverrides = ov
+      root.status = s
+    }
+
+    root.lastNotice = "Restored " + action + " to system default"
+    noticeTimer.restart()
+
+    actionProc.command = ["bash", helper, "reset-system-keybinding", action]
+    actionProc.running = true
+  }
+
+  function setSystemKeybinding(action, newChord, defaultChord, dispatcher, arg) {
+    if (!action || !newChord) return
+    if (actionProc.running) actionProc.running = false
+    root.applying = true
+
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      var ov = Object.assign({}, s.systemKeybindingOverrides || {})
+      ov[action] = {
+        action: action,
+        defaultChord: defaultChord || (ov[action] ? ov[action].defaultChord : newChord),
+        currentChord: newChord,
+        recommendedChord: ov[action] ? ov[action].recommendedChord : newChord,
+        dispatcher: dispatcher || "exec",
+        arg: arg || ""
+      }
+      s.systemKeybindingOverrides = ov
+      root.status = s
+    }
+
+    root.lastNotice = "Updated " + action + " to " + Model.formatChordForDisplay(newChord)
+    noticeTimer.restart()
+
+    actionProc.command = ["bash", helper, "set-system-keybinding", action, newChord, defaultChord || "", dispatcher || "exec", arg || ""]
+    actionProc.running = true
+  }
+
+  function cancelConflictDialog() {
+    root.conflictDialogOpen = false
+    root.pendingConflictTargetTaskKey = ""
+    root.pendingConflictTargetChord = ""
+    root.pendingConflictSystemAction = ""
+    root.lastNotice = "Keybinding change cancelled."
+    noticeTimer.restart()
+  }
+
+  function triggerConflictResolution(conflict) {
+    if (!conflict) return
+    var isSys = (conflict.source === "system")
+    root.conflictIsSystem = isSys
+    root.conflictTargetTaskKey = conflict.taskKey1
+    root.conflictTargetTaskName = conflict.action1
+    root.conflictTargetChord = conflict.chord1 || conflict.chord
+    root.conflictDisplacedTaskKey = isSys ? ("system_override:" + conflict.action2) : conflict.taskKey2
+    root.conflictDisplacedTaskName = conflict.action2
+    root.conflictDisplacedChord = conflict.chord2 || conflict.defaultChord || conflict.chord
+    root.conflictRecommendedChord = conflict.recommendedChord
+    if (isSys) {
+      root.conflictSystemAction = conflict.action2
+      root.conflictSystemDispatcher = conflict.dispatcher || "exec"
+      root.conflictSystemArg = conflict.arg || ""
+    } else {
+      root.conflictSystemAction = ""
+    }
+    root.conflictDialogOpen = true
+    Qt.callLater(function() {
+      if (typeof conflictDialogCatcher !== "undefined" && conflictDialogCatcher) {
+        conflictDialogCatcher.forceActiveFocus()
+      }
+    })
+  }
+
+  function applyKeyOverride() {
+    var task = root.keyRecorderTaskKey
+    var chord = root.keyRecorderRecordedChord
+    root.keyRecorderOpen = false
+    root.keyRecorderConflict = false
+    root.checkAndApplyKeybinding(task, chord)
   }
 
   implicitWidth: button.implicitWidth
@@ -507,6 +916,37 @@ BarWidget {
         root.pluginActionStatus = msg || ("Plugin operation failed (exit code " + exitCode + ").")
       }
       root.fetchPlugins(true)
+    }
+  }
+
+  // Process to check if a keybinding chord is in use
+  Process {
+    id: checkKeyProc
+    stdout: StdioCollector {
+      id: checkKeyStdout
+      waitForEnd: true
+      onStreamFinished: {
+        root.keyRecorderChecking = false
+        var out = checkKeyStdout.text ? checkKeyStdout.text.trim() : ""
+        var task = root.keyRecorderTaskKey
+        var chord = root.keyRecorderRecordedChord
+        if (!out) {
+          root.keyRecorderOpen = false
+          root.checkAndApplyKeybinding(task, chord)
+          return
+        }
+        try {
+          var res = JSON.parse(out)
+          root.keyRecorderOpen = false
+          root.checkAndApplyKeybinding(task, chord)
+        } catch(e) {
+          root.keyRecorderOpen = false
+          root.checkAndApplyKeybinding(task, chord)
+        }
+      }
+    }
+    onExited: function(code) {
+      root.keyRecorderChecking = false
     }
   }
 
@@ -751,6 +1191,10 @@ BarWidget {
       focus: true
 
       Keys.onPressed: function(event) {
+        if (root.keyRecorderOpen) {
+          event.accepted = false
+          return
+        }
         if (root.limineUpdating || limineProc.running) {
           event.accepted = true
           return
@@ -770,6 +1214,18 @@ BarWidget {
             return
           }
         }
+        if (root.conflictDialogOpen) {
+          if (event.key === Qt.Key_Escape) {
+            root.cancelConflictDialog()
+            event.accepted = true
+            return
+          }
+          if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            root.resolveConflictWithRecommended()
+            event.accepted = true
+            return
+          }
+        }
         if (event.key === Qt.Key_Escape) {
           root.close()
           event.accepted = true
@@ -784,7 +1240,7 @@ BarWidget {
         MouseArea {
           anchors.fill: parent
           onClicked: {
-            if (!root.limineUpdating && !limineProc.running && !root.rebootConfirmOpen && !root.recommendedConfirmOpen) {
+            if (!root.limineUpdating && !limineProc.running && !root.rebootConfirmOpen && !root.recommendedConfirmOpen && !root.keyRecorderOpen && !root.conflictDialogOpen) {
               root.close()
             }
           }
@@ -2202,11 +2658,919 @@ BarWidget {
 
                           Text {
                             width: parent.width
-                            text: "Configure keyboard shortcuts, function key behavior (F1–F12 vs media controls), and modifier layout for your MacBook keyboard."
+                            text: "Configure keyboard shortcuts for specific tasks such as Select All and Delete, with Mac defaults tailored for Apple hardware."
                             color: root.dim
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
                             wrapMode: Text.WordWrap
+                          }
+                        }
+                      }
+
+                      // Tasks Keybindings Card (Compact Unified Card)
+                      BorderSurface {
+                        width: parent.width
+                        height: kbTasksCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(root.foreground, 0.03)
+                        radius: Style.cornerRadius
+
+                        Column {
+                          id: kbTasksCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(14)
+                          spacing: Style.space(14)
+
+
+                          Text {
+                            text: "CUSTOMIZABLE SHORTCUTS"
+                            color: root.accent
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                            font.letterSpacing: 0.8
+                          }
+
+                          // 1. Task: Select All
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+
+                              Text {
+                                id: t1Icon
+                                text: "󰒅"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                id: t1Title
+                                text: "Select All"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                text: "Selects all content in the active window"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                width: Math.max(0, parent.width - t1Icon.implicitWidth - t1Title.implicitWidth - Style.space(16))
+                              }
+                            }
+
+                            Row {
+                              id: t1Btns
+                              width: parent.width
+                              spacing: Style.space(6)
+                              readonly property real btnWidth: (width - spacing * 2) / 3
+
+                              readonly property string cur: root.status && root.status.keybindingSelectAll ? root.status.keybindingSelectAll : "CTRL + A"
+                              readonly property bool isMac: cur === "SUPER + A"
+                              readonly property bool isLinux: cur === "CTRL + A"
+                              readonly property bool isCustom: !isMac && !isLinux
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CMD + A"
+                                tooltipText: "Mac preset (Command + A)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isMac
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_select_all", "SUPER + A")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CTRL + A"
+                                tooltipText: "Standard Linux preset"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isLinux
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_select_all", "CTRL + A")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: "󰌌"
+                                text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
+                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isCustom
+                                accent: root.accent
+                                onClicked: root.openKeyRecorder("keybinding_select_all", "Select All")
+                              }
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // 2. Task: Forward Delete
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+
+                              Text {
+                                id: t2Icon
+                                text: "󰧧"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                id: t2Title
+                                text: "Forward Delete"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                text: "Mac keyboards lack dedicated Delete key"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                width: Math.max(0, parent.width - t2Icon.implicitWidth - t2Title.implicitWidth - Style.space(16))
+                              }
+                            }
+
+                            Row {
+                              id: t2Btns
+                              width: parent.width
+                              spacing: Style.space(6)
+                              readonly property real btnWidth: (width - spacing * 2) / 3
+
+                              readonly property string cur: root.status && root.status.keybindingDelete ? root.status.keybindingDelete : "SUPER + BACKSPACE"
+                              readonly property bool isMac: cur === "SUPER + BACKSPACE"
+                              readonly property bool isLinux: cur === "DELETE"
+                              readonly property bool isCustom: !isMac && !isLinux
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CMD + BACKSPACE"
+                                tooltipText: "Mac preset (Command + Backspace)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isMac
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_delete", "SUPER + BACKSPACE")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "DELETE"
+                                tooltipText: "Standard Delete key"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isLinux
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_delete", "DELETE")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: "󰌌"
+                                text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
+                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isCustom
+                                accent: root.accent
+                                onClicked: root.openKeyRecorder("keybinding_delete", "Forward Delete")
+                              }
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // 3. Task: Find
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+
+                              Text {
+                                id: t3Icon
+                                text: "󰍉"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                id: t3Title
+                                text: "Find in Document"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                text: "Search text in pages, browsers, and editors"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                width: Math.max(0, parent.width - t3Icon.implicitWidth - t3Title.implicitWidth - Style.space(16))
+                              }
+                            }
+
+                            Row {
+                              id: t3Btns
+                              width: parent.width
+                              spacing: Style.space(6)
+                              readonly property real btnWidth: (width - spacing * 2) / 3
+
+                              readonly property string cur: root.status && root.status.keybindingFind ? root.status.keybindingFind : "CTRL + F"
+                              readonly property bool isMac: cur === "SUPER + F"
+                              readonly property bool isLinux: cur === "CTRL + F"
+                              readonly property bool isCustom: !isMac && !isLinux
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CMD + F"
+                                tooltipText: "Mac preset (Command + F)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isMac
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_find", "SUPER + F")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CTRL + F"
+                                tooltipText: "Standard Linux preset (Control + F)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isLinux
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_find", "CTRL + F")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: "󰌌"
+                                text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
+                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isCustom
+                                accent: root.accent
+                                onClicked: root.openKeyRecorder("keybinding_find", "Find")
+                              }
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // 4. Task: Toggle Fullscreen
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+
+                              Text {
+                                id: t4Icon
+                                text: "󰊓"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                id: t4Title
+                                text: "Toggle Fullscreen"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                text: "Toggle active window fullscreen mode"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                width: Math.max(0, parent.width - t4Icon.implicitWidth - t4Title.implicitWidth - Style.space(16))
+                              }
+                            }
+
+                            Row {
+                              id: t4Btns
+                              width: parent.width
+                              spacing: Style.space(6)
+                              readonly property real btnWidth: (width - spacing * 2) / 3
+
+                              readonly property string cur: root.status && root.status.keybindingFullscreen ? root.status.keybindingFullscreen : "SUPER + F"
+                              readonly property bool isMac: cur === "SUPER + CTRL + F" || cur === "CTRL + SUPER + F"
+                              readonly property bool isLinux: cur === "SUPER + F"
+                              readonly property bool isCustom: !isMac && !isLinux
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CMD + CTRL + F"
+                                tooltipText: "Mac preset (Cmd + Ctrl + F)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isMac
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_fullscreen", "SUPER + CTRL + F")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CMD + F"
+                                tooltipText: "Standard Omarchy preset (Cmd + F)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isLinux
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_fullscreen", "SUPER + F")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: "󰌌"
+                                text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
+                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isCustom
+                                accent: root.accent
+                                onClicked: root.openKeyRecorder("keybinding_fullscreen", "Toggle Fullscreen")
+                              }
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // 5. Task: Undo
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+
+                              Text {
+                                id: t5Icon
+                                text: "󰕌"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                id: t5Title
+                                text: "Undo"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                text: "Undo last action in applications"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                width: Math.max(0, parent.width - t5Icon.implicitWidth - t5Title.implicitWidth - Style.space(16))
+                              }
+                            }
+
+                            Row {
+                              id: t5Btns
+                              width: parent.width
+                              spacing: Style.space(6)
+                              readonly property real btnWidth: (width - spacing * 2) / 3
+
+                              readonly property string cur: root.status && root.status.keybindingUndo ? root.status.keybindingUndo : "CTRL + Z"
+                              readonly property bool isMac: cur === "SUPER + Z"
+                              readonly property bool isLinux: cur === "CTRL + Z"
+                              readonly property bool isCustom: !isMac && !isLinux
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CMD + Z"
+                                tooltipText: "Mac preset (Command + Z)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isMac
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_undo", "SUPER + Z")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CTRL + Z"
+                                tooltipText: "Standard Linux preset (Control + Z)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isLinux
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_undo", "CTRL + Z")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: "󰌌"
+                                text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
+                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isCustom
+                                accent: root.accent
+                                onClicked: root.openKeyRecorder("keybinding_undo", "Undo")
+                              }
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // 6. Task: Redo
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+
+                              Text {
+                                id: t6Icon
+                                text: "󰑎"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                id: t6Title
+                                text: "Redo"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                text: "Redo last undone action in applications"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                width: Math.max(0, parent.width - t6Icon.implicitWidth - t6Title.implicitWidth - Style.space(16))
+                              }
+                            }
+
+                            Row {
+                              id: t6Btns
+                              width: parent.width
+                              spacing: Style.space(6)
+                              readonly property real btnWidth: (width - spacing * 2) / 3
+
+                              readonly property string cur: root.status && root.status.keybindingRedo ? root.status.keybindingRedo : "CTRL + SHIFT + Z"
+                              readonly property bool isMac: cur === "SUPER + SHIFT + Z" || cur === "SHIFT + SUPER + Z"
+                              readonly property bool isLinux: cur === "CTRL + SHIFT + Z" || cur === "SHIFT + CTRL + Z"
+                              readonly property bool isCustom: !isMac && !isLinux
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CMD + SHIFT + Z"
+                                tooltipText: "Mac preset (Command + Shift + Z)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isMac
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_redo", "SUPER + SHIFT + Z")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CTRL + SHIFT + Z"
+                                tooltipText: "Standard Linux preset (Control + Shift + Z)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isLinux
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_redo", "CTRL + SHIFT + Z")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: "󰌌"
+                                text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
+                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isCustom
+                                accent: root.accent
+                                onClicked: root.openKeyRecorder("keybinding_redo", "Redo")
+                              }
+                            }
+                          }
+                        }
+                      }
+
+                      // Changed System Shortcuts Section (Dynamic - only visible when overrides exist)
+                      BorderSurface {
+                        visible: Model.getSystemOverridesList(root.status).length > 0
+                        width: parent.width
+                        height: changedSysCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(root.foreground, 0.03)
+                        radius: Style.cornerRadius
+
+                        Column {
+                          id: changedSysCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(14)
+                          spacing: Style.space(14)
+
+                          Text {
+                            text: "CHANGED SYSTEM SHORTCUTS"
+                            color: root.accent
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                            font.letterSpacing: 0.8
+                          }
+
+                          Repeater {
+                            model: Model.getSystemOverridesList(root.status)
+
+                            delegate: Column {
+                              width: parent.width
+                              spacing: Style.space(12)
+
+                              Column {
+                                width: parent.width
+                                spacing: Style.space(8)
+
+                                // Top row: Icon, Title, Description right from title
+                                Row {
+                                  width: parent.width
+                                  spacing: Style.space(8)
+
+                                  Text {
+                                    id: sIcon
+                                    text: "󰌌"
+                                    color: root.accent
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.bodySmall
+                                    anchors.verticalCenter: parent.verticalCenter
+                                  }
+
+                                  Text {
+                                    id: sTitle
+                                    text: modelData.action
+                                    color: root.foreground
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.bodySmall
+                                    font.bold: true
+                                    anchors.verticalCenter: parent.verticalCenter
+                                  }
+
+                                  Text {
+                                    text: "Original: " + Model.formatChordForDisplay(modelData.defaultChord)
+                                    color: root.dim
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    elide: Text.ElideRight
+                                    width: Math.max(0, parent.width - sIcon.implicitWidth - sTitle.implicitWidth - Style.space(16))
+                                  }
+                                }
+
+                                // Bottom row: 3 Buttons sharing equal width
+                                Row {
+                                  id: sBtns
+                                  width: parent.width
+                                  spacing: Style.space(6)
+                                  readonly property real btnWidth: (width - spacing * 2) / 3
+
+                                  readonly property string cur: modelData.currentChord || ""
+                                  readonly property string defChord: modelData.defaultChord || ""
+                                  readonly property string recChord: modelData.recommendedChord || ""
+                                  readonly property bool isDefault: cur === defChord
+                                  readonly property bool isRec: cur === recChord && !isDefault
+                                  readonly property bool isCustom: !isDefault && !isRec
+
+                                  Button {
+                                    width: parent.btnWidth
+                                    iconText: "󰁌"
+                                    text: Model.formatChordForDisplay(parent.defChord)
+                                    tooltipText: "System default: " + Model.formatChordForDisplay(parent.defChord) + "\nClick to restore default"
+                                    bordered: true
+                                    fontSize: Style.font.caption
+                                    iconSize: Style.font.bodySmall
+                                    height: Style.space(30)
+                                    selected: parent.isDefault
+                                    accent: root.accent
+                                    onClicked: root.resetSystemKeybinding(modelData.action)
+                                  }
+
+                                  Button {
+                                    width: parent.btnWidth
+                                    iconText: ""
+                                    text: Model.formatChordForDisplay(parent.recChord)
+                                    tooltipText: "Recommended alternative: " + Model.formatChordForDisplay(parent.recChord)
+                                    bordered: true
+                                    fontSize: Style.font.caption
+                                    iconSize: Style.font.bodySmall
+                                    height: Style.space(30)
+                                    selected: parent.isRec
+                                    accent: root.accent
+                                    onClicked: root.setSystemKeybinding(modelData.action, parent.recChord, parent.defChord, modelData.dispatcher, modelData.arg)
+                                  }
+
+                                  Button {
+                                    width: parent.btnWidth
+                                    iconText: "󰌌"
+                                    text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
+                                    tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                    bordered: true
+                                    fontSize: Style.font.caption
+                                    iconSize: Style.font.bodySmall
+                                    height: Style.space(30)
+                                    selected: parent.isCustom
+                                    accent: root.accent
+                                    onClicked: root.openSystemKeyRecorder(modelData.action, modelData.defaultChord, modelData.dispatcher, modelData.arg)
+                                  }
+                                }
+                              }
+
+                              PanelSeparator {
+                                visible: index < Model.getSystemOverridesList(root.status).length - 1
+                                width: parent.width
+                                foreground: root.foreground
+                              }
+                            }
+                          }
+                        }
+                      }
+
+                      // Conflicting Shortcuts Section (Dynamic - only visible when conflicts exist)
+                      BorderSurface {
+                        visible: Model.getActiveConflicts(root.status).length > 0
+                        width: parent.width
+                        height: conflictingCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(Color.warning || root.accent, 0.05)
+                        borderSpec: Border.flat(Util.alpha(Color.warning || root.accent, 0.4), 1)
+                        radius: Style.cornerRadius
+
+                        Column {
+                          id: conflictingCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(14)
+                          spacing: Style.space(14)
+
+                          Row {
+                            spacing: Style.space(8)
+                            anchors.verticalCenter: undefined
+                            Text {
+                              text: "󰀪"
+                              color: Color.warning || root.accent
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.caption
+                              font.bold: true
+                            }
+                            Text {
+                              text: "CONFLICTING SHORTCUTS"
+                              color: Color.warning || root.accent
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.caption
+                              font.bold: true
+                              font.letterSpacing: 0.8
+                            }
+                          }
+
+                          Repeater {
+                            model: Model.getActiveConflicts(root.status)
+
+                            delegate: Column {
+                              width: parent.width
+                              spacing: Style.space(12)
+
+                              Column {
+                                width: parent.width
+                                spacing: Style.space(8)
+
+                                // Top row: Icon, Title, Description right from title
+                                Row {
+                                  width: parent.width
+                                  spacing: Style.space(8)
+
+                                  Text {
+                                    id: cfIcon
+                                    text: "󰀪"
+                                    color: Color.warning || root.accent
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.bodySmall
+                                    anchors.verticalCenter: parent.verticalCenter
+                                  }
+
+                                  Text {
+                                    id: cfTitle
+                                    text: Model.formatChordForDisplay(modelData.chord)
+                                    color: root.foreground
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.bodySmall
+                                    font.bold: true
+                                    anchors.verticalCenter: parent.verticalCenter
+                                  }
+
+                                  Text {
+                                    text: modelData.action1 + " conflicts with " + modelData.action2
+                                    color: Color.warning || root.accent
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    elide: Text.ElideRight
+                                    width: Math.max(0, parent.width - cfIcon.implicitWidth - cfTitle.implicitWidth - Style.space(16))
+                                  }
+                                }
+
+                                // Bottom row: 3 Buttons sharing equal width
+                                Row {
+                                  id: cfBtns
+                                  width: parent.width
+                                  spacing: Style.space(6)
+                                  readonly property real btnWidth: (width - spacing * 2) / 3
+
+                                  Button {
+                                    width: parent.btnWidth
+                                    iconText: "󰀪"
+                                    text: "Resolve…"
+                                    tooltipText: "Open dialog to resolve conflict between " + modelData.action1 + " and " + modelData.action2
+                                    bordered: true
+                                    fontSize: Style.font.caption
+                                    iconSize: Style.font.bodySmall
+                                    height: Style.space(30)
+                                    accent: Color.warning || root.accent
+                                    onClicked: root.triggerConflictResolution(modelData)
+                                  }
+
+                                  Button {
+                                    width: parent.btnWidth
+                                    iconText: ""
+                                    text: Model.formatChordForDisplay(modelData.recommendedChord)
+                                    tooltipText: "Move " + modelData.action2 + " to " + Model.formatChordForDisplay(modelData.recommendedChord)
+                                    bordered: true
+                                    fontSize: Style.font.caption
+                                    iconSize: Style.font.bodySmall
+                                    height: Style.space(30)
+                                    accent: root.accent
+                                    onClicked: {
+                                      if (modelData.source === "system") {
+                                        root.setSystemKeybinding(modelData.action2, modelData.recommendedChord, modelData.defaultChord, modelData.dispatcher, modelData.arg)
+                                      } else {
+                                        root.checkAndApplyKeybinding(modelData.taskKey2, modelData.recommendedChord)
+                                      }
+                                    }
+                                  }
+
+                                  Button {
+                                    width: parent.btnWidth
+                                    iconText: "󰌌"
+                                    text: "Custom…"
+                                    tooltipText: "Choose a custom shortcut for " + modelData.action2
+                                    bordered: true
+                                    fontSize: Style.font.caption
+                                    iconSize: Style.font.bodySmall
+                                    height: Style.space(30)
+                                    accent: root.accent
+                                    onClicked: {
+                                      if (modelData.source === "system") {
+                                        root.openSystemKeyRecorder(modelData.action2, modelData.defaultChord, modelData.dispatcher, modelData.arg)
+                                      } else {
+                                        root.openKeyRecorder(modelData.taskKey2, modelData.action2)
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+
+                              PanelSeparator {
+                                visible: index < Model.getActiveConflicts(root.status).length - 1
+                                width: parent.width
+                                foreground: root.foreground
+                              }
+                            }
                           }
                         }
                       }
@@ -2258,14 +3622,14 @@ BarWidget {
                               spacing: Style.space(6)
 
                               Text {
-                                text: "Super + Return: Terminal"
+                                text: "Cmd + Return: Terminal"
                                 color: root.dim
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
                               }
 
                               Text {
-                                text: "Super + Space: Application Launcher"
+                                text: "Cmd + Space: Application Launcher"
                                 color: root.dim
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
@@ -2277,14 +3641,14 @@ BarWidget {
                               spacing: Style.space(6)
 
                               Text {
-                                text: "Super + Q: Close Active Window"
+                                text: "Cmd + Q: Close Active Window"
                                 color: root.dim
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
                               }
 
                               Text {
-                                text: "Super + L: Lock Screen"
+                                text: "Cmd + L: Lock Screen"
                                 color: root.dim
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
@@ -3228,6 +4592,479 @@ BarWidget {
                       if (root.limineUpdating || limineProc.running) return
                       root.rebootConfirmOpen = false
                       rebootProc.running = true
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Intra-plugin keybinding conflict resolution dialog
+          Rectangle {
+            id: pluginConflictDialogOverlay
+            visible: root.conflictDialogOpen && !root.keyRecorderOpen
+            anchors.fill: parent
+            radius: Style.cornerRadius
+            color: Qt.rgba(0, 0, 0, 0.78)
+            z: 9998
+
+            // Absorb background clicks
+            MouseArea {
+              anchors.fill: parent
+              onClicked: {}
+            }
+
+            Item {
+              id: conflictDialogCatcher
+              anchors.fill: parent
+              focus: root.conflictDialogOpen && !root.keyRecorderOpen
+
+              Keys.onPressed: function(event) {
+                if (!root.conflictDialogOpen) return
+                if (event.key === Qt.Key_Escape) {
+                  root.cancelConflictDialog()
+                  event.accepted = true
+                  return
+                }
+                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                  root.resolveConflictWithRecommended()
+                  event.accepted = true
+                  return
+                }
+              }
+            }
+
+            BorderSurface {
+              anchors.centerIn: parent
+              width: Math.min(parent.width - Style.space(32), Style.space(540))
+              height: conflictDialogCol.implicitHeight + Style.space(48)
+              color: Color.popups.background
+              borderSpec: Border.flat(root.accent, Style.normalBorderWidth)
+              radius: Style.cornerRadius
+
+              Column {
+                id: conflictDialogCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: Style.space(24)
+                spacing: Style.space(16)
+
+                // Dialog Header
+                Row {
+                  width: parent.width
+                  spacing: Style.space(12)
+
+                  Text {
+                    text: "󰀪"
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title * 1.5
+                    color: root.accent
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  Column {
+                    spacing: 2
+                    width: parent.width - Style.space(48)
+
+                    Text {
+                      text: "Shortcut Conflict Detected"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.title
+                      font.bold: true
+                      color: root.foreground
+                    }
+
+                    Text {
+                      text: Model.formatChordForDisplay(root.conflictTargetChord) + " is already assigned to " + root.conflictDisplacedTaskName
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      color: root.dim
+                    }
+                  }
+                }
+
+                // Explanation / Information Box
+                BorderSurface {
+                  width: parent.width
+                  height: conflictInfoCol.implicitHeight + Style.space(24)
+                  color: Util.alpha(root.accent, 0.08)
+                  borderSpec: Border.flat(Util.alpha(root.accent, 0.3), 1)
+                  radius: Style.cornerRadius
+
+                  Column {
+                    id: conflictInfoCol
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Style.space(14)
+                    spacing: Style.space(8)
+
+                    Text {
+                      width: parent.width
+                      wrapMode: Text.WordWrap
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      text: "<b>" + root.conflictTargetTaskName + "</b> was set to <b>" + Model.formatChordForDisplay(root.conflictTargetChord) + "</b>.<br><br>" +
+                            "This conflicts with " + (root.conflictIsSystem ? "the system shortcut <b>" : "<b>") + root.conflictDisplacedTaskName + "</b>, which is currently assigned to <b>" + Model.formatChordForDisplay(root.conflictDisplacedChord) + "</b>.<br><br>" +
+                            "Assign <b>" + root.conflictDisplacedTaskName + "</b> to a different shortcut to resolve this conflict:"
+                    }
+                  }
+                }
+
+                // Action Buttons (NO "Keep Current" button!)
+                Row {
+                  anchors.right: parent.right
+                  spacing: Style.space(10)
+
+                  Button {
+                    iconText: "󰌌"
+                    text: "Custom Shortcut…"
+                    tooltipText: "Record a custom key combination for " + root.conflictDisplacedTaskName
+                    bordered: true
+                    fontSize: Style.font.caption
+                    iconSize: Style.font.bodySmall
+                    height: Style.space(32)
+                    accent: root.accent
+                    onClicked: {
+                      root.resolveConflictWithCustom()
+                    }
+                  }
+
+                  Button {
+                    iconText: ""
+                    text: "Set " + root.conflictDisplacedTaskName + " to " + Model.formatChordForDisplay(root.conflictRecommendedChord)
+                    tooltipText: "Assign " + root.conflictDisplacedTaskName + " to " + Model.formatChordForDisplay(root.conflictRecommendedChord)
+                    bordered: true
+                    selected: true
+                    fontSize: Style.font.caption
+                    iconSize: Style.font.bodySmall
+                    height: Style.space(32)
+                    accent: root.accent
+                    onClicked: {
+                      root.resolveConflictWithRecommended()
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Key combination recorder and conflict confirmation dialog
+          Rectangle {
+            id: keyRecorderDialogOverlay
+            visible: root.keyRecorderOpen
+            anchors.fill: parent
+            radius: Style.cornerRadius
+            color: Qt.rgba(0, 0, 0, 0.78)
+            z: 9999
+
+            // Absorb background clicks
+            MouseArea {
+              anchors.fill: parent
+              onClicked: {}
+            }
+
+            // Keyboard event catcher for recording keys
+            Item {
+              id: keyRecorderCatcher
+              anchors.fill: parent
+              focus: root.keyRecorderOpen
+
+              Keys.onPressed: function(event) {
+                if (!root.keyRecorderOpen) return
+                if (root.keyRecorderChecking) {
+                  event.accepted = true
+                  return
+                }
+
+                // If currently showing conflict dialog: Enter overrides, Escape cancels back to recording
+                if (root.keyRecorderConflict) {
+                  if (event.key === Qt.Key_Escape) {
+                    root.keyRecorderConflict = false
+                    event.accepted = true
+                    return
+                  }
+                  if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    root.applyKeyOverride()
+                    event.accepted = true
+                    return
+                  }
+                  event.accepted = true
+                  return
+                }
+
+                // Plain Escape cancels/closes the dialog
+                if (event.key === Qt.Key_Escape && (!event.modifiers || event.modifiers === 0)) {
+                  root.keyRecorderOpen = false
+                  event.accepted = true
+                  return
+                }
+
+                // Enter confirms if complete
+                if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (!event.modifiers || event.modifiers === 0)) {
+                  if (root.keyRecorderComplete) {
+                    root.confirmKeyRecording()
+                    event.accepted = true
+                    return
+                  }
+                }
+
+                // Convert key event to chord
+                var res = Model.keyEventToChord(event)
+                if (res) {
+                  root.keyRecorderDisplayChord = res.displayChord
+                  if (res.complete) {
+                    root.keyRecorderRecordedChord = res.chord
+                    root.keyRecorderComplete = true
+                  } else {
+                    root.keyRecorderComplete = false
+                  }
+                }
+                event.accepted = true
+              }
+
+              Keys.onReleased: function(event) {
+                if (!root.keyRecorderOpen || root.keyRecorderConflict || root.keyRecorderChecking) return
+                if (!root.keyRecorderComplete) {
+                  if (!event.modifiers || event.modifiers === 0) {
+                    root.keyRecorderDisplayChord = ""
+                  }
+                }
+                event.accepted = true
+              }
+            }
+
+            BorderSurface {
+              anchors.centerIn: parent
+              width: Math.min(parent.width - Style.space(32), Style.space(520))
+              height: keyRecorderCol.implicitHeight + Style.space(48)
+              color: Color.popups.background
+              borderSpec: Border.flat(root.keyRecorderConflict ? (Color.warning || root.accent) : root.accent, Style.normalBorderWidth)
+              radius: Style.cornerRadius
+
+              Column {
+                id: keyRecorderCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: Style.space(24)
+                spacing: Style.space(16)
+
+                // Dialog Header
+                Row {
+                  width: parent.width
+                  spacing: Style.space(12)
+
+                  Text {
+                    text: root.keyRecorderConflict ? "󰀪" : "󰌌"
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title * 1.5
+                    color: root.keyRecorderConflict ? (Color.warning || root.accent) : root.accent
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  Column {
+                    spacing: 2
+                    width: parent.width - Style.space(48)
+
+                    Text {
+                      text: root.keyRecorderConflict ? "Shortcut Already in Use" : ("Record Shortcut: " + root.keyRecorderTaskName)
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.title
+                      font.bold: true
+                      color: root.foreground
+                    }
+
+                    Text {
+                      text: root.keyRecorderConflict ? "Conflict detected with an existing keybinding" : "Press the desired key combination on your keyboard"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      color: root.dim
+                    }
+                  }
+                }
+
+                // If Conflict State:
+                Column {
+                  visible: root.keyRecorderConflict
+                  width: parent.width
+                  spacing: Style.space(14)
+
+                  BorderSurface {
+                    width: parent.width
+                    height: conflictWarningCol.implicitHeight + Style.space(24)
+                    color: Util.alpha(Color.warning || root.accent, 0.08)
+                    borderSpec: Border.flat(Util.alpha(Color.warning || root.accent, 0.35), 1)
+                    radius: Style.cornerRadius
+
+                    Column {
+                      id: conflictWarningCol
+                      anchors.left: parent.left
+                      anchors.right: parent.right
+                      anchors.top: parent.top
+                      anchors.margins: Style.space(14)
+                      spacing: Style.space(8)
+
+                      Row {
+                        spacing: Style.space(8)
+                        Text {
+                          text: "Key Combination:"
+                          color: root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                        }
+                        Text {
+                          text: Model.formatChordForDisplay(root.keyRecorderRecordedChord)
+                          color: root.accent
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall
+                          font.bold: true
+                        }
+                      }
+
+                      Row {
+                        spacing: Style.space(8)
+                        Text {
+                          text: "Currently Assigned To:"
+                          color: root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                        }
+                        Text {
+                          text: Model.formatChordForDisplay(root.keyRecorderConflictAction)
+                          color: root.foreground
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall
+                          font.bold: true
+                        }
+                      }
+
+                      Text {
+                        width: parent.width
+                        text: "Assigning this key combination will override the existing shortcut. Do you want to apply this key combination anyway?"
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        wrapMode: Text.WordWrap
+                      }
+                    }
+                  }
+
+                  // Action Buttons for Conflict Resolution
+                  Row {
+                    width: parent.width
+                    spacing: Style.space(12)
+                    readonly property real btnW: (width - spacing) / 2
+
+                    Button {
+                      width: parent.btnW
+                      text: "Choose Another"
+                      bordered: true
+                      onClicked: {
+                        root.keyRecorderConflict = false
+                        root.keyRecorderRecordedChord = ""
+                        root.keyRecorderDisplayChord = ""
+                        root.keyRecorderComplete = false
+                        keyRecorderCatcher.forceActiveFocus()
+                      }
+                    }
+
+                    Button {
+                      width: parent.btnW
+                      text: "Confirm & Override"
+                      bordered: true
+                      accent: root.accent
+                      onClicked: {
+                        root.applyKeyOverride()
+                      }
+                    }
+                  }
+                }
+
+                // If Normal Recording State:
+                Column {
+                  visible: !root.keyRecorderConflict
+                  width: parent.width
+                  spacing: Style.space(16)
+
+                  // Visual Chord Recording Box
+                  BorderSurface {
+                    width: parent.width
+                    height: Style.space(90)
+                    color: Util.alpha(root.foreground, 0.04)
+                    borderSpec: Border.flat(root.keyRecorderComplete ? root.accent : Util.alpha(root.foreground, 0.15), root.keyRecorderComplete ? 2 : 1)
+                    radius: Style.cornerRadius
+
+                    Column {
+                      anchors.centerIn: parent
+                      spacing: Style.space(6)
+
+                      Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: {
+                          if (root.keyRecorderDisplayChord) return root.keyRecorderDisplayChord
+                          return "Press key combination…"
+                        }
+                        color: root.keyRecorderComplete ? root.accent : (root.keyRecorderDisplayChord ? root.foreground : root.dim)
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.title * 1.2
+                        font.bold: true
+                      }
+
+                      Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: {
+                          if (root.keyRecorderChecking) return "Checking availability…"
+                          if (root.keyRecorderComplete) return "Ready! Click Confirm or press Enter"
+                          if (root.keyRecorderDisplayChord) return "Release modifiers or press final key…"
+                          return "e.g. hold Cmd / Ctrl / Alt and press a key"
+                        }
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+                    }
+                  }
+
+                  // Dialog Action Buttons
+                  Row {
+                    width: parent.width
+                    spacing: Style.space(12)
+                    readonly property real btnW: (width - spacing * 2) / 3
+
+                    Button {
+                      width: parent.btnW
+                      text: "Cancel"
+                      bordered: true
+                      onClicked: {
+                        root.keyRecorderOpen = false
+                      }
+                    }
+
+                    Button {
+                      width: parent.btnW
+                      text: "Clear"
+                      bordered: true
+                      enabled: Boolean(root.keyRecorderDisplayChord || root.keyRecorderRecordedChord)
+                      onClicked: {
+                        root.keyRecorderRecordedChord = ""
+                        root.keyRecorderDisplayChord = ""
+                        root.keyRecorderComplete = false
+                        keyRecorderCatcher.forceActiveFocus()
+                      }
+                    }
+
+                    Button {
+                      width: parent.btnW
+                      text: root.keyRecorderChecking ? "Checking…" : "Confirm"
+                      bordered: true
+                      accent: root.accent
+                      enabled: root.keyRecorderComplete && !root.keyRecorderChecking
+                      onClicked: {
+                        root.confirmKeyRecording()
+                      }
                     }
                   }
                 }

@@ -11,7 +11,7 @@ SYSTEM_HELPER="/usr/local/libexec/omarchy-t2-helper"
 
 mkdir -p "$CONFIG_DIR"
 if [[ ! -f "$SETTINGS_FILE" ]]; then
-  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false}' > "$SETTINGS_FILE"
+  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingFullscreen":"SUPER + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z"}' > "$SETTINGS_FILE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -394,12 +394,94 @@ print_status_json() {
   clamshell=$(get_clamshell_mode)
   hib_delay=$(get_hibernate_delay)
 
-  local kbd_timeout touchbar_blank inactive_eth pcie_compat rec_prompt_shown
+  local kbd_timeout touchbar_blank inactive_eth pcie_compat rec_prompt_shown kb_select_all kb_delete kb_find kb_fullscreen kb_undo kb_redo
   kbd_timeout=$(get_setting "kbdTimeout" "1m")
   touchbar_blank=$(get_setting "touchbarBlank" "true")
   rec_prompt_shown=$(get_setting "recommendedPromptShown" "false")
+  kb_select_all=$(get_setting "keybindingSelectAll" "CTRL + A")
+  kb_delete=$(get_setting "keybindingDelete" "DELETE")
+  kb_find=$(get_setting "keybindingFind" "CTRL + F")
+  kb_fullscreen=$(get_setting "keybindingFullscreen" "SUPER + F")
+  kb_undo=$(get_setting "keybindingUndo" "CTRL + Z")
+  kb_redo=$(get_setting "keybindingRedo" "CTRL + SHIFT + Z")
   inactive_eth=$(get_inactive_ethernet_json)
   pcie_compat=$(get_pcie_ports_compat)
+
+  local kb_payload sys_overrides sys_map
+  kb_payload=$(python3 - "$SETTINGS_FILE" <<'PYEOF'
+import glob, os, json, re, sys
+
+settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
+settings = {}
+if settings_file and os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+overrides = settings.get("systemKeybindingOverrides", {})
+
+cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.records"))
+bound_chords = set()
+raw = []
+if cache_files:
+    try:
+        with open(cache_files[0], "r", encoding="utf-8") as f:
+            for line in f:
+                if "→" in line:
+                    parts = line.strip().split("\t")
+                    combo, desc = parts[0].split("→", 1)
+                    combo = combo.strip().upper()
+                    desc = desc.strip()
+                    disp = parts[1] if len(parts) > 1 else "exec"
+                    arg = parts[2] if len(parts) > 2 else ""
+                    bound_chords.add(combo)
+                    raw.append((combo, desc, disp, arg))
+    except Exception:
+        pass
+
+def get_rec(chord):
+    tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
+    if not tokens:
+        return ""
+    key = tokens[-1]
+    mods = set(tokens[:-1])
+    ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
+    cands = []
+    if "ALT" not in mods:
+        m = list(mods | {"ALT"})
+        m.sort(key=lambda x: ord_map.get(x, 10))
+        cands.append(" + ".join(m) + f" + {key}")
+    if "CTRL" not in mods:
+        m = list(mods | {"CTRL"})
+        m.sort(key=lambda x: ord_map.get(x, 10))
+        cands.append(" + ".join(m) + f" + {key}")
+    for c in cands:
+        if c not in bound_chords:
+            return c
+    m = list(mods | {"ALT"})
+    m.sort(key=lambda x: ord_map.get(x, 10))
+    return " + ".join(m) + f" + {key}"
+
+system_map = {}
+for combo, desc, disp, arg in raw:
+    system_map[combo] = {
+        "chord": combo,
+        "action": desc,
+        "dispatcher": disp,
+        "arg": arg,
+        "defaultChord": combo,
+        "recommendedChord": get_rec(combo)
+    }
+
+print(json.dumps({
+    "systemKeybindingOverrides": overrides,
+    "systemKeybindings": system_map
+}))
+PYEOF
+)
+  sys_overrides=$(python3 -c "import json, sys; d = json.loads(sys.argv[1]); print(json.dumps(d.get('systemKeybindingOverrides', {})))" "$kb_payload" 2>/dev/null || echo "{}")
+  sys_map=$(python3 -c "import json, sys; d = json.loads(sys.argv[1]); print(json.dumps(d.get('systemKeybindings', {})))" "$kb_payload" 2>/dev/null || echo "{}")
 
   local helper_installed=false
   if [[ -x "$SYSTEM_HELPER" ]]; then
@@ -430,7 +512,15 @@ print_status_json() {
   "wakeOnAc": $wake_ac,
   "hibernateDelay": "$hib_delay",
   "touchbarBlank": $touchbar_blank,
-  "recommendedPromptShown": $rec_prompt_shown
+  "recommendedPromptShown": $rec_prompt_shown,
+  "keybindingSelectAll": "$kb_select_all",
+  "keybindingDelete": "$kb_delete",
+  "keybindingFind": "$kb_find",
+  "keybindingFullscreen": "$kb_fullscreen",
+  "keybindingUndo": "$kb_undo",
+  "keybindingRedo": "$kb_redo",
+  "systemKeybindingOverrides": $sys_overrides,
+  "systemKeybindings": $sys_map
 }
 EOF
 }
@@ -513,6 +603,12 @@ save_user_setting() {
           exit 1
           ;;
       esac
+      ;;
+    keybindingSelectAll|keybindingDelete|keybindingFind|keybindingFullscreen|keybindingUndo|keybindingRedo)
+      if [[ ! "$val" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
+        echo "Error: Invalid keybinding chord for $key: '$val'" >&2
+        exit 1
+      fi
       ;;
     *)
       echo "Error: Unauthorized setting key '$key'" >&2
@@ -1038,6 +1134,504 @@ uninstall_system_helper() {
   echo "Removed system helper, plugins helper, and polkit rules."
 }
 
+apply_keybindings() {
+  local bindings_file="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/bindings.lua"
+  [[ -f "$bindings_file" ]] || return 0
+
+  python3 - "$SETTINGS_FILE" "$bindings_file" <<'PYEOF'
+import sys, json, os, re
+
+settings_file = sys.argv[1]
+bindings_file = sys.argv[2]
+
+settings = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+def norm_c(c):
+    if not c: return ""
+    tokens = [t.strip().upper() for t in re.split(r"[\+\s]+", c) if t.strip()]
+    return " + ".join(tokens)
+
+select_all = norm_c(settings.get("keybindingSelectAll", "CTRL + A"))
+delete_key = norm_c(settings.get("keybindingDelete", "DELETE"))
+find_key = norm_c(settings.get("keybindingFind", "CTRL + F"))
+fullscreen = norm_c(settings.get("keybindingFullscreen", "SUPER + F"))
+undo_key = norm_c(settings.get("keybindingUndo", "CTRL + Z"))
+redo_key = norm_c(settings.get("keybindingRedo", "CTRL + SHIFT + Z"))
+system_overrides = settings.get("systemKeybindingOverrides", {})
+
+is_all_defaults = (
+    (not select_all or select_all in ("CTRL + A", "NONE")) and
+    (not delete_key or delete_key in ("DELETE", "NONE")) and
+    (not find_key or find_key in ("CTRL + F", "NONE")) and
+    (not fullscreen or fullscreen in ("SUPER + F", "NONE")) and
+    (not undo_key or undo_key in ("CTRL + Z", "NONE")) and
+    (not redo_key or redo_key in ("CTRL + SHIFT + Z", "NONE")) and
+    len(system_overrides) == 0
+)
+
+start_marker = "-- BEGIN omarchy-t2-linux keybindings"
+end_marker = "-- END omarchy-t2-linux keybindings"
+
+with open(bindings_file, "r", encoding="utf-8") as f:
+    content = f.read()
+
+if is_all_defaults:
+    start_idx = content.find(start_marker)
+    end_idx = content.rfind(end_marker)
+    if start_idx != -1 and end_idx != -1:
+        end_idx += len(end_marker)
+        new_content = content[:start_idx].rstrip() + "\n" + content[end_idx:].lstrip()
+        with open(bindings_file, "w", encoding="utf-8") as f:
+            f.write(new_content)
+    sys.exit(0)
+
+unbinds = []
+binds = []
+
+# Select All
+if select_all and select_all not in ("NONE", "CTRL + A"):
+    unbinds.append(select_all)
+    binds.append(f'o.bind("{select_all}", "Select All", hl.dsp.send_shortcut({{ mods = "CTRL", key = "a" }}))')
+
+# Forward Delete
+if delete_key and delete_key not in ("NONE", "DELETE"):
+    unbinds.append(delete_key)
+    binds.append(f'o.bind("{delete_key}", "Forward Delete", hl.dsp.send_shortcut({{ mods = "", key = "Delete" }}))')
+
+# Find
+if find_key and find_key not in ("NONE", "CTRL + F"):
+    unbinds.append(find_key)
+    binds.append(f'o.bind("{find_key}", "Find", hl.dsp.send_shortcut({{ mods = "CTRL", key = "f" }}))')
+
+# Fullscreen
+if fullscreen and fullscreen not in ("NONE", "SUPER + F"):
+    if find_key != "SUPER + F":
+        unbinds.append("SUPER + F")
+    unbinds.append(fullscreen)
+    if "SUPER" in fullscreen and "CTRL" in fullscreen:
+        alt_chord = fullscreen.replace("SUPER + CTRL", "CTRL + SUPER") if "SUPER + CTRL" in fullscreen else fullscreen.replace("CTRL + SUPER", "SUPER + CTRL")
+        unbinds.append(alt_chord)
+    binds.append(f'o.bind("{fullscreen}", "Full screen", hl.dsp.window.fullscreen({{ mode = "fullscreen" }}))')
+
+# Undo
+if undo_key and undo_key not in ("NONE", "CTRL + Z"):
+    unbinds.append(undo_key)
+    binds.append(f'o.bind("{undo_key}", "Undo", hl.dsp.send_shortcut({{ mods = "CTRL", key = "z" }}))')
+
+# Redo
+if redo_key and redo_key not in ("NONE", "CTRL + SHIFT + Z"):
+    unbinds.append(redo_key)
+    binds.append(f'o.bind("{redo_key}", "Redo", hl.dsp.send_shortcut({{ mods = "CTRL + SHIFT", key = "z" }}))')
+
+# System Overrides
+for action, item in system_overrides.items():
+    orig = norm_c(item.get("defaultChord", ""))
+    cur = norm_c(item.get("currentChord", ""))
+    disp = item.get("dispatcher", "exec")
+    arg = item.get("arg", "")
+    if orig and cur and cur != orig:
+        unbinds.append(orig)
+        unbinds.append(cur)
+        if disp == "lua":
+            binds.append(f'o.bind("{cur}", "{action}", {arg})')
+        else:
+            safe_arg = arg.replace('\\', '\\\\').replace('"', '\\"')
+            binds.append(f'o.bind("{cur}", "{action}", "{safe_arg}")')
+
+seen = set()
+unique_unbinds = []
+for u in unbinds:
+    nu = norm_c(u)
+    if nu and nu not in seen:
+        seen.add(nu)
+        unique_unbinds.append(nu)
+
+lines = [start_marker]
+for u in unique_unbinds:
+    lines.append(f'hl.unbind("{u}")')
+for b in binds:
+    lines.append(b)
+lines.append(end_marker)
+new_block = "\n".join(lines)
+
+start_idx = content.find(start_marker)
+end_idx = content.rfind(end_marker)
+if start_idx != -1 and end_idx != -1:
+    end_idx += len(end_marker)
+    new_content = content[:start_idx].rstrip() + "\n\n" + new_block + "\n" + content[end_idx:].lstrip()
+else:
+    new_content = content.rstrip() + "\n\n" + new_block + "\n"
+
+with open(bindings_file, "w", encoding="utf-8") as f:
+    f.write(new_content)
+PYEOF
+
+  if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl reload >/dev/null 2>&1 || true
+  fi
+}
+
+set_keybindings() {
+  while [[ $# -ge 2 ]]; do
+    local k="$1"
+    local v="$2"
+    shift 2
+    case "$k" in
+      keybinding_select_all|keybindingSelectAll)
+        save_user_setting "keybindingSelectAll" "$v"
+        ;;
+      keybinding_delete|keybindingDelete)
+        save_user_setting "keybindingDelete" "$v"
+        ;;
+      keybinding_find|keybindingFind)
+        save_user_setting "keybindingFind" "$v"
+        ;;
+      keybinding_fullscreen|keybindingFullscreen)
+        save_user_setting "keybindingFullscreen" "$v"
+        ;;
+      keybinding_undo|keybindingUndo)
+        save_user_setting "keybindingUndo" "$v"
+        ;;
+      keybinding_redo|keybindingRedo)
+        save_user_setting "keybindingRedo" "$v"
+        ;;
+      *)
+        echo "Unknown keybinding key: $k" >&2
+        return 1
+        ;;
+    esac
+  done
+  apply_keybindings
+}
+
+set_system_keybinding() {
+  local action="${1:-}"
+  local new_chord="${2:-}"
+  local def_chord="${3:-}"
+  local disp="${4:-exec}"
+  local arg="${5:-}"
+  [[ -n "$action" && -n "$new_chord" ]] || return 1
+
+  python3 - "$SETTINGS_FILE" "$action" "$new_chord" "$def_chord" "$disp" "$arg" <<'PYEOF'
+import sys, json, os
+settings_file = sys.argv[1]
+action = sys.argv[2]
+new_chord = sys.argv[3]
+def_chord = sys.argv[4] if len(sys.argv) > 4 else ""
+disp = sys.argv[5] if len(sys.argv) > 5 else "exec"
+arg = sys.argv[6] if len(sys.argv) > 6 else ""
+
+settings = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+overrides = settings.get("systemKeybindingOverrides", {})
+if not def_chord and action in overrides:
+    def_chord = overrides[action].get("defaultChord", "")
+
+if def_chord and new_chord == def_chord:
+    if action in overrides:
+        del overrides[action]
+else:
+    overrides[action] = {
+        "action": action,
+        "defaultChord": def_chord,
+        "currentChord": new_chord,
+        "recommendedChord": overrides.get(action, {}).get("recommendedChord", ""),
+        "dispatcher": disp,
+        "arg": arg
+    }
+
+settings["systemKeybindingOverrides"] = overrides
+with open(settings_file, "w", encoding="utf-8") as f:
+    json.dump(settings, f, indent=2)
+PYEOF
+  apply_keybindings
+}
+
+reset_system_keybinding() {
+  local action="${1:-}"
+  [[ -n "$action" ]] || return 1
+
+  python3 - "$SETTINGS_FILE" "$action" <<'PYEOF'
+import sys, json, os
+settings_file, action = sys.argv[1], sys.argv[2]
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        settings = {}
+    overrides = settings.get("systemKeybindingOverrides", {})
+    if action in overrides:
+        del overrides[action]
+        settings["systemKeybindingOverrides"] = overrides
+        with open(settings_file, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+PYEOF
+  apply_keybindings
+}
+
+set_keybinding_with_system_override() {
+  local task_key="${1:-}"
+  local task_chord="${2:-}"
+  local action="${3:-}"
+  local new_chord="${4:-}"
+  local def_chord="${5:-}"
+  local disp="${6:-exec}"
+  local arg="${7:-}"
+
+  python3 - "$SETTINGS_FILE" "$task_key" "$task_chord" "$action" "$new_chord" "$def_chord" "$disp" "$arg" <<'PYEOF'
+import sys, json, os
+settings_file = sys.argv[1]
+task_key = sys.argv[2]
+task_chord = sys.argv[3]
+action = sys.argv[4]
+new_chord = sys.argv[5]
+def_chord = sys.argv[6] if len(sys.argv) > 6 else ""
+disp = sys.argv[7] if len(sys.argv) > 7 else "exec"
+arg = sys.argv[8] if len(sys.argv) > 8 else ""
+
+settings = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+tk_map = {
+    "keybinding_select_all": "keybindingSelectAll",
+    "keybindingselectall": "keybindingSelectAll",
+    "keybinding_delete": "keybindingDelete",
+    "keybindingdelete": "keybindingDelete",
+    "keybinding_find": "keybindingFind",
+    "keybindingfind": "keybindingFind",
+    "keybinding_fullscreen": "keybindingFullscreen",
+    "keybindingfullscreen": "keybindingFullscreen",
+    "keybinding_undo": "keybindingUndo",
+    "keybindingundo": "keybindingUndo",
+    "keybinding_redo": "keybindingRedo",
+    "keybindingredo": "keybindingRedo"
+}
+norm_tk = tk_map.get(task_key.lower().replace("_", ""), task_key)
+if norm_tk in ("keybindingSelectAll", "keybindingDelete", "keybindingFind", "keybindingFullscreen", "keybindingUndo", "keybindingRedo"):
+    settings[norm_tk] = task_chord
+
+overrides = settings.get("systemKeybindingOverrides", {})
+if action:
+    if not def_chord and action in overrides:
+        def_chord = overrides[action].get("defaultChord", "")
+
+    if def_chord and new_chord == def_chord:
+        if action in overrides:
+            del overrides[action]
+    else:
+        overrides[action] = {
+            "action": action,
+            "defaultChord": def_chord,
+            "currentChord": new_chord,
+            "recommendedChord": overrides.get(action, {}).get("recommendedChord", ""),
+            "dispatcher": disp,
+            "arg": arg
+        }
+    settings["systemKeybindingOverrides"] = overrides
+
+with open(settings_file, "w", encoding="utf-8") as f:
+    json.dump(settings, f, indent=2)
+PYEOF
+  apply_keybindings
+}
+
+check_keybinding() {
+  local target_chord="${1:-}"
+  local current_task_key="${2:-}"
+
+  python3 - "$target_chord" "$current_task_key" "$SETTINGS_FILE" <<'PYEOF'
+import sys, os, json, re, glob, subprocess
+
+target_chord = sys.argv[1].strip() if len(sys.argv) > 1 else ""
+current_task_key = sys.argv[2].strip() if len(sys.argv) > 2 else ""
+settings_path = sys.argv[3] if len(sys.argv) > 3 else ""
+
+def normalize_chord(c):
+    if not c:
+        return set(), None
+    tokens = [t.strip().upper() for t in re.split(r"[\+\s]+", c) if t.strip()]
+    mods = set()
+    key = None
+    for t in tokens:
+        if t in ("SUPER", "LOGO", "WIN", "CMD", "COMMAND"):
+            mods.add("SUPER")
+        elif t in ("CTRL", "CONTROL"):
+            mods.add("CTRL")
+        elif t in ("ALT", "OPTION"):
+            mods.add("ALT")
+        elif t in ("SHIFT",):
+            mods.add("SHIFT")
+        else:
+            key = t
+    return mods, key
+
+t_mods, t_key = normalize_chord(target_chord)
+if not t_key:
+    print(json.dumps({"chord": target_chord, "inUse": False, "conflict": False, "action": None}))
+    sys.exit(0)
+
+friendly_task_names = {
+    "keybinding_select_all": "Select All",
+    "keybindingSelectAll": "Select All",
+    "keybinding_delete": "Forward Delete",
+    "keybindingDelete": "Forward Delete",
+    "keybinding_find": "Find",
+    "keybindingFind": "Find",
+    "keybinding_fullscreen": "Full screen",
+    "keybindingFullscreen": "Full screen",
+    "keybinding_undo": "Undo",
+    "keybindingUndo": "Undo",
+    "keybinding_redo": "Redo",
+    "keybindingRedo": "Redo"
+}
+
+current_task_friendly = friendly_task_names.get(current_task_key, current_task_key).lower()
+
+# 1. Check settings and defaults for conflicts with other tasks in our plugin
+plugin_bindings = {
+    "keybinding_select_all": "CTRL + A",
+    "keybinding_delete": "DELETE",
+    "keybinding_find": "CTRL + F",
+    "keybinding_fullscreen": "SUPER + F",
+    "keybinding_undo": "CTRL + Z",
+    "keybinding_redo": "CTRL + SHIFT + Z"
+}
+sys_overrides = {}
+if settings_path and os.path.isfile(settings_path):
+    try:
+        with open(settings_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+            for k, v in saved.items():
+                if k.startswith("keybinding") and isinstance(v, str):
+                    plugin_bindings[k] = v
+            sys_overrides = saved.get("systemKeybindingOverrides", {})
+    except Exception:
+        pass
+
+for s_key, s_chord in plugin_bindings.items():
+    s_norm_key = s_key.lower().replace("_", "")
+    c_norm_key = current_task_key.lower().replace("_", "")
+    if s_norm_key == c_norm_key:
+        continue
+    s_mods, s_k = normalize_chord(s_chord)
+    if s_k == t_key and s_mods == t_mods:
+        act = friendly_task_names.get(s_key, s_key)
+        print(json.dumps({
+            "chord": target_chord,
+            "inUse": True,
+            "conflict": True,
+            "action": act,
+            "source": "t2-linux"
+        }))
+        sys.exit(0)
+
+# 2. Check system keybindings records cache
+cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.records"))
+bound_chords = set()
+raw_records = []
+if cache_files:
+    try:
+        with open(cache_files[0], "r", encoding="utf-8") as f:
+            for line in f:
+                if "→" in line:
+                    parts = line.strip().split("\t")
+                    combo, desc = parts[0].split("→", 1)
+                    combo = combo.strip().upper()
+                    desc = desc.strip()
+                    disp = parts[1] if len(parts) > 1 else "exec"
+                    arg = parts[2] if len(parts) > 2 else ""
+                    bound_chords.add(combo)
+                    raw_records.append((combo, desc, disp, arg))
+    except Exception:
+        pass
+
+def get_rec(chord):
+    tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
+    if not tokens: return ""
+    key = tokens[-1]
+    mods = set(tokens[:-1])
+    ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
+    cands = []
+    if "ALT" not in mods:
+        m = list(mods | {"ALT"})
+        m.sort(key=lambda x: ord_map.get(x, 10))
+        cands.append(" + ".join(m) + f" + {key}")
+    if "CTRL" not in mods:
+        m = list(mods | {"CTRL"})
+        m.sort(key=lambda x: ord_map.get(x, 10))
+        cands.append(" + ".join(m) + f" + {key}")
+    for c in cands:
+        if c not in bound_chords:
+            return c
+    m = list(mods | {"ALT"})
+    m.sort(key=lambda x: ord_map.get(x, 10))
+    return " + ".join(m) + f" + {key}"
+
+for k_part, desc, disp, arg in raw_records:
+    k_mods, k_key = normalize_chord(k_part)
+    if k_key == t_key and k_mods == t_mods:
+        is_conflict = (desc.lower() != current_task_friendly)
+        # If this action is already overridden to something else, this default chord is freed
+        if desc in sys_overrides and normalize_chord(sys_overrides[desc].get("currentChord", ""))[0] != t_mods:
+            continue
+        print(json.dumps({
+            "chord": target_chord,
+            "inUse": True,
+            "conflict": is_conflict,
+            "action": desc,
+            "source": "system",
+            "defaultChord": k_part,
+            "recommendedChord": get_rec(k_part),
+            "dispatcher": disp,
+            "arg": arg
+        }))
+        sys.exit(0)
+
+# Check active overrides
+for act, ov in sys_overrides.items():
+    ov_chord = ov.get("currentChord", "")
+    ov_mods, ov_key = normalize_chord(ov_chord)
+    if ov_key == t_key and ov_mods == t_mods:
+        is_conflict = (act.lower() != current_task_friendly)
+        print(json.dumps({
+            "chord": target_chord,
+            "inUse": True,
+            "conflict": is_conflict,
+            "action": act,
+            "source": "system",
+            "defaultChord": ov.get("defaultChord", ov_chord),
+            "recommendedChord": ov.get("recommendedChord", get_rec(ov_chord)),
+            "dispatcher": ov.get("dispatcher", "exec"),
+            "arg": ov.get("arg", "")
+        }))
+        sys.exit(0)
+
+print(json.dumps({
+    "chord": target_chord,
+    "inUse": False,
+    "conflict": False,
+    "action": None
+}))
+PYEOF
+}
+
 # ---------------------------------------------------------------------------
 # CLI Command Dispatcher
 # ---------------------------------------------------------------------------
@@ -1157,12 +1751,55 @@ case "${1:-status}" in
       recommended_prompt_shown)
         save_user_setting "recommendedPromptShown" "$val"
         ;;
+      keybinding_select_all)
+        save_user_setting "keybindingSelectAll" "$val"
+        apply_keybindings
+        ;;
+      keybinding_delete)
+        save_user_setting "keybindingDelete" "$val"
+        apply_keybindings
+        ;;
+      keybinding_find)
+        save_user_setting "keybindingFind" "$val"
+        apply_keybindings
+        ;;
+      keybinding_fullscreen)
+        save_user_setting "keybindingFullscreen" "$val"
+        apply_keybindings
+        ;;
+      keybinding_undo)
+        save_user_setting "keybindingUndo" "$val"
+        apply_keybindings
+        ;;
+      keybinding_redo)
+        save_user_setting "keybindingRedo" "$val"
+        apply_keybindings
+        ;;
       *)
         echo "Unknown setting key: $key" >&2
         exit 1
         ;;
     esac
     ;;
+
+  apply-keybindings)
+    apply_keybindings
+    ;;
+
+  set-keybindings)
+    shift; set_keybindings "$@" ;;
+
+  set-system-keybinding)
+    shift; set_system_keybinding "$@" ;;
+
+  reset-system-keybinding)
+    shift; reset_system_keybinding "$@" ;;
+
+  set-keybinding-with-system-override)
+    shift; set_keybinding_with_system_override "$@" ;;
+
+  check-keybinding)
+    shift; check_keybinding "${1:-}" "${2:-}" ;;
 
   apply-epp)
     shift; apply_epp "${1:-}" ;;
