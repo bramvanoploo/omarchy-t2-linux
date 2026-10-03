@@ -13,7 +13,7 @@ BarWidget {
 
   property bool opened: false
   property var status: Model.emptyStatus()
-  property int activeTab: 0 // 0 = "Battery life", 1 = "Suspend behaviour"
+  property int activeTab: 0 // 0 = "Battery life", 1 = "Suspend behaviour", 2 = "Keybindings", 3 = "Sound", 4 = "Plugins"
   property bool nonT2DialogOpen: false
   property bool applying: false
   property string lastNotice: ""
@@ -33,6 +33,8 @@ BarWidget {
   readonly property var tabs: [
     { id: "battery", title: "Battery life", icon: "󰁹", desc: "Energy & power settings" },
     { id: "suspend", title: "Suspend behaviour", icon: "󰤄", desc: "Sleep states & lid actions" },
+    { id: "keybindings", title: "Keybindings", icon: "󰌘", desc: "Keyboard shortcuts & layout" },
+    { id: "sound", title: "Sound", icon: "󰕾", desc: "Audio devices & configuration" },
     { id: "plugins", title: "Plugins", icon: "󰏓", desc: "T2 community plugins" }
   ]
 
@@ -113,7 +115,7 @@ BarWidget {
     nonT2DialogOpen = false
     opened = true
     refresh()
-    if (activeTab === 2) {
+    if (root.tabs[root.activeTab] && root.tabs[root.activeTab].id === "plugins") {
       fetchPlugins(true)
     } else {
       fetchPlugins(false)
@@ -337,7 +339,7 @@ BarWidget {
     function applyRecommendedOptions(): void { root.applyRecommendedOptions() }
     function selectTab(index: int): void {
       root.activeTab = index
-      if (index === 2 && root.opened) {
+      if (root.tabs[index] && root.tabs[index].id === "plugins" && root.opened) {
         root.fetchPlugins(true)
       }
     }
@@ -356,7 +358,7 @@ BarWidget {
   implicitHeight: button.implicitHeight
 
   onActiveTabChanged: {
-    if (activeTab === 2 && opened) {
+    if (root.tabs[root.activeTab] && root.tabs[root.activeTab].id === "plugins" && opened) {
       root.fetchPlugins(true)
     }
   }
@@ -369,7 +371,7 @@ BarWidget {
         return
       }
       refresh()
-      if (activeTab === 2) {
+      if (root.tabs[root.activeTab] && root.tabs[root.activeTab].id === "plugins") {
         fetchPlugins(true)
       } else {
         fetchPlugins(false)
@@ -918,7 +920,7 @@ BarWidget {
                   anchors.left: parent.left
                   anchors.right: parent.right
                   anchors.top: parent.top
-                  spacing: Style.space(10)
+                  spacing: Style.space(8)
 
                   Repeater {
                     model: root.tabs
@@ -926,7 +928,7 @@ BarWidget {
                     delegate: BorderSurface {
                       id: tabButton
                       width: navTabsCol.width
-                      height: Style.space(62)
+                      height: Style.space(54)
                       radius: Style.cornerRadius
 
                       readonly property bool active: root.activeTab === index
@@ -999,7 +1001,7 @@ BarWidget {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                           root.activeTab = index
-                          if (index === 2) {
+                          if (root.tabs[index] && root.tabs[index].id === "plugins") {
                             root.fetchPlugins(true)
                           }
                         }
@@ -1143,7 +1145,11 @@ BarWidget {
                             ? "Optimize power consumption, battery health, and background device drain."
                             : (root.activeTab === 1
                                 ? "Fine-tune sleep modes, lid behavior, and wake triggers for your MacBook."
-                                : "Discover, install, update, and remove T2-optimized plugins from plugins.omarchy.org.")
+                                : (root.activeTab === 2
+                                    ? "Configure Apple T2 keyboard shortcuts, function keys, and layout options."
+                                    : (root.activeTab === 3
+                                        ? "Manage Apple T2 audio outputs, power saving, and sound profiles."
+                                        : "Discover, install, update, and remove T2-optimized plugins from plugins.omarchy.org.")))
                           color: root.dim
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
@@ -2151,11 +2157,250 @@ BarWidget {
                     }
 
                     // =========================================================
-                    // TAB 2: PLUGINS
+                    // TAB 2: KEYBINDINGS
+                    // =========================================================
+                    Column {
+                      id: keybindingsTabContent
+                      visible: root.activeTab === 2
+                      width: parent.width
+                      spacing: Style.space(12)
+
+                      BorderSurface {
+                        width: parent.width
+                        height: kbHeaderCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(Color.accent, 0.08)
+                        borderSpec: Border.flat(Util.alpha(Color.accent, 0.3), 1)
+                        radius: Style.cornerRadius
+
+                        Column {
+                          id: kbHeaderCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(16)
+                          spacing: Style.space(6)
+
+                          Row {
+                            spacing: Style.space(10)
+
+                            Text {
+                              text: "󰌘"
+                              color: Color.accent
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.title
+                            }
+
+                            Text {
+                              anchors.verticalCenter: parent.verticalCenter
+                              text: "Apple T2 Keyboard & Keybindings"
+                              color: root.foreground
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.body
+                              font.bold: true
+                            }
+                          }
+
+                          Text {
+                            width: parent.width
+                            text: "Configure keyboard shortcuts, function key behavior (F1–F12 vs media controls), and modifier layout for your MacBook keyboard."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            wrapMode: Text.WordWrap
+                          }
+                        }
+                      }
+
+                      // Keybindings Quick Reference & Info Card
+                      BorderSurface {
+                        width: parent.width
+                        height: kbInfoCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(root.foreground, 0.03)
+                        radius: Style.cornerRadius
+
+                        Column {
+                          id: kbInfoCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(14)
+                          spacing: Style.space(10)
+
+                          Text {
+                            text: "KEYBOARD SHORTCUTS REFERENCE"
+                            color: root.accent
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                            font.letterSpacing: 0.8
+                          }
+
+                          Text {
+                            width: parent.width
+                            text: "On Linux with Apple T2 MacBooks, the Command (⌘) key acts as Super / Win, and Option (⌥) maps to Alt. Function keys can be toggled between standard F1–F12 and multimedia actions."
+                            color: root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.bodySmall
+                            wrapMode: Text.WordWrap
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          Row {
+                            width: parent.width
+                            spacing: Style.space(12)
+
+                            Column {
+                              width: (parent.width - Style.space(12)) / 2
+                              spacing: Style.space(6)
+
+                              Text {
+                                text: "Super + Return: Terminal"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                              }
+
+                              Text {
+                                text: "Super + Space: Application Launcher"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                              }
+                            }
+
+                            Column {
+                              width: (parent.width - Style.space(12)) / 2
+                              spacing: Style.space(6)
+
+                              Text {
+                                text: "Super + Q: Close Active Window"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                              }
+
+                              Text {
+                                text: "Super + L: Lock Screen"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    // =========================================================
+                    // TAB 3: SOUND
+                    // =========================================================
+                    Column {
+                      id: soundTabContent
+                      visible: root.activeTab === 3
+                      width: parent.width
+                      spacing: Style.space(12)
+
+                      BorderSurface {
+                        width: parent.width
+                        height: sndHeaderCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(Color.accent, 0.08)
+                        borderSpec: Border.flat(Util.alpha(Color.accent, 0.3), 1)
+                        radius: Style.cornerRadius
+
+                        Column {
+                          id: sndHeaderCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(16)
+                          spacing: Style.space(6)
+
+                          Row {
+                            spacing: Style.space(10)
+
+                            Text {
+                              text: "󰕾"
+                              color: Color.accent
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.title
+                            }
+
+                            Text {
+                              anchors.verticalCenter: parent.verticalCenter
+                              text: "Apple T2 Sound & Audio"
+                              color: root.foreground
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.body
+                              font.bold: true
+                            }
+                          }
+
+                          Text {
+                            width: parent.width
+                            text: "Manage internal speakers, microphone inputs, and audio controller power saving states for Apple T2 hardware."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            wrapMode: Text.WordWrap
+                          }
+                        }
+                      }
+
+                      // Audio Controller Power Save toggle in Sound tab
+                      BorderSurface {
+                        width: parent.width
+                        height: Style.space(62)
+                        color: Util.alpha(root.foreground, 0.03)
+                        radius: Style.cornerRadius
+
+                        Row {
+                          anchors.fill: parent
+                          anchors.leftMargin: Style.space(14)
+                          anchors.rightMargin: Style.space(14)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Column {
+                            width: parent.width - soundAudioSwitch.width - Style.space(14)
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 2
+
+                            Text {
+                              text: "Audio Controller Power Save"
+                              color: root.foreground
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.body
+                              font.bold: true
+                            }
+                            Text {
+                              text: "Powers down the Apple Audio controller when no media is playing to conserve battery."
+                              color: root.dim
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.caption
+                            }
+                          }
+
+                          ToggleSwitch {
+                            id: soundAudioSwitch
+                            anchors.verticalCenter: parent.verticalCenter
+                            checked: Boolean(root.status && root.status.audioPowerSave)
+                            accent: root.accent
+                            foreground: checked ? root.accent : root.foreground
+                            onToggled: root.setOption("audio_powersave", !(root.status && root.status.audioPowerSave) ? "true" : "false")
+                          }
+                        }
+                      }
+                    }
+
+                    // =========================================================
+                    // TAB 4: PLUGINS
                     // =========================================================
                     Column {
                       id: pluginsTabContent
-                      visible: root.activeTab === 2
+                      visible: root.activeTab === 4
                       width: parent.width
                       spacing: Style.space(12)
 
