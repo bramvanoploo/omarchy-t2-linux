@@ -62,6 +62,7 @@ BarWidget {
     { id: "battery", title: "Battery life", icon: "󰁹", desc: "Energy & power settings" },
     { id: "suspend", title: "Suspend behaviour", icon: "󰤄", desc: "Sleep states & lid actions" },
     { id: "keybindings", title: "Keybindings", icon: "󰌘", desc: "Keyboard shortcuts & layout" },
+    { id: "trackpad", title: "Trackpad", icon: "󱑣", desc: "Pointer & gesture controls" },
     // { id: "sound", title: "Sound", icon: "󰕾", desc: "Audio devices & configuration" }, // Hidden for now
     { id: "plugins", title: "Plugins", icon: "󰏓", desc: "T2 community plugins" }
   ]
@@ -359,6 +360,71 @@ BarWidget {
     limineProc.running = true
   }
 
+  function applyRecommendedTrackpad() {
+    noticeTimer.stop()
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      var tp = Object.assign({}, s.trackpad || Model.emptyStatus().trackpad)
+      tp.naturalScroll = true
+      tp.tapToClick = true
+      tp.clickfingerBehavior = true
+      tp.disableWhileTyping = true
+      tp.scrollFactor = 0.64
+      tp.middleButtonEmulation = false
+      tp.tapAndDrag = true
+      tp.dragLock = false
+      tp.drag3fg = 1
+      tp.tapButtonMap = "lrm"
+      tp.flipX = false
+      tp.flipY = false
+      tp.sensitivity = 0.0
+      tp.accelProfile = "adaptive"
+      tp.leftHanded = false
+      tp.swipeWorkspaces = true
+      s.trackpad = tp
+      root.status = s
+    }
+    root.lastNotice = "Applying recommended trackpad defaults…"
+    actionProc.command = ["bash", helper, "apply-recommended-trackpad"]
+    actionProc.running = true
+  }
+
+  function resetTrackpadToDefaults() {
+    noticeTimer.stop()
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      var tp = Object.assign({}, s.trackpad || Model.emptyStatus().trackpad)
+      tp.naturalScroll = false
+      tp.tapToClick = true
+      tp.clickfingerBehavior = true
+      tp.disableWhileTyping = true
+      tp.scrollFactor = 0.4
+      tp.middleButtonEmulation = false
+      tp.tapAndDrag = true
+      tp.dragLock = false
+      tp.drag3fg = 0
+      tp.tapButtonMap = "lrm"
+      tp.flipX = false
+      tp.flipY = false
+      tp.sensitivity = 0.0
+      tp.accelProfile = "adaptive"
+      tp.leftHanded = false
+      tp.swipeWorkspaces = true
+      s.trackpad = tp
+      root.status = s
+    }
+    root.lastNotice = "Restoring trackpad settings to defaults…"
+    actionProc.command = ["bash", helper, "reset-trackpad-to-defaults"]
+    actionProc.running = true
+  }
+
+  function restartTrackpad() {
+    noticeTimer.stop()
+    root.lastNotice = "Restarting trackpad driver…"
+    actionProc.command = ["bash", helper, "restart-trackpad"]
+    actionProc.running = true
+  }
+
   function dismissRecommendedPrompt() {
     if (root.status && !root.status.recommendedPromptShown) {
       var s = Object.assign({}, root.status)
@@ -438,6 +504,26 @@ BarWidget {
         s.keybindingRedo = val
       } else if (key === "keybinding_save") {
         s.keybindingSave = val
+      } else if (key.indexOf("trackpad_") === 0) {
+        var tpKey = key.slice(9)
+        var tp = Object.assign({}, s.trackpad || Model.emptyStatus().trackpad)
+        if (tpKey === "natural_scroll") tp.naturalScroll = (val === "true" || val === "1" || val === "on")
+        else if (tpKey === "tap_to_click") tp.tapToClick = (val === "true" || val === "1" || val === "on")
+        else if (tpKey === "clickfinger_behavior") tp.clickfingerBehavior = (val === "true" || val === "1" || val === "on")
+        else if (tpKey === "disable_while_typing") tp.disableWhileTyping = (val === "true" || val === "1" || val === "on")
+        else if (tpKey === "middle_button_emulation") tp.middleButtonEmulation = (val === "true" || val === "1" || val === "on")
+        else if (tpKey === "tap_and_drag") tp.tapAndDrag = (val === "true" || val === "1" || val === "on")
+        else if (tpKey === "drag_lock") tp.dragLock = (val === "true" || val === "1" || val === "on")
+        else if (tpKey === "drag_3fg") tp.drag3fg = Number(val) || 0
+        else if (tpKey === "tap_button_map") tp.tapButtonMap = String(val)
+        else if (tpKey === "scroll_factor") tp.scrollFactor = Number(val) || 0.64
+        else if (tpKey === "sensitivity") tp.sensitivity = Number(val) || 0.0
+        else if (tpKey === "accel_profile") tp.accelProfile = String(val)
+        else if (tpKey === "left_handed") tp.leftHanded = (val === "true" || val === "1" || val === "on")
+        else if (tpKey === "flip_x") tp.flipX = (val === "true" || val === "1" || val === "on")
+        else if (tpKey === "flip_y") tp.flipY = (val === "true" || val === "1" || val === "on")
+        else if (tpKey === "swipe_workspaces") tp.swipeWorkspaces = (val === "true" || val === "1" || val === "on")
+        s.trackpad = tp
       }
       root.status = s
     }
@@ -1829,9 +1915,11 @@ BarWidget {
                                 ? "Fine-tune sleep modes, lid behavior, and wake triggers for your MacBook."
                                 : (root.currentTabId === "keybindings"
                                     ? "Configure Apple T2 keyboard shortcuts, function keys, and layout options."
-                                    : (root.currentTabId === "sound"
-                                        ? "Manage Apple T2 audio outputs, power saving, and sound profiles."
-                                        : "Discover, install, update, and remove T2-optimized plugins from plugins.omarchy.org.")))
+                                    : (root.currentTabId === "trackpad"
+                                        ? "Configure pointer speed, natural scrolling, Force Touch gestures, and palm rejection for the Apple internal trackpad."
+                                        : (root.currentTabId === "sound"
+                                            ? "Manage Apple T2 audio outputs, power saving, and sound profiles."
+                                            : "Discover, install, update, and remove T2-optimized plugins from plugins.omarchy.org."))))
                           color: root.dim
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
@@ -1857,17 +1945,18 @@ BarWidget {
 
                         Button {
                           id: tabRecBtn
-                          visible: root.currentTabId === "battery" || root.currentTabId === "suspend" || root.currentTabId === "keybindings"
+                          visible: root.currentTabId === "battery" || root.currentTabId === "suspend" || root.currentTabId === "keybindings" || root.currentTabId === "trackpad"
                           anchors.verticalCenter: parent.verticalCenter
 
                           readonly property bool allApplied: {
                             if (root.currentTabId === "battery") return Model.areAllBatteryRecommendedApplied(root.status)
                             if (root.currentTabId === "suspend") return Model.areAllSuspendRecommendedApplied(root.status)
                             if (root.currentTabId === "keybindings") return Model.areAllMacShortcutsApplied(root.status)
+                            if (root.currentTabId === "trackpad") return Model.areAllTrackpadRecommendedApplied(root.status)
                             return false
                           }
 
-                          iconText: allApplied ? "󰁌" : (root.currentTabId === "keybindings" ? "" : (root.currentTabId === "battery" ? "󰁹" : "󰤄"))
+                          iconText: allApplied ? "󰁌" : (root.currentTabId === "keybindings" ? "" : (root.currentTabId === "trackpad" ? "󱑣" : (root.currentTabId === "battery" ? "󰁹" : "󰤄")))
                           text: allApplied ? "Reset to Defaults" : "Apply Recommended Defaults"
                           tooltipText: allApplied
                             ? ("Reset " + (root.tabs && root.tabs[root.activeTab] ? root.tabs[root.activeTab].title.toLowerCase() : "tab") + " to system defaults")
@@ -1885,6 +1974,8 @@ BarWidget {
                               if (allApplied) root.resetSuspendToDefaults(); else root.applyRecommendedSuspend();
                             } else if (root.currentTabId === "keybindings") {
                               if (allApplied) root.resetKeybindingsToDefaults(); else root.applyRecommendedKeybindings();
+                            } else if (root.currentTabId === "trackpad") {
+                              if (allApplied) root.resetTrackpadToDefaults(); else root.applyRecommendedTrackpad();
                             }
                           }
                         }
@@ -4020,6 +4111,907 @@ BarWidget {
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.bodySmall
                             wrapMode: Text.WordWrap
+                          }
+                        }
+                      }
+                    }
+
+                    // =========================================================
+                    // TAB: TRACKPAD
+                    // =========================================================
+                    Column {
+                      id: trackpadTabContent
+                      visible: root.currentTabId === "trackpad"
+                      width: parent.width
+                      spacing: Style.space(12)
+
+                      // 1. Hero Card: Apple Force Touch Trackpad Status
+                      BorderSurface {
+                        width: parent.width
+                        height: tpHeaderCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(Color.accent, 0.08)
+                        borderSpec: Border.flat(Util.alpha(Color.accent, 0.3), 1)
+                        radius: Style.cornerRadius
+
+                        Column {
+                          id: tpHeaderCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(16)
+                          spacing: Style.space(10)
+
+                          Row {
+                            width: parent.width
+                            spacing: Style.space(10)
+
+                            Text {
+                              text: "󱑣"
+                              color: Color.accent
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.title
+                              anchors.verticalCenter: parent.verticalCenter
+                            }
+
+                            Column {
+                              width: parent.width - restartTpBtn.width - Style.space(50)
+                              anchors.verticalCenter: parent.verticalCenter
+                              spacing: 2
+
+                              Text {
+                                text: "Apple Force Touch Trackpad"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: (root.status && root.status.trackpad && root.status.trackpad.device)
+                                  ? (root.status.trackpad.device + " · Magic Trackpad 2 Engine")
+                                  : "Apple Magic Trackpad 2 Engine (USB 05AC:027C)"
+                                color: Color.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                elide: Text.ElideRight
+                                width: parent.width
+                              }
+                            }
+
+                            Button {
+                              id: restartTpBtn
+                              text: "Restart Driver"
+                              iconText: "󰑐"
+                              bordered: true
+                              fontSize: Style.font.caption
+                              height: Style.space(28)
+                              anchors.verticalCenter: parent.verticalCenter
+                              tooltipText: "Reload the trackpad input driver if touch tracking or gestures become unresponsive"
+                              onClicked: root.restartTrackpad()
+                            }
+                          }
+
+                          Text {
+                            width: parent.width
+                            text: "Apple MacBooks feature a glass Force Touch trackpad with haptic feedback. Configure motion sensitivity, natural scroll direction, multi-finger gestures, and palm rejection for Linux."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            wrapMode: Text.WordWrap
+                          }
+                        }
+                      }
+
+                      // 2. Pointer Motion & Scrolling Card
+                      BorderSurface {
+                        width: parent.width
+                        height: tpMotionCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(root.foreground, 0.03)
+                        radius: Style.cornerRadius
+
+                        Column {
+                          id: tpMotionCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(14)
+                          spacing: Style.space(14)
+
+                          Text {
+                            text: "POINTER & SCROLLING"
+                            color: root.accent
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                            font.letterSpacing: 0.8
+                          }
+
+                          // Option: Pointer Speed
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(6)
+
+                            Row {
+                              width: parent.width
+
+                              Column {
+                                width: parent.width - speedValText.implicitWidth
+                                spacing: 2
+
+                                Text {
+                                  text: "Pointer Tracking Speed"
+                                  color: root.foreground
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.body
+                                  font.bold: true
+                                }
+
+                                Text {
+                                  text: "Overall cursor sensitivity and movement speed across the trackpad surface."
+                                  color: root.dim
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.caption
+                                }
+                              }
+
+                              Text {
+                                id: speedValText
+                                text: {
+                                  var sens = (root.status && root.status.trackpad) ? root.status.trackpad.sensitivity : 0.0
+                                  var pct = Model.speedPercentFromSensitivity(sens)
+                                  return pct + "%" + (pct === 50 ? " (Default)" : "")
+                                }
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+                            }
+
+                            PanelSlider {
+                              width: parent.width
+                              height: Style.space(24)
+                              bar: root.bar
+                              minimum: 0
+                              maximum: 100
+                              step: 5
+                              integer: true
+                              value: Model.speedPercentFromSensitivity(root.status && root.status.trackpad ? root.status.trackpad.sensitivity : 0.0)
+                              onMoved: function(v) {
+                                root.setOption("trackpad_sensitivity", Model.sensitivityFromSpeedPercent(v))
+                              }
+                              onReleased: function(v) {
+                                root.setOption("trackpad_sensitivity", Model.sensitivityFromSpeedPercent(v))
+                              }
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Option: Acceleration Profile
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Column {
+                              width: parent.width
+                              spacing: 2
+
+                              Text {
+                                text: "Pointer Acceleration Profile"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Adaptive dynamically increases cursor travel during rapid finger flicks (standard macOS behavior), while Flat maintains a strict linear 1:1 speed ratio."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+                              readonly property real btnWidth: (width - spacing) / 2
+
+                              Button {
+                                width: parent.btnWidth
+                                text: "Adaptive (macOS Default)"
+                                iconText: ""
+                                bordered: true
+                                selected: !(root.status && root.status.trackpad && root.status.trackpad.accelProfile === "flat")
+                                onClicked: root.setOption("trackpad_accel_profile", "adaptive")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                text: "Flat (Linear 1:1)"
+                                iconText: "󰄶"
+                                bordered: true
+                                selected: Boolean(root.status && root.status.trackpad && root.status.trackpad.accelProfile === "flat")
+                                onClicked: root.setOption("trackpad_accel_profile", "flat")
+                              }
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Option: Scroll Speed
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(6)
+
+                            Row {
+                              width: parent.width
+
+                              Column {
+                                width: parent.width - scrollValText.implicitWidth
+                                spacing: 2
+
+                                Text {
+                                  text: "Two-Finger Scroll Speed"
+                                  color: root.foreground
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.body
+                                  font.bold: true
+                                }
+
+                                Text {
+                                  text: "Speed multiplier for vertical and horizontal two-finger scrolling."
+                                  color: root.dim
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.caption
+                                }
+                              }
+
+                              Text {
+                                id: scrollValText
+                                text: {
+                                  var f = (root.status && root.status.trackpad && root.status.trackpad.scrollFactor !== undefined)
+                                    ? root.status.trackpad.scrollFactor
+                                    : 0.64
+                                  return Number(f).toFixed(2) + "x"
+                                }
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+                            }
+
+                            PanelSlider {
+                              width: parent.width
+                              height: Style.space(24)
+                              bar: root.bar
+                              minimum: 10
+                              maximum: 200
+                              step: 5
+                              integer: true
+                              value: Math.round(((root.status && root.status.trackpad ? root.status.trackpad.scrollFactor : 0.64)) * 100)
+                              onMoved: function(v) {
+                                root.setOption("trackpad_scroll_factor", (v / 100.0).toFixed(2))
+                              }
+                              onReleased: function(v) {
+                                root.setOption("trackpad_scroll_factor", (v / 100.0).toFixed(2))
+                              }
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Option: Natural Scrolling
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - natScrollSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "Natural Scrolling"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Invert scroll direction so page content moves smoothly in the direction of your fingers (standard macOS scrolling)."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: natScrollSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.naturalScroll)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_natural_scroll", !(root.status && root.status.trackpad && root.status.trackpad.naturalScroll) ? "true" : "false")
+                            }
+                          }
+                        }
+                      }
+
+                      // 3. Clicking & Multi-Touch Gestures Card
+                      BorderSurface {
+                        width: parent.width
+                        height: tpGesturesCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(root.foreground, 0.03)
+                        radius: Style.cornerRadius
+
+                        Column {
+                          id: tpGesturesCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(14)
+                          spacing: Style.space(14)
+
+                          Text {
+                            text: "CLICKING & GESTURES"
+                            color: root.accent
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                            font.letterSpacing: 0.8
+                          }
+
+                          // Tap to Click
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - tapClickSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "Tap to Click"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Tap the trackpad surface with 1 finger for left-click and 2 fingers for right-click without having to depress the physical click mechanism."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: tapClickSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.tapToClick)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_tap_to_click", !(root.status && root.status.trackpad && root.status.trackpad.tapToClick) ? "true" : "false")
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Two-Finger Secondary Click
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - clickfingerSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "Two-Finger Secondary Click"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Click anywhere on the trackpad with two fingers to trigger right-click (Mac style) instead of pressing the bottom-right corner."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: clickfingerSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.clickfingerBehavior)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_clickfinger_behavior", !(root.status && root.status.trackpad && root.status.trackpad.clickfingerBehavior) ? "true" : "false")
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Three-Finger Drag
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - drag3fgSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "Three-Finger Drag"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Classic macOS gesture: place three fingers on the trackpad to drag windows, move items, or select text without clicking down."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: drag3fgSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.drag3fg > 0)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_drag_3fg", (root.status && root.status.trackpad && root.status.trackpad.drag3fg > 0) ? "0" : "1")
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Tap and Drag
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - tapDragSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "Tap and Drag"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Double-tap and slide without physical click to drag windows or highlight passages of text."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: tapDragSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.tapAndDrag)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_tap_and_drag", !(root.status && root.status.trackpad && root.status.trackpad.tapAndDrag) ? "true" : "false")
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Drag Lock
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - dragLockSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "Tap Drag Lock"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Maintains drag selection when you briefly lift and reposition your finger across the trackpad, ending only after a single tap."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: dragLockSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.dragLock)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_drag_lock", !(root.status && root.status.trackpad && root.status.trackpad.dragLock) ? "true" : "false")
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Middle Button Emulation
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - midEmulSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "Middle Click Emulation"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Simulate a middle mouse click by pressing left and right buttons simultaneously."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: midEmulSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.middleButtonEmulation)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_middle_button_emulation", !(root.status && root.status.trackpad && root.status.trackpad.middleButtonEmulation) ? "true" : "false")
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // 3-Finger Workspace Swiping
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - swipeWorkspacesSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "3-Finger Workspace Swiping"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Swipe horizontally across the trackpad with three fingers to switch between virtual workspaces."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: swipeWorkspacesSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.swipeWorkspaces)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_swipe_workspaces", !(root.status && root.status.trackpad && root.status.trackpad.swipeWorkspaces) ? "true" : "false")
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Tap Button Mapping
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Column {
+                              width: parent.width
+                              spacing: 2
+
+                              Text {
+                                text: "Multi-Finger Tap Button Order"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Configure tap finger mapping: LRM maps 2 fingers to Right-Click and 3 fingers to Middle-Click (Mac style). LMR maps 2 fingers to Middle-Click and 3 fingers to Right-Click (X11 style)."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+                              readonly property real btnWidth: (width - spacing) / 2
+
+                              Button {
+                                width: parent.btnWidth
+                                text: "LRM: Left, Right, Middle (Mac)"
+                                iconText: ""
+                                bordered: true
+                                selected: !(root.status && root.status.trackpad && root.status.trackpad.tapButtonMap === "lmr")
+                                onClicked: root.setOption("trackpad_tap_button_map", "lrm")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                text: "LMR: Left, Middle, Right (X11)"
+                                iconText: "󰄶"
+                                bordered: true
+                                selected: Boolean(root.status && root.status.trackpad && root.status.trackpad.tapButtonMap === "lmr")
+                                onClicked: root.setOption("trackpad_tap_button_map", "lmr")
+                              }
+                            }
+                          }
+                        }
+                      }
+
+                      // 4. Palm Rejection & Axis Tuning Card
+                      BorderSurface {
+                        width: parent.width
+                        height: tpPalmCol.implicitHeight + Style.space(28)
+                        color: Util.alpha(root.foreground, 0.03)
+                        radius: Style.cornerRadius
+
+                        Column {
+                          id: tpPalmCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(14)
+                          spacing: Style.space(14)
+
+                          Text {
+                            text: "PALM REJECTION & ADVANCED"
+                            color: root.accent
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                            font.letterSpacing: 0.8
+                          }
+
+                          // Disable While Typing
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - dwtSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "Disable While Typing (Palm Rejection)"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Temporarily locks trackpad input while typing on the keyboard to prevent palms and thumbs from triggering accidental cursor movements."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: dwtSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.disableWhileTyping)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_disable_while_typing", !(root.status && root.status.trackpad && root.status.trackpad.disableWhileTyping) ? "true" : "false")
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Left-Handed Mode
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - leftHandSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "Left-Handed Mode"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Swaps physical primary (left) and secondary (right) button triggers for left-handed usage."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: leftHandSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.leftHanded)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_left_handed", !(root.status && root.status.trackpad && root.status.trackpad.leftHanded) ? "true" : "false")
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Invert Horizontal Axis (Flip X)
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - flipXSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "Invert Horizontal Axis (Flip X)"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Invert horizontal left-to-right trackpad pointer motion."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: flipXSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.flipX)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_flip_x", !(root.status && root.status.trackpad && root.status.trackpad.flipX) ? "true" : "false")
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // Invert Vertical Axis (Flip Y)
+                          Row {
+                            width: parent.width
+
+                            Column {
+                              width: parent.width - flipYSwitch.width - Style.space(14)
+                              spacing: 2
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              Text {
+                                text: "Invert Vertical Axis (Flip Y)"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.body
+                                font.bold: true
+                              }
+
+                              Text {
+                                text: "Invert vertical up-to-down trackpad pointer motion."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+
+                            ToggleSwitch {
+                              id: flipYSwitch
+                              anchors.verticalCenter: parent.verticalCenter
+                              checked: Boolean(root.status && root.status.trackpad && root.status.trackpad.flipY)
+                              accent: root.accent
+                              foreground: checked ? root.accent : root.foreground
+                              onToggled: root.setOption("trackpad_flip_y", !(root.status && root.status.trackpad && root.status.trackpad.flipY) ? "true" : "false")
+                            }
                           }
                         }
                       }

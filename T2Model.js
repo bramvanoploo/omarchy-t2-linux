@@ -39,7 +39,27 @@ function emptyStatus() {
     keybindingFullscreen: "SUPER + F",
     keybindingUndo: "CTRL + Z",
     keybindingRedo: "CTRL + SHIFT + Z",
-    keybindingSave: "CTRL + S"
+    keybindingSave: "CTRL + S",
+    trackpad: {
+      device: "Apple Force Touch Trackpad",
+      present: true,
+      naturalScroll: true,
+      tapToClick: true,
+      clickfingerBehavior: true,
+      disableWhileTyping: true,
+      scrollFactor: 0.64,
+      middleButtonEmulation: false,
+      tapAndDrag: true,
+      dragLock: false,
+      drag3fg: 1,
+      tapButtonMap: "lrm",
+      flipX: false,
+      flipY: false,
+      sensitivity: 0.0,
+      accelProfile: "adaptive",
+      leftHanded: false,
+      swipeWorkspaces: true
+    }
   };
 }
 
@@ -97,6 +117,40 @@ function parseStatus(raw) {
         else if (hd === "7200" || hd === "7200s" || hd === "120m" || hd === "2h" || hd === "2hours") data.hibernateDelay = "2hours";
         else if (hd === "0" || hd === "off" || hd === "never") data.hibernateDelay = "off";
       }
+
+      if (data.trackpad && typeof data.trackpad === "object") {
+        data.trackpad.present = Boolean(data.trackpad.present);
+        data.trackpad.device = data.trackpad.device ? String(data.trackpad.device) : "Apple Force Touch Trackpad";
+        data.trackpad.naturalScroll = data.trackpad.naturalScroll !== undefined ? Boolean(data.trackpad.naturalScroll) : true;
+        data.trackpad.tapToClick = data.trackpad.tapToClick !== undefined ? Boolean(data.trackpad.tapToClick) : true;
+        data.trackpad.clickfingerBehavior = data.trackpad.clickfingerBehavior !== undefined ? Boolean(data.trackpad.clickfingerBehavior) : true;
+        data.trackpad.disableWhileTyping = data.trackpad.disableWhileTyping !== undefined ? Boolean(data.trackpad.disableWhileTyping) : true;
+        data.trackpad.middleButtonEmulation = Boolean(data.trackpad.middleButtonEmulation);
+        data.trackpad.tapAndDrag = data.trackpad.tapAndDrag !== undefined ? Boolean(data.trackpad.tapAndDrag) : true;
+        data.trackpad.dragLock = Boolean(data.trackpad.dragLock);
+        data.trackpad.drag3fg = typeof data.trackpad.drag3fg === "number" ? Math.max(0, Math.min(3, Math.round(data.trackpad.drag3fg))) : (data.trackpad.drag3fg ? 1 : 0);
+        data.trackpad.tapButtonMap = String(data.trackpad.tapButtonMap || "lrm").toLowerCase() === "lmr" ? "lmr" : "lrm";
+        data.trackpad.flipX = Boolean(data.trackpad.flipX);
+        data.trackpad.flipY = Boolean(data.trackpad.flipY);
+        data.trackpad.leftHanded = Boolean(data.trackpad.leftHanded);
+        data.trackpad.swipeWorkspaces = data.trackpad.swipeWorkspaces !== undefined ? Boolean(data.trackpad.swipeWorkspaces) : true;
+        data.trackpad.accelProfile = String(data.trackpad.accelProfile || "adaptive").toLowerCase() === "flat" ? "flat" : "adaptive";
+
+        if (typeof data.trackpad.scrollFactor === "number" && !isNaN(data.trackpad.scrollFactor)) {
+          data.trackpad.scrollFactor = Math.max(0.1, Math.min(2.0, Math.round(data.trackpad.scrollFactor * 100) / 100));
+        } else {
+          data.trackpad.scrollFactor = 0.64;
+        }
+
+        if (typeof data.trackpad.sensitivity === "number" && !isNaN(data.trackpad.sensitivity)) {
+          data.trackpad.sensitivity = Math.max(-1.0, Math.min(1.0, Math.round(data.trackpad.sensitivity * 100) / 100));
+        } else {
+          data.trackpad.sensitivity = 0.0;
+        }
+      } else {
+        data.trackpad = emptyStatus().trackpad;
+      }
+
       return data;
     }
   } catch (e) {
@@ -660,3 +714,64 @@ function areAllBatteryRecommendedApplied(status) {
     ethOk
   );
 }
+
+function areAllTrackpadRecommendedApplied(status) {
+  if (!status || !status.trackpad) return false;
+  var tp = status.trackpad;
+  return Boolean(
+    tp.naturalScroll &&
+    tp.tapToClick &&
+    tp.clickfingerBehavior &&
+    tp.disableWhileTyping &&
+    tp.drag3fg === 1 &&
+    tp.tapAndDrag &&
+    !tp.dragLock &&
+    !tp.middleButtonEmulation &&
+    tp.tapButtonMap === "lrm" &&
+    tp.accelProfile === "adaptive" &&
+    !tp.leftHanded &&
+    !tp.flipX &&
+    !tp.flipY &&
+    tp.swipeWorkspaces
+  );
+}
+
+function speedPercentFromSensitivity(sensitivity) {
+  var s = Number(sensitivity);
+  if (!isFinite(s)) s = 0.0;
+  return Math.round(Math.max(0, Math.min(100, (s + 1.0) * 50)));
+}
+
+function sensitivityFromSpeedPercent(percent) {
+  var p = Number(percent);
+  if (!isFinite(p)) p = 50;
+  var clamped = Math.max(0, Math.min(100, p));
+  return Math.round(((clamped / 50.0) - 1.0) * 100) / 100;
+}
+
+function scrollPercentFromFactor(factor) {
+  var f = Number(factor);
+  if (!isFinite(f)) f = 0.64;
+  var clamped = Math.max(0.1, Math.min(2.0, f));
+  return Math.round(((clamped - 0.1) / 1.9) * 100);
+}
+
+function factorFromScrollPercent(percent) {
+  var p = Number(percent);
+  if (!isFinite(p)) p = 50;
+  var clamped = Math.max(0, Math.min(100, p));
+  return Math.round((0.1 + (clamped / 100.0) * 1.9) * 100) / 100;
+}
+
+function formatAccelProfile(profile) {
+  var p = String(profile || "").toLowerCase().trim();
+  if (p === "flat") return "Flat";
+  return "Adaptive";
+}
+
+function formatTapButtonMap(map) {
+  var m = String(map || "").toLowerCase().trim();
+  if (m === "lmr") return "LMR (X11 Standard)";
+  return "LRM (Mac Default)";
+}
+

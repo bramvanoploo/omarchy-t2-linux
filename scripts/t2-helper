@@ -367,6 +367,158 @@ get_setting() {
   echo "$default"
 }
 
+get_trackpad_info() {
+  python3 - "$SETTINGS_FILE" <<'PYEOF'
+import sys, os, json, subprocess
+
+settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
+settings = {}
+if settings_file and os.path.isfile(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+def hypr_opt(name):
+    try:
+        p = subprocess.run(["hyprctl", "-j", "getoption", name], capture_output=True, text=True)
+        if p.returncode == 0 and p.stdout.strip():
+            return json.loads(p.stdout)
+    except Exception:
+        pass
+    return {}
+
+def opt_bool(d, fallback):
+    if "bool" in d:
+        return bool(d["bool"])
+    return fallback
+
+def opt_float(d, fallback):
+    for k in ("float", "int"):
+        if k in d:
+            try: return float(d[k])
+            except (ValueError, TypeError): pass
+    return fallback
+
+def opt_int(d, fallback):
+    if "int" in d:
+        try: return int(d["int"])
+        except (ValueError, TypeError): pass
+    if "bool" in d:
+        return 1 if d["bool"] else 0
+    return fallback
+
+def opt_str(d, fallback):
+    v = d.get("str")
+    if v in (None, "", "[[EMPTY]]"):
+        return fallback
+    return str(v)
+
+def as_bool(v, fallback):
+    if v is None: return fallback
+    if isinstance(v, bool): return v
+    s = str(v).lower().strip()
+    return s in ("true", "1", "yes", "on")
+
+dev_name = ""
+try:
+    p = subprocess.run(["hyprctl", "-j", "devices"], capture_output=True, text=True)
+    if p.returncode == 0 and p.stdout.strip():
+        devs = json.loads(p.stdout)
+        for m in devs.get("mice", []):
+            name = m.get("name", "")
+            if "trackpad" in name.lower() or "touchpad" in name.lower():
+                dev_name = name
+                break
+except Exception:
+    pass
+
+s_nat = settings.get("trackpadNaturalScroll")
+natural_scroll = as_bool(s_nat, opt_bool(hypr_opt("input:touchpad:natural_scroll"), True))
+
+s_tap = settings.get("trackpadTapToClick")
+tap_to_click = as_bool(s_tap, opt_bool(hypr_opt("input:touchpad:tap-to-click"), True))
+
+s_clickfinger = settings.get("trackpadClickfingerBehavior")
+clickfinger = as_bool(s_clickfinger, opt_bool(hypr_opt("input:touchpad:clickfinger_behavior"), True))
+
+s_dwt = settings.get("trackpadDisableWhileTyping")
+dwt = as_bool(s_dwt, opt_bool(hypr_opt("input:touchpad:disable_while_typing"), True))
+
+s_factor = settings.get("trackpadScrollFactor")
+try:
+    scroll_factor = float(s_factor) if s_factor is not None else opt_float(hypr_opt("input:touchpad:scroll_factor"), 0.64)
+except Exception:
+    scroll_factor = 0.64
+scroll_factor = max(0.1, min(2.0, round(scroll_factor, 2)))
+
+s_mid = settings.get("trackpadMiddleButtonEmulation")
+middle_button = as_bool(s_mid, opt_bool(hypr_opt("input:touchpad:middle_button_emulation"), False))
+
+s_drag = settings.get("trackpadTapAndDrag")
+tap_and_drag = as_bool(s_drag, opt_bool(hypr_opt("input:touchpad:tap-and-drag"), True))
+
+s_lock = settings.get("trackpadDragLock")
+drag_lock = as_bool(s_lock, bool(opt_int(hypr_opt("input:touchpad:drag_lock"), 0)))
+
+s_3fg = settings.get("trackpadDrag3fg")
+try:
+    drag_3fg = int(s_3fg) if s_3fg is not None else opt_int(hypr_opt("input:touchpad:drag_3fg"), 1)
+except Exception:
+    drag_3fg = 1
+drag_3fg = max(0, min(3, drag_3fg))
+
+s_map = settings.get("trackpadTapButtonMap")
+tap_button_map = str(s_map).lower() if s_map is not None else opt_str(hypr_opt("input:touchpad:tap_button_map"), "lrm")
+tap_button_map = "lmr" if tap_button_map == "lmr" else "lrm"
+
+s_flipx = settings.get("trackpadFlipX")
+flip_x = as_bool(s_flipx, opt_bool(hypr_opt("input:touchpad:flip_x"), False))
+
+s_flipy = settings.get("trackpadFlipY")
+flip_y = as_bool(s_flipy, opt_bool(hypr_opt("input:touchpad:flip_y"), False))
+
+s_sens = settings.get("trackpadSensitivity")
+try:
+    sensitivity = float(s_sens) if s_sens is not None else opt_float(hypr_opt("input:sensitivity"), 0.0)
+except Exception:
+    sensitivity = 0.0
+sensitivity = max(-1.0, min(1.0, round(sensitivity, 2)))
+
+s_accel = settings.get("trackpadAccelProfile")
+accel_profile = str(s_accel).lower() if s_accel is not None else opt_str(hypr_opt("input:accel_profile"), "adaptive")
+accel_profile = "flat" if accel_profile == "flat" else "adaptive"
+
+s_left = settings.get("trackpadLeftHanded")
+left_handed = as_bool(s_left, opt_bool(hypr_opt("input:left_handed"), False))
+
+s_swipe = settings.get("trackpadSwipeWorkspaces")
+swipe_workspaces = as_bool(s_swipe, True)
+
+print(json.dumps({
+    "device": dev_name or "Apple Force Touch Trackpad",
+    "present": True,
+    "naturalScroll": natural_scroll,
+    "tapToClick": tap_to_click,
+    "clickfingerBehavior": clickfinger,
+    "disableWhileTyping": dwt,
+    "scrollFactor": scroll_factor,
+    "middleButtonEmulation": middle_button,
+    "tapAndDrag": tap_and_drag,
+    "dragLock": drag_lock,
+    "drag3fg": drag_3fg,
+    "tapButtonMap": tap_button_map,
+    "flipX": flip_x,
+    "flipY": flip_y,
+    "sensitivity": sensitivity,
+    "accelProfile": accel_profile,
+    "leftHanded": left_handed,
+    "swipeWorkspaces": swipe_workspaces
+}))
+PYEOF
+}
+
 print_status_json() {
   local is_t2=false
   if detect_t2; then
@@ -379,6 +531,9 @@ print_status_json() {
 
   local battery_json
   battery_json=$(get_battery_info)
+
+  local trackpad_json
+  trackpad_json=$(get_trackpad_info)
 
   local epp aspm wifi_ps mem_sleep mem_sleep_modes audio_ps usb_ps wake_lid wake_ac lid_act clamshell hib_delay
   epp=$(get_epp)
@@ -523,7 +678,8 @@ PYEOF
   "keybindingRedo": "$kb_redo",
   "keybindingSave": "$kb_save",
   "systemKeybindingOverrides": $sys_overrides,
-  "systemKeybindings": $sys_map
+  "systemKeybindings": $sys_map,
+  "trackpad": $trackpad_json
 }
 EOF
 }
@@ -613,6 +769,48 @@ save_user_setting() {
         exit 1
       fi
       ;;
+    trackpadNaturalScroll|trackpadTapToClick|trackpadClickfingerBehavior|trackpadDisableWhileTyping|trackpadTapAndDrag|trackpadDragLock|trackpadMiddleButtonEmulation|trackpadLeftHanded|trackpadFlipX|trackpadFlipY|trackpadSwipeWorkspaces)
+      case "$val" in
+        true|false|True|False|1|0|on|off) ;;
+        *)
+          echo "Error: Invalid boolean value for $key: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    trackpadDrag3fg)
+      case "$val" in
+        0|1|2|3) ;;
+        *)
+          echo "Error: Invalid drag_3fg value for $key: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    trackpadTapButtonMap)
+      case "$val" in
+        lrm|lmr|LRM|LMR) ;;
+        *)
+          echo "Error: Invalid tap_button_map value for $key: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    trackpadAccelProfile)
+      case "$val" in
+        adaptive|flat|Adaptive|Flat) ;;
+        *)
+          echo "Error: Invalid accel_profile value for $key: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    trackpadScrollFactor|trackpadSensitivity)
+      if [[ ! "$val" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "Error: Invalid number for $key: '$val'" >&2
+        exit 1
+      fi
+      ;;
     *)
       echo "Error: Unauthorized setting key '$key'" >&2
       exit 1
@@ -633,12 +831,20 @@ if os.path.isfile(file_path):
         data = {}
 
 val_lower = val.lower().strip()
-if val_lower == 'true':
+if val_lower in ('true', 'on'):
     data[key] = True
-elif val_lower == 'false':
+elif val_lower in ('false', 'off'):
     data[key] = False
 else:
-    data[key] = val
+    try:
+        if '.' in val:
+            data[key] = float(val)
+        elif val.lstrip('-').isdigit():
+            data[key] = int(val)
+        else:
+            data[key] = val
+    except Exception:
+        data[key] = val
 
 tmp_file = file_path + ".tmp." + str(os.getpid())
 with open(tmp_file, 'w', encoding='utf-8') as f:
@@ -1836,6 +2042,196 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
+# Trackpad Configuration Actions
+# ---------------------------------------------------------------------------
+
+apply_trackpad() {
+  python3 - "$SETTINGS_FILE" <<'PYEOF'
+import sys, os, json, subprocess
+
+settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
+settings = {}
+if settings_file and os.path.isfile(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+def as_bool(v, fallback):
+    if v is None: return fallback
+    if isinstance(v, bool): return v
+    s = str(v).lower().strip()
+    return s in ("true", "1", "yes", "on")
+
+natural_scroll = as_bool(settings.get("trackpadNaturalScroll"), True)
+tap_to_click = as_bool(settings.get("trackpadTapToClick"), True)
+clickfinger = as_bool(settings.get("trackpadClickfingerBehavior"), True)
+dwt = as_bool(settings.get("trackpadDisableWhileTyping"), True)
+try:
+    scroll_factor = max(0.1, min(2.0, float(settings.get("trackpadScrollFactor", 0.64))))
+except Exception:
+    scroll_factor = 0.64
+middle_button = as_bool(settings.get("trackpadMiddleButtonEmulation"), False)
+tap_and_drag = as_bool(settings.get("trackpadTapAndDrag"), True)
+drag_lock = as_bool(settings.get("trackpadDragLock"), False)
+try:
+    drag_3fg = max(0, min(3, int(settings.get("trackpadDrag3fg", 1))))
+except Exception:
+    drag_3fg = 1
+tap_button_map = "lmr" if str(settings.get("trackpadTapButtonMap", "lrm")).lower() == "lmr" else "lrm"
+flip_x = as_bool(settings.get("trackpadFlipX"), False)
+flip_y = as_bool(settings.get("trackpadFlipY"), False)
+try:
+    sensitivity = max(-1.0, min(1.0, float(settings.get("trackpadSensitivity", 0.0))))
+except Exception:
+    sensitivity = 0.0
+accel_profile = "flat" if str(settings.get("trackpadAccelProfile", "adaptive")).lower() == "flat" else "adaptive"
+left_handed = as_bool(settings.get("trackpadLeftHanded"), False)
+swipe_workspaces = as_bool(settings.get("trackpadSwipeWorkspaces"), True)
+
+hypr_dir = os.path.expanduser("~/.config/hypr")
+trackpad_lua = os.path.join(hypr_dir, "t2-trackpad.lua")
+hyprland_lua = os.path.join(hypr_dir, "hyprland.lua")
+input_lua = os.path.join(hypr_dir, "input.lua")
+
+if os.path.isfile(input_lua):
+    try:
+        with open(input_lua, "r", encoding="utf-8") as f:
+            in_text = f.read()
+        import re
+        pattern = re.compile(r'^[ \t]*hl\.gesture\(\s*\{\s*fingers\s*=\s*3\s*,\s*direction\s*=\s*["\']horizontal["\']\s*,\s*action\s*=\s*["\']workspace["\']\s*\}\s*\)', re.MULTILINE)
+        if pattern.search(in_text):
+            in_text = pattern.sub('-- hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" }) -- managed by t2-trackpad', in_text)
+            tmp_in = input_lua + ".tmp." + str(os.getpid())
+            with open(tmp_in, "w", encoding="utf-8") as f:
+                f.write(in_text)
+            os.replace(tmp_in, input_lua)
+    except Exception:
+        pass
+
+gesture_code = '\nhl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })\n' if swipe_workspaces else ""
+
+lua_code = f"""-- Generated by Omarchy T2 Linux (bramvanoploo.omarchy-t2-linux)
+hl.config({{
+  input = {{
+    sensitivity = {sensitivity:.2f},
+    accel_profile = "{accel_profile}",
+    left_handed = {"true" if left_handed else "false"},
+    touchpad = {{
+      natural_scroll = {"true" if natural_scroll else "false"},
+      scroll_factor = {scroll_factor:.2f},
+      disable_while_typing = {"true" if dwt else "false"},
+      tap_to_click = {"true" if tap_to_click else "false"},
+      clickfinger_behavior = {"true" if clickfinger else "false"},
+      middle_button_emulation = {"true" if middle_button else "false"},
+      tap_and_drag = {"true" if tap_and_drag else "false"},
+      drag_lock = {"true" if drag_lock else "false"},
+      drag_3fg = {drag_3fg},
+      tap_button_map = "{tap_button_map}",
+      flip_x = {"true" if flip_x else "false"},
+      flip_y = {"true" if flip_y else "false"},
+    }},
+  }},
+}}){gesture_code}
+"""
+os.makedirs(hypr_dir, exist_ok=True)
+tmp_lua = trackpad_lua + ".tmp." + str(os.getpid())
+with open(tmp_lua, "w", encoding="utf-8") as f:
+    f.write(lua_code)
+os.replace(tmp_lua, trackpad_lua)
+
+if os.path.isfile(hyprland_lua):
+    try:
+        with open(hyprland_lua, "r", encoding="utf-8") as f:
+            hl_text = f.read()
+        if 'require("hypr.t2-trackpad")' not in hl_text and "require('hypr.t2-trackpad')" not in hl_text:
+            if 'require("hypr.mouse")' in hl_text:
+                hl_text = hl_text.replace('require("hypr.mouse")', 'require("hypr.mouse")\nrequire("hypr.t2-trackpad")', 1)
+            elif 'require("hypr.input")' in hl_text:
+                hl_text = hl_text.replace('require("hypr.input")', 'require("hypr.input")\nrequire("hypr.t2-trackpad")', 1)
+            else:
+                hl_text += '\nrequire("hypr.t2-trackpad")\n'
+            tmp_hl = hyprland_lua + ".tmp." + str(os.getpid())
+            with open(tmp_hl, "w", encoding="utf-8") as f:
+                f.write(hl_text)
+            os.replace(tmp_hl, hyprland_lua)
+    except Exception:
+        pass
+
+compact_eval = f'hl.config({{ input = {{ sensitivity = {sensitivity:.2f}, accel_profile = "{accel_profile}", left_handed = {"true" if left_handed else "false"}, touchpad = {{ natural_scroll = {"true" if natural_scroll else "false"}, scroll_factor = {scroll_factor:.2f}, disable_while_typing = {"true" if dwt else "false"}, tap_to_click = {"true" if tap_to_click else "false"}, clickfinger_behavior = {"true" if clickfinger else "false"}, middle_button_emulation = {"true" if middle_button else "false"}, tap_and_drag = {"true" if tap_and_drag else "false"}, drag_lock = {"true" if drag_lock else "false"}, drag_3fg = {drag_3fg}, tap_button_map = "{tap_button_map}", flip_x = {"true" if flip_x else "false"}, flip_y = {"true" if flip_y else "false"} }} }} }})'
+try:
+    subprocess.run(["hyprctl", "eval", compact_eval], capture_output=True, check=False)
+except Exception:
+    pass
+
+try:
+    subprocess.run(["hyprctl", "reload"], capture_output=True, check=False)
+except Exception:
+    pass
+PYEOF
+}
+
+apply_recommended_trackpad() {
+  save_user_setting "trackpadNaturalScroll" "true"
+  save_user_setting "trackpadTapToClick" "true"
+  save_user_setting "trackpadClickfingerBehavior" "true"
+  save_user_setting "trackpadDisableWhileTyping" "true"
+  save_user_setting "trackpadScrollFactor" "0.64"
+  save_user_setting "trackpadMiddleButtonEmulation" "false"
+  save_user_setting "trackpadTapAndDrag" "true"
+  save_user_setting "trackpadDragLock" "false"
+  save_user_setting "trackpadDrag3fg" "1"
+  save_user_setting "trackpadTapButtonMap" "lrm"
+  save_user_setting "trackpadFlipX" "false"
+  save_user_setting "trackpadFlipY" "false"
+  save_user_setting "trackpadSensitivity" "0.0"
+  save_user_setting "trackpadAccelProfile" "adaptive"
+  save_user_setting "trackpadLeftHanded" "false"
+  save_user_setting "trackpadSwipeWorkspaces" "true"
+  apply_trackpad
+}
+
+reset_trackpad_to_defaults() {
+  save_user_setting "trackpadNaturalScroll" "false"
+  save_user_setting "trackpadTapToClick" "true"
+  save_user_setting "trackpadClickfingerBehavior" "true"
+  save_user_setting "trackpadDisableWhileTyping" "true"
+  save_user_setting "trackpadScrollFactor" "0.4"
+  save_user_setting "trackpadMiddleButtonEmulation" "false"
+  save_user_setting "trackpadTapAndDrag" "true"
+  save_user_setting "trackpadDragLock" "false"
+  save_user_setting "trackpadDrag3fg" "0"
+  save_user_setting "trackpadTapButtonMap" "lrm"
+  save_user_setting "trackpadFlipX" "false"
+  save_user_setting "trackpadFlipY" "false"
+  save_user_setting "trackpadSensitivity" "0.0"
+  save_user_setting "trackpadAccelProfile" "adaptive"
+  save_user_setting "trackpadLeftHanded" "false"
+  save_user_setting "trackpadSwipeWorkspaces" "true"
+  apply_trackpad
+}
+
+restart_trackpad() {
+  if [[ -x /usr/share/omarchy/bin/omarchy-restart-trackpad ]]; then
+    /usr/share/omarchy/bin/omarchy-restart-trackpad || true
+  fi
+  for dev in /sys/bus/hid/drivers/magicmouse/*:05AC:027C.*; do
+    if [[ -d "$dev" ]]; then
+      local bname
+      bname=$(basename "$dev")
+      if [[ -w /sys/bus/hid/drivers/magicmouse/unbind ]]; then
+        echo "$bname" > /sys/bus/hid/drivers/magicmouse/unbind 2>/dev/null || true
+        sleep 0.5
+        echo "$bname" > /sys/bus/hid/drivers/magicmouse/bind 2>/dev/null || true
+      fi
+    fi
+  done
+  apply_trackpad
+  echo "Trackpad driver restarted"
+}
+
+# ---------------------------------------------------------------------------
 # CLI Command Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -1982,6 +2378,70 @@ case "${1:-status}" in
         save_user_setting "keybindingSave" "$val"
         apply_keybindings
         ;;
+      trackpad_natural_scroll)
+        save_user_setting "trackpadNaturalScroll" "$val"
+        apply_trackpad
+        ;;
+      trackpad_tap_to_click)
+        save_user_setting "trackpadTapToClick" "$val"
+        apply_trackpad
+        ;;
+      trackpad_clickfinger_behavior)
+        save_user_setting "trackpadClickfingerBehavior" "$val"
+        apply_trackpad
+        ;;
+      trackpad_disable_while_typing)
+        save_user_setting "trackpadDisableWhileTyping" "$val"
+        apply_trackpad
+        ;;
+      trackpad_scroll_factor)
+        save_user_setting "trackpadScrollFactor" "$val"
+        apply_trackpad
+        ;;
+      trackpad_middle_button_emulation)
+        save_user_setting "trackpadMiddleButtonEmulation" "$val"
+        apply_trackpad
+        ;;
+      trackpad_tap_and_drag)
+        save_user_setting "trackpadTapAndDrag" "$val"
+        apply_trackpad
+        ;;
+      trackpad_drag_lock)
+        save_user_setting "trackpadDragLock" "$val"
+        apply_trackpad
+        ;;
+      trackpad_drag_3fg)
+        save_user_setting "trackpadDrag3fg" "$val"
+        apply_trackpad
+        ;;
+      trackpad_tap_button_map)
+        save_user_setting "trackpadTapButtonMap" "$val"
+        apply_trackpad
+        ;;
+      trackpad_flip_x)
+        save_user_setting "trackpadFlipX" "$val"
+        apply_trackpad
+        ;;
+      trackpad_flip_y)
+        save_user_setting "trackpadFlipY" "$val"
+        apply_trackpad
+        ;;
+      trackpad_sensitivity)
+        save_user_setting "trackpadSensitivity" "$val"
+        apply_trackpad
+        ;;
+      trackpad_accel_profile)
+        save_user_setting "trackpadAccelProfile" "$val"
+        apply_trackpad
+        ;;
+      trackpad_left_handed)
+        save_user_setting "trackpadLeftHanded" "$val"
+        apply_trackpad
+        ;;
+      trackpad_swipe_workspaces)
+        save_user_setting "trackpadSwipeWorkspaces" "$val"
+        apply_trackpad
+        ;;
       *)
         echo "Unknown setting key: $key" >&2
         exit 1
@@ -1999,6 +2459,18 @@ case "${1:-status}" in
 
   reset-keybindings-to-defaults)
     reset_keybindings_to_defaults
+    ;;
+
+  apply-recommended-trackpad)
+    apply_recommended_trackpad
+    ;;
+
+  reset-trackpad-to-defaults)
+    reset_trackpad_to_defaults
+    ;;
+
+  restart-trackpad)
+    restart_trackpad
     ;;
 
   set-keybindings)

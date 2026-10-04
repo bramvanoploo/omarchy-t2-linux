@@ -44,11 +44,30 @@ The panel organizes all hardware tunables and configurations into dedicated vert
 - **Conflict Detection & Safe Override**: Automatically checks whether a chosen shortcut is already registered in Omarchy Hyprland or within the plugin, alerting the user to existing assignments before applying changes with confirmation to override.
 - **Shortcut Reference**: Built-in guide for standard window manager and system shortcuts on Apple T2 keyboards.
 
-### 4. Sound
+### 4. Trackpad
+- **Force Touch Trackpad Hardware**: Automatic detection and control of the internal Apple Magic Trackpad 2 engine with driver reset capabilities.
+- **Pointer Speed (Sensitivity)**: Granular tracking speed adjustment from 0% to 100% (default: 50% / 0.0).
+- **Acceleration Profile**: Toggle between `Adaptive` (macOS default dynamic acceleration) and `Flat` (linear 1:1 speed).
+- **Two-Finger Scroll Speed**: Fine-tune scroll factor multiplier from 0.10x to 2.00x (default: 0.64x).
+- **Natural Scrolling**: Invert scroll direction so document content tracks finger motion (macOS style).
+- **Tap to Click**: Tap surface with 1 finger for left-click or 2 fingers for right-click without clicking down physically.
+- **Two-Finger Secondary Click**: Click anywhere on the trackpad surface with two fingers for right-click instead of corner buttons.
+- **Three-Finger Drag**: Native macOS gesture to move windows, select text, and drag objects with three fingers without pressing down.
+- **Tap and Drag**: Double-tap and slide without physical click to drag windows or select text.
+- **Tap Drag Lock**: Temporarily lift and reposition fingers during a drag gesture without dropping the selection.
+- **3-Finger Horizontal Workspace Swiping**: Swipe left or right across the trackpad with three fingers to switch between virtual workspaces.
+- **Middle Button Emulation**: Click left and right buttons simultaneously to emit middle click.
+- **Multi-Finger Tap Button Order**: Switch between `LRM (Left/Right/Middle — Mac Default)` and `LMR (Left/Middle/Right — X11 Standard)`.
+- **Disable While Typing (Palm Rejection)**: Temporarily disables trackpad pointer movement while typing on the built-in keyboard to prevent accidental thumb or palm touches.
+- **Left-Handed Mode**: Swap primary and secondary button assignments for left-handed ergonomics.
+- **Invert Horizontal / Vertical Axes (Flip X / Flip Y)**: Invert horizontal and vertical cursor motion.
+- **Live Instant Preview & Persistent Configuration**: Generates `~/.config/hypr/t2-trackpad.lua` and applies settings live instantly via Hyprland IPC.
+
+### 5. Sound
 - **Audio Subsystem Overview**: Information on Apple T2 Cirrus Logic audio controller and hardware codecs.
 - **Audio Controller Power Save**: Powers down internal Apple audio hardware when idle to eliminate background battery drain.
 
-### 5. Plugins
+### 6. Plugins
 - **T2 Community Plugins**: Discover, install, update, and manage community-built plugins from plugins.omarchy.org.
 
 ---
