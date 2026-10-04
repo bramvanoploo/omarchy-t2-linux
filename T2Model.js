@@ -75,9 +75,13 @@ function parseStatus(raw) {
       if (data.battery && typeof data.battery === "object") {
         if (typeof data.battery.percent === "number") {
           data.battery.percent = Math.min(100, Math.max(0, Math.round(data.battery.percent)));
+        } else {
+          data.battery.percent = 0;
         }
         if (typeof data.battery.health === "number") {
           data.battery.health = Math.min(100, Math.max(0, Math.round(data.battery.health)));
+        } else {
+          data.battery.health = 100;
         }
         if (typeof data.battery.watts !== "number" || isNaN(data.battery.watts) || data.battery.watts < 0) {
           data.battery.watts = 0.0;
@@ -85,6 +89,18 @@ function parseStatus(raw) {
         if (typeof data.battery.cycles !== "number" || isNaN(data.battery.cycles) || data.battery.cycles < 0) {
           data.battery.cycles = 0;
         }
+        data.battery.present = Boolean(data.battery.present);
+        data.battery.status = data.battery.status ? String(data.battery.status) : "Unknown";
+        data.battery.online = Boolean(data.battery.online);
+      } else {
+        data.battery = emptyStatus().battery;
+      }
+
+      if (!data.systemKeybindingOverrides || typeof data.systemKeybindingOverrides !== "object") {
+        data.systemKeybindingOverrides = {};
+      }
+      if (!data.systemKeybindings || typeof data.systemKeybindings !== "object") {
+        data.systemKeybindings = {};
       }
 
       if (!Array.isArray(data.inactiveEthernet)) {

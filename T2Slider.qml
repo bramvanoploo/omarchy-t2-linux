@@ -103,9 +103,15 @@ Item {
     acceptedButtons: Qt.LeftButton | Qt.RightButton
 
     function valueFromX(x) {
+      if (track.width <= 0) return root.value
       var clamped = Math.max(0, Math.min(track.width, x))
       var raw = root.minimum + (clamped / track.width) * root.range
-      if (root.integer) raw = Math.round(raw)
+      if (root.integer) {
+        raw = Math.round(raw)
+      } else if (root.step > 0) {
+        var inv = 1.0 / root.step
+        raw = Math.round(raw * inv) / inv
+      }
       return Math.max(root.minimum, Math.min(root.maximum, raw))
     }
 
@@ -128,8 +134,8 @@ Item {
     onReleased: function(mouse) {
       if (mouse.button !== Qt.LeftButton) return
       root.dragging = false
-      root.released(root.liveValue)
-      root.liveValue = root.value
+      var finalVal = root.liveValue
+      root.released(finalVal)
     }
     onWheel: function(wheel) {
       // Ignore wheel events on the slider so scrolling propagates to the parent Flickable

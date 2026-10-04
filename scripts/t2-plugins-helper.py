@@ -510,6 +510,10 @@ def install_plugin(repo_or_url, plugin_id=""):
         sys.exit(1)
 
     url = repo_or_url.strip()
+    if url.startswith("-") or not re.match(r'^[a-zA-Z0-9_.:/@-]+$', url):
+        print(json.dumps({"success": False, "error": f"Invalid repository URL format: {repo_or_url}"}))
+        sys.exit(1)
+
     if not url.startswith("http://") and not url.startswith("https://") and not url.startswith("git@"):
         url = f"https://github.com/{url}"
     if not url.endswith(".git") and "github.com" in url:
@@ -525,8 +529,8 @@ def install_plugin(repo_or_url, plugin_id=""):
 
 
 def update_plugin(plugin_id):
-    if not plugin_id:
-        print(json.dumps({"success": False, "error": "No plugin ID provided"}))
+    if not plugin_id or not re.match(r'^[a-zA-Z0-9_.-]+$', plugin_id) or plugin_id.startswith("-"):
+        print(json.dumps({"success": False, "error": f"Invalid plugin ID: {plugin_id}"}))
         sys.exit(1)
 
     rc, out, err = run_cmd(["omarchy", "plugin", "update", plugin_id, "--yes"])
@@ -539,8 +543,8 @@ def update_plugin(plugin_id):
 
 
 def remove_plugin(plugin_id):
-    if not plugin_id:
-        print(json.dumps({"success": False, "error": "No plugin ID provided"}))
+    if not plugin_id or not re.match(r'^[a-zA-Z0-9_.-]+$', plugin_id) or plugin_id.startswith("-"):
+        print(json.dumps({"success": False, "error": f"Invalid plugin ID: {plugin_id}"}))
         sys.exit(1)
 
     rc, out, err = run_cmd(["omarchy", "plugin", "remove", plugin_id, "--yes"])
@@ -553,8 +557,8 @@ def remove_plugin(plugin_id):
 
 
 def toggle_plugin(plugin_id, state):
-    if not plugin_id:
-        print(json.dumps({"success": False, "error": "No plugin ID provided"}))
+    if not plugin_id or not re.match(r'^[a-zA-Z0-9_.-]+$', plugin_id) or plugin_id.startswith("-"):
+        print(json.dumps({"success": False, "error": f"Invalid plugin ID: {plugin_id}"}))
         sys.exit(1)
 
     subcmd = "enable" if state in ("enable", "true", "1", "on") else "disable"

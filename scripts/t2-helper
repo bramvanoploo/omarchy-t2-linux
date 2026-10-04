@@ -102,7 +102,7 @@ get_battery_info() {
     (( percent > 100 )) && percent=100
 
     read -r status < "$bat_dir/status" 2>/dev/null || status="Unknown"
-    status=$(echo "$status" | tr -d '"\r\n')
+    status="${status//[\"'$'\r$'\n']}"
     [[ -z "$status" ]] && status="Unknown"
 
     read -r cycles < "$bat_dir/cycle_count" 2>/dev/null || cycles=0
@@ -215,7 +215,8 @@ get_inactive_ethernet_json() {
     done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
 
     if (( ${#items[@]} > 0 )); then
-      json=$(printf '%s\n' "${items[@]}" | jq -s -c '.')
+      local IFS=,
+      json="[${items[*]}]"
     fi
   fi
   echo "$json"
@@ -435,16 +436,16 @@ except Exception:
     pass
 
 s_nat = settings.get("trackpadNaturalScroll")
-natural_scroll = as_bool(s_nat, opt_bool(hypr_opt("input:touchpad:natural_scroll"), True))
+natural_scroll = as_bool(s_nat, True) if s_nat is not None else opt_bool(hypr_opt("input:touchpad:natural_scroll"), True)
 
 s_tap = settings.get("trackpadTapToClick")
-tap_to_click = as_bool(s_tap, opt_bool(hypr_opt("input:touchpad:tap-to-click"), True))
+tap_to_click = as_bool(s_tap, True) if s_tap is not None else opt_bool(hypr_opt("input:touchpad:tap-to-click"), True)
 
 s_clickfinger = settings.get("trackpadClickfingerBehavior")
-clickfinger = as_bool(s_clickfinger, opt_bool(hypr_opt("input:touchpad:clickfinger_behavior"), True))
+clickfinger = as_bool(s_clickfinger, True) if s_clickfinger is not None else opt_bool(hypr_opt("input:touchpad:clickfinger_behavior"), True)
 
 s_dwt = settings.get("trackpadDisableWhileTyping")
-dwt = as_bool(s_dwt, opt_bool(hypr_opt("input:touchpad:disable_while_typing"), True))
+dwt = as_bool(s_dwt, True) if s_dwt is not None else opt_bool(hypr_opt("input:touchpad:disable_while_typing"), True)
 
 s_factor = settings.get("trackpadScrollFactor")
 try:
@@ -454,13 +455,13 @@ except Exception:
 scroll_factor = max(0.1, min(2.0, round(scroll_factor, 2)))
 
 s_mid = settings.get("trackpadMiddleButtonEmulation")
-middle_button = as_bool(s_mid, opt_bool(hypr_opt("input:touchpad:middle_button_emulation"), False))
+middle_button = as_bool(s_mid, False) if s_mid is not None else opt_bool(hypr_opt("input:touchpad:middle_button_emulation"), False)
 
 s_drag = settings.get("trackpadTapAndDrag")
-tap_and_drag = as_bool(s_drag, opt_bool(hypr_opt("input:touchpad:tap-and-drag"), True))
+tap_and_drag = as_bool(s_drag, True) if s_drag is not None else opt_bool(hypr_opt("input:touchpad:tap-and-drag"), True)
 
 s_lock = settings.get("trackpadDragLock")
-drag_lock = as_bool(s_lock, bool(opt_int(hypr_opt("input:touchpad:drag_lock"), 0)))
+drag_lock = as_bool(s_lock, False) if s_lock is not None else bool(opt_int(hypr_opt("input:touchpad:drag_lock"), 0))
 
 s_3fg = settings.get("trackpadDrag3fg")
 try:
@@ -474,10 +475,10 @@ tap_button_map = str(s_map).lower() if s_map is not None else opt_str(hypr_opt("
 tap_button_map = "lmr" if tap_button_map == "lmr" else "lrm"
 
 s_flipx = settings.get("trackpadFlipX")
-flip_x = as_bool(s_flipx, opt_bool(hypr_opt("input:touchpad:flip_x"), False))
+flip_x = as_bool(s_flipx, False) if s_flipx is not None else opt_bool(hypr_opt("input:touchpad:flip_x"), False)
 
 s_flipy = settings.get("trackpadFlipY")
-flip_y = as_bool(s_flipy, opt_bool(hypr_opt("input:touchpad:flip_y"), False))
+flip_y = as_bool(s_flipy, False) if s_flipy is not None else opt_bool(hypr_opt("input:touchpad:flip_y"), False)
 
 s_sens = settings.get("trackpadSensitivity")
 try:
@@ -491,7 +492,7 @@ accel_profile = str(s_accel).lower() if s_accel is not None else opt_str(hypr_op
 accel_profile = "flat" if accel_profile == "flat" else "adaptive"
 
 s_left = settings.get("trackpadLeftHanded")
-left_handed = as_bool(s_left, opt_bool(hypr_opt("input:left_handed"), False))
+left_handed = as_bool(s_left, False) if s_left is not None else opt_bool(hypr_opt("input:left_handed"), False)
 
 s_swipe = settings.get("trackpadSwipeWorkspaces")
 swipe_workspaces = as_bool(s_swipe, True)
@@ -636,14 +637,14 @@ for combo, desc, disp, arg in raw:
         "recommendedChord": get_rec(combo)
     }
 
-print(json.dumps({
-    "systemKeybindingOverrides": overrides,
-    "systemKeybindings": system_map
-}))
+out_overrides = json.dumps(overrides)
+out_map = json.dumps(system_map)
+print(f"{out_overrides}\t{out_map}")
 PYEOF
 )
-  sys_overrides=$(python3 -c "import json, sys; d = json.loads(sys.argv[1]); print(json.dumps(d.get('systemKeybindingOverrides', {})))" "$kb_payload" 2>/dev/null || echo "{}")
-  sys_map=$(python3 -c "import json, sys; d = json.loads(sys.argv[1]); print(json.dumps(d.get('systemKeybindings', {})))" "$kb_payload" 2>/dev/null || echo "{}")
+  IFS=$'\t' read -r sys_overrides sys_map <<< "$kb_payload"
+  [[ -z "$sys_overrides" ]] && sys_overrides="{}"
+  [[ -z "$sys_map" ]] && sys_map="{}"
 
   local helper_installed=false
   if [[ -x "$SYSTEM_HELPER" ]]; then
