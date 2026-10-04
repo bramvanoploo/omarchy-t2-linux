@@ -4307,6 +4307,7 @@ BarWidget {
 
                                   Text {
                                     text: modelData.name
+                                    textFormat: Text.PlainText
                                     color: root.foreground
                                     font.family: root.fontFamily
                                     font.pixelSize: Style.font.body
@@ -4325,6 +4326,7 @@ BarWidget {
                                   Text {
                                     visible: Boolean(modelData.rankLabel)
                                     text: modelData.rankLabel
+                                    textFormat: Text.PlainText
                                     color: Color.accent
                                     font.family: root.fontFamily
                                     font.pixelSize: Style.font.caption
@@ -4350,6 +4352,7 @@ BarWidget {
 
                                 Text {
                                   text: "by " + modelData.author + " · " + modelData.id
+                                  textFormat: Text.PlainText
                                   color: root.dim
                                   font.family: root.fontFamily
                                   font.pixelSize: Style.font.caption
@@ -4427,6 +4430,7 @@ BarWidget {
                             Text {
                               width: parent.width
                               text: modelData.description
+                              textFormat: Text.PlainText
                               color: root.foreground
                               font.family: root.fontFamily
                               font.pixelSize: Style.font.caption
