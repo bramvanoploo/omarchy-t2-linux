@@ -217,10 +217,11 @@ BarWidget {
       s.keybindingUndo = "SUPER + Z"
       s.keybindingRedo = "SUPER + SHIFT + Z"
       s.keybindingSave = "SUPER + S"
+      s.keybindingCut = "SUPER + X"
 
       var ov = Object.assign({}, s.systemKeybindingOverrides || {})
-      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S"]
-      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save"]
+      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S", "SUPER + X"]
+      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save", "cut", "universalcut"]
       if (s.systemKeybindings) {
         for (var rc = 0; rc < recChords.length; rc++) {
           var rNorm = Model.normalizeChord(recChords[rc])
@@ -373,7 +374,7 @@ BarWidget {
       tp.middleButtonEmulation = false
       tp.tapAndDrag = true
       tp.dragLock = false
-      tp.drag3fg = 1
+      tp.drag3fg = 0
       tp.tapButtonMap = "lrm"
       tp.flipX = false
       tp.flipY = false
@@ -504,6 +505,8 @@ BarWidget {
         s.keybindingRedo = val
       } else if (key === "keybinding_save") {
         s.keybindingSave = val
+      } else if (key === "keybinding_cut") {
+        s.keybindingCut = val
       } else if (key.indexOf("trackpad_") === 0) {
         var tpKey = key.slice(9)
         var tp = Object.assign({}, s.trackpad || Model.emptyStatus().trackpad)
@@ -514,7 +517,10 @@ BarWidget {
         else if (tpKey === "middle_button_emulation") tp.middleButtonEmulation = (val === "true" || val === "1" || val === "on")
         else if (tpKey === "tap_and_drag") tp.tapAndDrag = (val === "true" || val === "1" || val === "on")
         else if (tpKey === "drag_lock") tp.dragLock = (val === "true" || val === "1" || val === "on")
-        else if (tpKey === "drag_3fg") tp.drag3fg = Number(val) || 0
+        else if (tpKey === "drag_3fg") {
+          tp.drag3fg = Number(val) || 0
+          if (tp.drag3fg > 0) tp.swipeWorkspaces = false
+        }
         else if (tpKey === "tap_button_map") tp.tapButtonMap = String(val)
         else if (tpKey === "scroll_factor") tp.scrollFactor = Number(val) || 0.64
         else if (tpKey === "sensitivity") tp.sensitivity = Number(val) || 0.0
@@ -522,7 +528,10 @@ BarWidget {
         else if (tpKey === "left_handed") tp.leftHanded = (val === "true" || val === "1" || val === "on")
         else if (tpKey === "flip_x") tp.flipX = (val === "true" || val === "1" || val === "on")
         else if (tpKey === "flip_y") tp.flipY = (val === "true" || val === "1" || val === "on")
-        else if (tpKey === "swipe_workspaces") tp.swipeWorkspaces = (val === "true" || val === "1" || val === "on")
+        else if (tpKey === "swipe_workspaces") {
+          tp.swipeWorkspaces = (val === "true" || val === "1" || val === "on")
+          if (tp.swipeWorkspaces) tp.drag3fg = 0
+        }
         s.trackpad = tp
       }
       root.status = s
@@ -669,6 +678,7 @@ BarWidget {
           else if (tKey === "keybinding_undo") s.keybindingUndo = tChord
           else if (tKey === "keybinding_redo") s.keybindingRedo = tChord
           else if (tKey === "keybinding_save") s.keybindingSave = tChord
+          else if (tKey === "keybinding_cut") s.keybindingCut = tChord
 
           var ov = Object.assign({}, s.systemKeybindingOverrides || {})
           ov[action] = {
@@ -716,6 +726,7 @@ BarWidget {
         else if (task === "keybinding_undo") s2.keybindingUndo = chord
         else if (task === "keybinding_redo") s2.keybindingRedo = chord
         else if (task === "keybinding_save") s2.keybindingSave = chord
+        else if (task === "keybinding_cut") s2.keybindingCut = chord
 
         if (tKey2 === "keybinding_select_all") s2.keybindingSelectAll = tChord2
         else if (tKey2 === "keybinding_delete") s2.keybindingDelete = tChord2
@@ -724,6 +735,7 @@ BarWidget {
         else if (tKey2 === "keybinding_undo") s2.keybindingUndo = tChord2
         else if (tKey2 === "keybinding_redo") s2.keybindingRedo = tChord2
         else if (tKey2 === "keybinding_save") s2.keybindingSave = tChord2
+        else if (tKey2 === "keybinding_cut") s2.keybindingCut = tChord2
 
         root.status = s2
       }
@@ -822,6 +834,7 @@ BarWidget {
         else if (targetKey === "keybinding_undo") s.keybindingUndo = targetChord
         else if (targetKey === "keybinding_redo") s.keybindingRedo = targetChord
         else if (targetKey === "keybinding_save") s.keybindingSave = targetChord
+        else if (targetKey === "keybinding_cut") s.keybindingCut = targetChord
 
         var overrides = Object.assign({}, s.systemKeybindingOverrides || {})
         overrides[sysAction] = {
@@ -851,6 +864,7 @@ BarWidget {
         else if (displacedKey === "keybinding_undo") s2.keybindingUndo = displacedChord
         else if (displacedKey === "keybinding_redo") s2.keybindingRedo = displacedChord
         else if (displacedKey === "keybinding_save") s2.keybindingSave = displacedChord
+        else if (displacedKey === "keybinding_cut") s2.keybindingCut = displacedChord
 
         if (targetKey === "keybinding_select_all") s2.keybindingSelectAll = targetChord
         else if (targetKey === "keybinding_delete") s2.keybindingDelete = targetChord
@@ -859,6 +873,7 @@ BarWidget {
         else if (targetKey === "keybinding_undo") s2.keybindingUndo = targetChord
         else if (targetKey === "keybinding_redo") s2.keybindingRedo = targetChord
         else if (targetKey === "keybinding_save") s2.keybindingSave = targetChord
+        else if (targetKey === "keybinding_cut") s2.keybindingCut = targetChord
 
         root.status = s2
       }
@@ -1000,10 +1015,11 @@ BarWidget {
       s.keybindingUndo = "SUPER + Z"
       s.keybindingRedo = "SUPER + SHIFT + Z"
       s.keybindingSave = "SUPER + S"
+      s.keybindingCut = "SUPER + X"
 
       var ov = Object.assign({}, s.systemKeybindingOverrides || {})
-      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S"]
-      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save"]
+      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S", "SUPER + X"]
+      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save", "cut", "universalcut"]
       if (s.systemKeybindings) {
         for (var rc = 0; rc < recChords.length; rc++) {
           var rNorm = Model.normalizeChord(recChords[rc])
@@ -1054,6 +1070,7 @@ BarWidget {
       s.keybindingUndo = "CTRL + Z"
       s.keybindingRedo = "CTRL + SHIFT + Z"
       s.keybindingSave = "CTRL + S"
+      s.keybindingCut = "CTRL + X"
       s.systemKeybindingOverrides = {}
       root.status = s
     }
@@ -3785,6 +3802,105 @@ BarWidget {
                               }
                             }
                           }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // 8. Task: Cut
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+
+                              Text {
+                                id: t8Icon
+                                text: "󰆐"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                id: t8Title
+                                text: "Cut"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                text: "Cut selected text or item to clipboard"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                width: Math.max(0, parent.width - t8Icon.implicitWidth - t8Title.implicitWidth - Style.space(16))
+                              }
+                            }
+
+                            Row {
+                              id: t8Btns
+                              width: parent.width
+                              spacing: Style.space(6)
+                              readonly property real btnWidth: (width - spacing * 2) / 3
+
+                              readonly property string cur: root.status && root.status.keybindingCut ? root.status.keybindingCut : "CTRL + X"
+                              readonly property bool isMac: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + X")
+                              readonly property bool isLinux: Model.normalizeChord(cur) === Model.normalizeChord("CTRL + X")
+                              readonly property bool isCustom: !isMac && !isLinux
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CMD + X"
+                                tooltipText: "Mac preset (Command + X)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isMac
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_cut", "SUPER + X")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CTRL + X"
+                                tooltipText: "Standard Linux preset (Control + X)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isLinux
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_cut", "CTRL + X")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: "󰌌"
+                                text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
+                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isCustom
+                                accent: root.accent
+                                onClicked: root.openKeyRecorder("keybinding_cut", "Cut")
+                              }
+                            }
+                          }
                         }
                       }
 
@@ -4269,7 +4385,7 @@ BarWidget {
                               }
                             }
 
-                            PanelSlider {
+                            T2Slider {
                               width: parent.width
                               height: Style.space(24)
                               bar: root.bar
@@ -4393,7 +4509,7 @@ BarWidget {
                               }
                             }
 
-                            PanelSlider {
+                            T2Slider {
                               width: parent.width
                               height: Style.space(24)
                               bar: root.bar
@@ -4581,7 +4697,7 @@ BarWidget {
                               }
 
                               Text {
-                                text: "Classic macOS gesture: place three fingers on the trackpad to drag windows, move items, or select text without clicking down."
+                                text: "Classic macOS gesture: place three fingers on the trackpad to drag windows, move items, or select text without clicking down. Disables 3-finger workspace swiping."
                                 color: root.dim
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
@@ -4749,7 +4865,7 @@ BarWidget {
                               }
 
                               Text {
-                                text: "Swipe horizontally across the trackpad with three fingers to switch between virtual workspaces."
+                                text: "Swipe horizontally across the trackpad with three fingers to switch between virtual workspaces. Disables 3-finger drag."
                                 color: root.dim
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption

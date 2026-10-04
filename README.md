@@ -39,6 +39,8 @@ The panel organizes all hardware tunables and configurations into dedicated vert
 - **Task: Toggle Fullscreen**: Reassign the active window fullscreen action from `SUPER + F` to `SUPER + CTRL + F` (standard macOS Command + Control + F) or custom chords.
 - **Task: Undo**: Map application undo from default `CTRL + Z` to `SUPER + Z` (Command + Z) or custom chords.
 - **Task: Redo**: Map application redo from default `CTRL + SHIFT + Z` to `SUPER + SHIFT + Z` (Command + Shift + Z) or custom chords.
+- **Task: Save**: Map document save from default `CTRL + S` to `SUPER + S` (Command + S) or custom chords.
+- **Task: Cut**: Map clipboard cut from default `CTRL + X` to `SUPER + X` (Command + X) or custom chords.
 - **Intra-Plugin Keybinding Conflict Resolution**: Only prompts when two plugin options actually conflict (e.g. assigning Find in Document to `CMD + F` while Toggle Fullscreen is also assigned to `CMD + F`). Directly offers the recommended alternative preset or recording a custom shortcut without broken in-between states.
 - **Interactive Key Combination Recorder**: Dedicated dialog that captures keystrokes in real time directly from the keyboard without manual typing.
 - **Conflict Detection & Safe Override**: Automatically checks whether a chosen shortcut is already registered in Omarchy Hyprland or within the plugin, alerting the user to existing assignments before applying changes with confirmation to override.
@@ -52,10 +54,10 @@ The panel organizes all hardware tunables and configurations into dedicated vert
 - **Natural Scrolling**: Invert scroll direction so document content tracks finger motion (macOS style).
 - **Tap to Click**: Tap surface with 1 finger for left-click or 2 fingers for right-click without clicking down physically.
 - **Two-Finger Secondary Click**: Click anywhere on the trackpad surface with two fingers for right-click instead of corner buttons.
-- **Three-Finger Drag**: Native macOS gesture to move windows, select text, and drag objects with three fingers without pressing down.
+- **Three-Finger Drag**: Native macOS gesture to move windows, select text, and drag objects with three fingers without pressing down (mutually exclusive with 3-finger workspace swiping).
 - **Tap and Drag**: Double-tap and slide without physical click to drag windows or select text.
 - **Tap Drag Lock**: Temporarily lift and reposition fingers during a drag gesture without dropping the selection.
-- **3-Finger Horizontal Workspace Swiping**: Swipe left or right across the trackpad with three fingers to switch between virtual workspaces.
+- **3-Finger Horizontal Workspace Swiping**: Swipe left or right across the trackpad with three fingers to switch between virtual workspaces (mutually exclusive with 3-finger drag).
 - **Middle Button Emulation**: Click left and right buttons simultaneously to emit middle click.
 - **Multi-Finger Tap Button Order**: Switch between `LRM (Left/Right/Middle — Mac Default)` and `LMR (Left/Middle/Right — X11 Standard)`.
 - **Disable While Typing (Palm Rejection)**: Temporarily disables trackpad pointer movement while typing on the built-in keyboard to prevent accidental thumb or palm touches.

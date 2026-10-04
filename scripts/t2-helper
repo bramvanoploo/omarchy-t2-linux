@@ -11,7 +11,7 @@ SYSTEM_HELPER="/usr/local/libexec/omarchy-t2-helper"
 
 mkdir -p "$CONFIG_DIR"
 if [[ ! -f "$SETTINGS_FILE" ]]; then
-  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingFullscreen":"SUPER + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S"}' > "$SETTINGS_FILE"
+  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingFullscreen":"SUPER + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X"}' > "$SETTINGS_FILE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -464,9 +464,9 @@ drag_lock = as_bool(s_lock, bool(opt_int(hypr_opt("input:touchpad:drag_lock"), 0
 
 s_3fg = settings.get("trackpadDrag3fg")
 try:
-    drag_3fg = int(s_3fg) if s_3fg is not None else opt_int(hypr_opt("input:touchpad:drag_3fg"), 1)
+    drag_3fg = int(s_3fg) if s_3fg is not None else opt_int(hypr_opt("input:touchpad:drag_3fg"), 0)
 except Exception:
-    drag_3fg = 1
+    drag_3fg = 0
 drag_3fg = max(0, min(3, drag_3fg))
 
 s_map = settings.get("trackpadTapButtonMap")
@@ -495,6 +495,10 @@ left_handed = as_bool(s_left, opt_bool(hypr_opt("input:left_handed"), False))
 
 s_swipe = settings.get("trackpadSwipeWorkspaces")
 swipe_workspaces = as_bool(s_swipe, True)
+
+# Enforce mutual exclusion: 3-finger drag and 3-finger workspace swiping can never both be active
+if drag_3fg > 0 and swipe_workspaces:
+    swipe_workspaces = False
 
 print(json.dumps({
     "device": dev_name or "Apple Force Touch Trackpad",
@@ -560,6 +564,7 @@ print_status_json() {
   kb_undo=$(get_setting "keybindingUndo" "CTRL + Z")
   kb_redo=$(get_setting "keybindingRedo" "CTRL + SHIFT + Z")
   kb_save=$(get_setting "keybindingSave" "CTRL + S")
+  kb_cut=$(get_setting "keybindingCut" "CTRL + X")
   inactive_eth=$(get_inactive_ethernet_json)
   pcie_compat=$(get_pcie_ports_compat)
 
@@ -677,6 +682,7 @@ PYEOF
   "keybindingUndo": "$kb_undo",
   "keybindingRedo": "$kb_redo",
   "keybindingSave": "$kb_save",
+  "keybindingCut": "$kb_cut",
   "systemKeybindingOverrides": $sys_overrides,
   "systemKeybindings": $sys_map,
   "trackpad": $trackpad_json
@@ -763,7 +769,7 @@ save_user_setting() {
           ;;
       esac
       ;;
-    keybindingSelectAll|keybindingDelete|keybindingFind|keybindingFullscreen|keybindingUndo|keybindingRedo|keybindingSave)
+    keybindingSelectAll|keybindingDelete|keybindingFind|keybindingFullscreen|keybindingUndo|keybindingRedo|keybindingSave|keybindingCut)
       if [[ ! "$val" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
         echo "Error: Invalid keybinding chord for $key: '$val'" >&2
         exit 1
@@ -845,6 +851,12 @@ else:
             data[key] = val
     except Exception:
         data[key] = val
+
+# Enforce mutual exclusion: 3-finger drag and 3-finger workspace swiping can never both be enabled
+if key == "trackpadDrag3fg" and data.get("trackpadDrag3fg", 0) > 0:
+    data["trackpadSwipeWorkspaces"] = False
+elif key == "trackpadSwipeWorkspaces" and data.get("trackpadSwipeWorkspaces", False):
+    data["trackpadDrag3fg"] = 0
 
 tmp_file = file_path + ".tmp." + str(os.getpid())
 with open(tmp_file, 'w', encoding='utf-8') as f:
@@ -1373,6 +1385,7 @@ fullscreen = norm_c(settings.get("keybindingFullscreen", "SUPER + F"))
 undo_key = norm_c(settings.get("keybindingUndo", "CTRL + Z"))
 redo_key = norm_c(settings.get("keybindingRedo", "CTRL + SHIFT + Z"))
 save_key = norm_c(settings.get("keybindingSave", "CTRL + S"))
+cut_key = norm_c(settings.get("keybindingCut", "CTRL + X"))
 system_overrides = settings.get("systemKeybindingOverrides", {})
 
 is_all_defaults = (
@@ -1383,6 +1396,7 @@ is_all_defaults = (
     (not undo_key or undo_key in ("CTRL + Z", "NONE")) and
     (not redo_key or redo_key in ("CTRL + SHIFT + Z", "NONE")) and
     (not save_key or save_key in ("CTRL + S", "NONE")) and
+    (not cut_key or cut_key in ("CTRL + X", "NONE")) and
     len(system_overrides) == 0
 )
 
@@ -1446,6 +1460,11 @@ if redo_key and redo_key not in ("NONE", "CTRL + SHIFT + Z"):
 if save_key and save_key not in ("NONE", "CTRL + S"):
     unbinds.append(save_key)
     binds.append(f'o.bind("{save_key}", "Save", hl.dsp.send_shortcut({{ mods = "CTRL", key = "s" }}))')
+
+# Cut
+if cut_key and cut_key not in ("NONE", "CTRL + X"):
+    unbinds.append(cut_key)
+    binds.append(f'o.bind("{cut_key}", "Cut", hl.dsp.send_shortcut({{ mods = "CTRL", key = "x" }}))')
 
 # System Overrides
 for action, item in system_overrides.items():
@@ -1526,6 +1545,9 @@ set_keybindings() {
       keybinding_save|keybindingSave)
         save_user_setting "keybindingSave" "$v"
         ;;
+      keybinding_cut|keybindingCut)
+        save_user_setting "keybindingCut" "$v"
+        ;;
       *)
         echo "Unknown keybinding key: $k" >&2
         return 1
@@ -1555,6 +1577,7 @@ settings["keybindingFullscreen"] = "SUPER + CTRL + F"
 settings["keybindingUndo"] = "SUPER + Z"
 settings["keybindingRedo"] = "SUPER + SHIFT + Z"
 settings["keybindingSave"] = "SUPER + S"
+settings["keybindingCut"] = "SUPER + X"
 
 cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.records"))
 overrides = settings.get("systemKeybindingOverrides", {})
@@ -1606,7 +1629,8 @@ if cache_files:
         "SUPER + CTRL + F": "full screen",
         "SUPER + Z": "undo",
         "SUPER + SHIFT + Z": "redo",
-        "SUPER + S": "save"
+        "SUPER + S": "save",
+        "SUPER + X": "cut"
     }
 
     def normalize_chord_tokens(c):
@@ -1626,7 +1650,7 @@ if cache_files:
                 mods.add("SHIFT")
             else:
                 key = t
-        return mods, key
+        return frozenset(mods), key
 
     norm_rec = {normalize_chord_tokens(rc): (rc, name) for rc, name in rec_tasks.items()}
 
@@ -1636,7 +1660,7 @@ if cache_files:
             r_chord, r_name = norm_rec[c_norm]
             desc_clean = desc.lower().replace(" ", "").replace("_", "").replace("-", "")
             r_clean = r_name.replace(" ", "")
-            if desc_clean not in (r_clean, "delete", "fullscreen", "findindocument", "save"):
+            if desc_clean not in (r_clean, "delete", "fullscreen", "findindocument", "save", "cut", "universalcut"):
                 rec_alt = get_rec(combo)
                 overrides[desc] = {
                     "action": desc,
@@ -1677,6 +1701,7 @@ settings["keybindingFullscreen"] = "SUPER + F"
 settings["keybindingUndo"] = "CTRL + Z"
 settings["keybindingRedo"] = "CTRL + SHIFT + Z"
 settings["keybindingSave"] = "CTRL + S"
+settings["keybindingCut"] = "CTRL + X"
 settings["systemKeybindingOverrides"] = {}
 
 tmp_file = settings_file + ".tmp." + str(os.getpid())
@@ -1822,10 +1847,12 @@ tk_map = {
     "keybinding_redo": "keybindingRedo",
     "keybindingredo": "keybindingRedo",
     "keybinding_save": "keybindingSave",
-    "keybindingsave": "keybindingSave"
+    "keybindingsave": "keybindingSave",
+    "keybinding_cut": "keybindingCut",
+    "keybindingcut": "keybindingCut"
 }
 norm_tk = tk_map.get(task_key.lower().replace("_", ""), task_key)
-if norm_tk in ("keybindingSelectAll", "keybindingDelete", "keybindingFind", "keybindingFullscreen", "keybindingUndo", "keybindingRedo", "keybindingSave"):
+if norm_tk in ("keybindingSelectAll", "keybindingDelete", "keybindingFind", "keybindingFullscreen", "keybindingUndo", "keybindingRedo", "keybindingSave", "keybindingCut"):
     settings[norm_tk] = task_chord
 
 overrides = settings.get("systemKeybindingOverrides", {})
@@ -1904,7 +1931,9 @@ friendly_task_names = {
     "keybinding_redo": "Redo",
     "keybindingRedo": "Redo",
     "keybinding_save": "Save",
-    "keybindingSave": "Save"
+    "keybindingSave": "Save",
+    "keybinding_cut": "Cut",
+    "keybindingCut": "Cut"
 }
 
 current_task_friendly = friendly_task_names.get(current_task_key, current_task_key).lower()
@@ -1917,7 +1946,8 @@ plugin_bindings = {
     "keybinding_fullscreen": "SUPER + F",
     "keybinding_undo": "CTRL + Z",
     "keybinding_redo": "CTRL + SHIFT + Z",
-    "keybinding_save": "CTRL + S"
+    "keybinding_save": "CTRL + S",
+    "keybinding_cut": "CTRL + X"
 }
 sys_overrides = {}
 if settings_path and os.path.isfile(settings_path):
@@ -1994,7 +2024,7 @@ def get_rec(chord):
 for k_part, desc, disp, arg in raw_records:
     k_mods, k_key = normalize_chord(k_part)
     if k_key == t_key and k_mods == t_mods:
-        is_conflict = (desc.lower() != current_task_friendly and not (desc.lower() == "delete" and current_task_friendly == "forward delete"))
+        is_conflict = (desc.lower() != current_task_friendly and not (desc.lower() == "delete" and current_task_friendly == "forward delete") and not (desc.lower() == "universal cut" and current_task_friendly == "cut"))
         # If this action is already overridden to something else, this default chord is freed
         if desc in sys_overrides:
             ov_m, ov_k = normalize_chord(sys_overrides[desc].get("currentChord", ""))
@@ -2076,9 +2106,9 @@ middle_button = as_bool(settings.get("trackpadMiddleButtonEmulation"), False)
 tap_and_drag = as_bool(settings.get("trackpadTapAndDrag"), True)
 drag_lock = as_bool(settings.get("trackpadDragLock"), False)
 try:
-    drag_3fg = max(0, min(3, int(settings.get("trackpadDrag3fg", 1))))
+    drag_3fg = max(0, min(3, int(settings.get("trackpadDrag3fg", 0))))
 except Exception:
-    drag_3fg = 1
+    drag_3fg = 0
 tap_button_map = "lmr" if str(settings.get("trackpadTapButtonMap", "lrm")).lower() == "lmr" else "lrm"
 flip_x = as_bool(settings.get("trackpadFlipX"), False)
 flip_y = as_bool(settings.get("trackpadFlipY"), False)
@@ -2089,6 +2119,10 @@ except Exception:
 accel_profile = "flat" if str(settings.get("trackpadAccelProfile", "adaptive")).lower() == "flat" else "adaptive"
 left_handed = as_bool(settings.get("trackpadLeftHanded"), False)
 swipe_workspaces = as_bool(settings.get("trackpadSwipeWorkspaces"), True)
+
+# Enforce mutual exclusion: 3-finger drag and 3-finger workspace swiping can never both be active
+if drag_3fg > 0 and swipe_workspaces:
+    swipe_workspaces = False
 
 hypr_dir = os.path.expanduser("~/.config/hypr")
 trackpad_lua = os.path.join(hypr_dir, "t2-trackpad.lua")
@@ -2181,7 +2215,7 @@ apply_recommended_trackpad() {
   save_user_setting "trackpadMiddleButtonEmulation" "false"
   save_user_setting "trackpadTapAndDrag" "true"
   save_user_setting "trackpadDragLock" "false"
-  save_user_setting "trackpadDrag3fg" "1"
+  save_user_setting "trackpadDrag3fg" "0"
   save_user_setting "trackpadTapButtonMap" "lrm"
   save_user_setting "trackpadFlipX" "false"
   save_user_setting "trackpadFlipY" "false"
@@ -2376,6 +2410,10 @@ case "${1:-status}" in
         ;;
       keybinding_save)
         save_user_setting "keybindingSave" "$val"
+        apply_keybindings
+        ;;
+      keybinding_cut)
+        save_user_setting "keybindingCut" "$val"
         apply_keybindings
         ;;
       trackpad_natural_scroll)

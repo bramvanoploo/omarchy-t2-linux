@@ -40,6 +40,7 @@ function emptyStatus() {
     keybindingUndo: "CTRL + Z",
     keybindingRedo: "CTRL + SHIFT + Z",
     keybindingSave: "CTRL + S",
+    keybindingCut: "CTRL + X",
     trackpad: {
       device: "Apple Force Touch Trackpad",
       present: true,
@@ -51,7 +52,7 @@ function emptyStatus() {
       middleButtonEmulation: false,
       tapAndDrag: true,
       dragLock: false,
-      drag3fg: 1,
+      drag3fg: 0,
       tapButtonMap: "lrm",
       flipX: false,
       flipY: false,
@@ -109,6 +110,7 @@ function parseStatus(raw) {
       data.keybindingUndo = data.keybindingUndo ? String(data.keybindingUndo).trim() : "CTRL + Z";
       data.keybindingRedo = data.keybindingRedo ? String(data.keybindingRedo).trim() : "CTRL + SHIFT + Z";
       data.keybindingSave = data.keybindingSave ? String(data.keybindingSave).trim() : "CTRL + S";
+      data.keybindingCut = data.keybindingCut ? String(data.keybindingCut).trim() : "CTRL + X";
 
       if (data.hibernateDelay !== undefined) {
         var hd = String(data.hibernateDelay).toLowerCase().trim();
@@ -134,6 +136,9 @@ function parseStatus(raw) {
         data.trackpad.flipY = Boolean(data.trackpad.flipY);
         data.trackpad.leftHanded = Boolean(data.trackpad.leftHanded);
         data.trackpad.swipeWorkspaces = data.trackpad.swipeWorkspaces !== undefined ? Boolean(data.trackpad.swipeWorkspaces) : true;
+        if (data.trackpad.drag3fg > 0 && data.trackpad.swipeWorkspaces) {
+          data.trackpad.swipeWorkspaces = false;
+        }
         data.trackpad.accelProfile = String(data.trackpad.accelProfile || "adaptive").toLowerCase() === "flat" ? "flat" : "adaptive";
 
         if (typeof data.trackpad.scrollFactor === "number" && !isNaN(data.trackpad.scrollFactor)) {
@@ -388,6 +393,7 @@ function getTaskFriendlyName(taskKey) {
   if (key === "keybindingundo") return "Undo";
   if (key === "keybindingredo") return "Redo";
   if (key === "keybindingsave") return "Save";
+  if (key === "keybindingcut") return "Cut";
   return taskKey || "Keybinding";
 }
 
@@ -415,6 +421,9 @@ function getRecommendedAlternative(taskKey, conflictingChord) {
   if (key === "keybindingsave") {
     return (norm === normalizeChord("SUPER + S")) ? "CTRL + S" : "SUPER + S";
   }
+  if (key === "keybindingcut") {
+    return (norm === normalizeChord("SUPER + X")) ? "CTRL + X" : "SUPER + X";
+  }
   return "";
 }
 
@@ -426,7 +435,8 @@ function findPluginConflict(targetTaskKey, newChord, currentStatus) {
     { key: "keybinding_fullscreen", name: "Toggle Fullscreen", chord: (currentStatus && currentStatus.keybindingFullscreen) ? currentStatus.keybindingFullscreen : "SUPER + F" },
     { key: "keybinding_undo", name: "Undo", chord: (currentStatus && currentStatus.keybindingUndo) ? currentStatus.keybindingUndo : "CTRL + Z" },
     { key: "keybinding_redo", name: "Redo", chord: (currentStatus && currentStatus.keybindingRedo) ? currentStatus.keybindingRedo : "CTRL + SHIFT + Z" },
-    { key: "keybinding_save", name: "Save", chord: (currentStatus && currentStatus.keybindingSave) ? currentStatus.keybindingSave : "CTRL + S" }
+    { key: "keybinding_save", name: "Save", chord: (currentStatus && currentStatus.keybindingSave) ? currentStatus.keybindingSave : "CTRL + S" },
+    { key: "keybinding_cut", name: "Cut", chord: (currentStatus && currentStatus.keybindingCut) ? currentStatus.keybindingCut : "CTRL + X" }
   ];
 
   var normTarget = normalizeChord(newChord);
@@ -461,7 +471,8 @@ function findSystemConflict(targetTaskKey, newChord, currentStatus) {
     var oItem = overrides[overrideKeys[i]];
     if (oItem && oItem.currentChord && normalizeChord(oItem.currentChord) === normTarget) {
       var actNorm = String(oItem.action || "").toLowerCase().replace(/\s+/g, '');
-      if (actNorm !== friendly) {
+      var isCutMatch = (actNorm === "universalcut" && friendly === "cut");
+      if (actNorm !== friendly && !isCutMatch) {
         return {
           isSystem: true,
           action: oItem.action,
@@ -489,7 +500,7 @@ function findSystemConflict(targetTaskKey, newChord, currentStatus) {
         continue;
       }
       // If this is the plugin task's own counterpart, ignore
-      if (actNorm2 === friendly || (actNorm2 === "fullscreen" && friendly === "togglefullscreen") || (actNorm2 === "find" && friendly === "findindocument") || (actNorm2 === "selectall" && friendly === "selectall") || (actNorm2 === "undo" && friendly === "undo") || (actNorm2 === "redo" && friendly === "redo") || (actNorm2 === "save" && friendly === "save") || (actNorm2 === "delete" && friendly === "forwarddelete")) {
+      if (actNorm2 === friendly || (actNorm2 === "fullscreen" && friendly === "togglefullscreen") || (actNorm2 === "find" && friendly === "findindocument") || (actNorm2 === "selectall" && friendly === "selectall") || (actNorm2 === "undo" && friendly === "undo") || (actNorm2 === "redo" && friendly === "redo") || (actNorm2 === "save" && friendly === "save") || (actNorm2 === "delete" && friendly === "forwarddelete") || (actNorm2 === "universalcut" && friendly === "cut")) {
         continue;
       }
       return {
@@ -532,7 +543,8 @@ function getActiveConflicts(status) {
     { key: "keybinding_fullscreen", prop: "keybindingFullscreen", name: "Toggle Fullscreen", chord: (status && status.keybindingFullscreen) ? status.keybindingFullscreen : "SUPER + F" },
     { key: "keybinding_undo", prop: "keybindingUndo", name: "Undo", chord: (status && status.keybindingUndo) ? status.keybindingUndo : "CTRL + Z" },
     { key: "keybinding_redo", prop: "keybindingRedo", name: "Redo", chord: (status && status.keybindingRedo) ? status.keybindingRedo : "CTRL + SHIFT + Z" },
-    { key: "keybinding_save", prop: "keybindingSave", name: "Save", chord: (status && status.keybindingSave) ? status.keybindingSave : "CTRL + S" }
+    { key: "keybinding_save", prop: "keybindingSave", name: "Save", chord: (status && status.keybindingSave) ? status.keybindingSave : "CTRL + S" },
+    { key: "keybinding_cut", prop: "keybindingCut", name: "Cut", chord: (status && status.keybindingCut) ? status.keybindingCut : "CTRL + X" }
   ];
 
   // 1. Check pairwise intra-plugin conflicts
@@ -566,7 +578,7 @@ function getActiveConflicts(status) {
   // 2. Check plugin tasks vs system keybindings
   var overrides = status.systemKeybindingOverrides || {};
   var systemMap = status.systemKeybindings || {};
-  var pluginActionNorms = ["togglefullscreen", "fullscreen", "findindocument", "find", "selectall", "undo", "redo", "save", "forwarddelete", "delete"];
+  var pluginActionNorms = ["togglefullscreen", "fullscreen", "findindocument", "find", "selectall", "undo", "redo", "save", "forwarddelete", "delete", "cut", "universalcut"];
 
   for (var k = 0; k < tasks.length; k++) {
     var task = tasks[k];
@@ -649,6 +661,7 @@ function areAllMacShortcutsApplied(status) {
   var undo = normalizeChord(status.keybindingUndo);
   var redo = normalizeChord(status.keybindingRedo);
   var save = normalizeChord(status.keybindingSave);
+  var cut = normalizeChord(status.keybindingCut);
 
   return (
     sel === normalizeChord("SUPER + A") &&
@@ -657,7 +670,8 @@ function areAllMacShortcutsApplied(status) {
     full === normalizeChord("SUPER + CTRL + F") &&
     undo === normalizeChord("SUPER + Z") &&
     redo === normalizeChord("SUPER + SHIFT + Z") &&
-    save === normalizeChord("SUPER + S")
+    save === normalizeChord("SUPER + S") &&
+    cut === normalizeChord("SUPER + X")
   );
 }
 
@@ -723,7 +737,7 @@ function areAllTrackpadRecommendedApplied(status) {
     tp.tapToClick &&
     tp.clickfingerBehavior &&
     tp.disableWhileTyping &&
-    tp.drag3fg === 1 &&
+    tp.drag3fg === 0 &&
     tp.tapAndDrag &&
     !tp.dragLock &&
     !tp.middleButtonEmulation &&
