@@ -2557,6 +2557,7 @@ case "${1:-status}" in
     save_user_setting "touchbarBlank" "true"
     save_user_setting "recommendedPromptShown" "true"
     apply_recommended_keybindings
+    apply_recommended_trackpad
     run_privileged do-apply-recommended
     ;;
   do-apply-recommended)

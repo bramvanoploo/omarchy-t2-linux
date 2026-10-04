@@ -219,6 +219,25 @@ BarWidget {
       s.keybindingSave = "SUPER + S"
       s.keybindingCut = "SUPER + X"
 
+      var tp = Object.assign({}, s.trackpad || Model.emptyStatus().trackpad)
+      tp.naturalScroll = true
+      tp.tapToClick = true
+      tp.clickfingerBehavior = true
+      tp.disableWhileTyping = true
+      tp.scrollFactor = 0.64
+      tp.middleButtonEmulation = false
+      tp.tapAndDrag = true
+      tp.dragLock = false
+      tp.drag3fg = 0
+      tp.tapButtonMap = "lrm"
+      tp.flipX = false
+      tp.flipY = false
+      tp.sensitivity = 0.0
+      tp.accelProfile = "adaptive"
+      tp.leftHanded = false
+      tp.swipeWorkspaces = true
+      s.trackpad = tp
+
       var ov = Object.assign({}, s.systemKeybindingOverrides || {})
       var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S", "SUPER + X"]
       var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save", "cut", "universalcut"]
@@ -258,7 +277,7 @@ BarWidget {
     }
 
     noticeTimer.stop()
-    root.lastNotice = "Applying recommended power, suspend, and keybinding settings…"
+    root.lastNotice = "Applying recommended power, suspend, trackpad, and keybinding settings…"
     limineProc.command = ["bash", helper, "apply-recommended"]
     limineProc.running = true
   }
@@ -5702,8 +5721,8 @@ BarWidget {
 
             BorderSurface {
               anchors.centerIn: parent
-              width: Math.min(parent.width - Style.space(32), Style.space(640))
-              height: Math.min(parent.height - Style.space(32), Style.space(560))
+              width: Math.min(parent.width - Style.space(32), Style.space(660))
+              height: Math.min(parent.height - Style.space(32), Style.space(620))
               color: Color.popups.background
               borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
               radius: Style.cornerRadius
@@ -5737,7 +5756,7 @@ BarWidget {
                       color: root.foreground
                     }
                     Text {
-                      text: "Optimized suspend, battery life, and Mac keybindings configuration"
+                      text: "Optimized suspend, battery life, trackpad, and Mac keybindings configuration"
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       color: root.dim
@@ -5764,7 +5783,7 @@ BarWidget {
                     id: summaryText
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
-                    text: "Applying the recommended defaults means that the MacBook will wake from suspend easier, enjoy up to 40% less battery drain depending on system load, and configure standard Mac keyboard shortcuts (Cmd+A, Cmd+Backspace, Cmd+F, Cmd+Ctrl+F, Cmd+Z, Cmd+Shift+Z, Cmd+S) with automatic conflict resolution."
+                    text: "Applying the recommended defaults means that the MacBook will wake from suspend easier, enjoy up to 40% less battery drain depending on system load, optimize trackpad gestures (natural scrolling, 3-finger workspace swiping, adaptive acceleration, Mac tap mapping), and configure standard Mac keyboard shortcuts (Cmd+A, Cmd+Backspace, Cmd+F, Cmd+Ctrl+F, Cmd+Z, Cmd+Shift+Z, Cmd+S, Cmd+X) with automatic conflict resolution."
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
                     color: root.foreground
@@ -5973,6 +5992,7 @@ BarWidget {
                           { title: "Undo", val: "CMD + Z", desc: "Standard Mac shortcut for undoing actions in applications." },
                           { title: "Redo", val: "CMD + SHIFT + Z", desc: "Standard Mac shortcut for redoing actions in applications." },
                           { title: "Save", val: "CMD + S", desc: "Standard Mac shortcut for saving documents and files." },
+                          { title: "Cut", val: "CMD + X", desc: "Standard Mac shortcut for cutting selected text or items to the clipboard." },
                           { title: "System Conflict Resolution", val: "Auto-migrated", desc: "Safely relocates any overlapping system shortcuts (such as Super + Backspace) to prevent conflicts." }
                         ]
 
@@ -5985,6 +6005,87 @@ BarWidget {
 
                           Row {
                             id: optRow3
+                            anchors.fill: parent
+                            anchors.margins: Style.space(8)
+                            spacing: Style.space(8)
+
+                            Text {
+                              text: "•"
+                              color: root.accent
+                              font.bold: true
+                            }
+                            Column {
+                              width: parent.width - Style.space(20)
+                              spacing: 2
+                              Row {
+                                spacing: Style.space(8)
+                                Text {
+                                  text: modelData.title + ":"
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.bodySmall
+                                  font.bold: true
+                                  color: root.foreground
+                                }
+                                Text {
+                                  text: modelData.val
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.bodySmall
+                                  font.bold: true
+                                  color: root.accent
+                                }
+                              }
+                              Text {
+                                text: modelData.desc
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                color: root.dim
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    // Group 4: Trackpad
+                    Column {
+                      width: parent.width
+                      spacing: Style.space(6)
+
+                      Text {
+                        text: "TRACKPAD"
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                        color: root.accent
+                        font.letterSpacing: 0.8
+                      }
+
+                      Repeater {
+                        model: [
+                          { title: "Natural Scrolling", val: "Enabled", desc: "Invert scroll direction so page content tracks finger movement, matching native macOS behavior." },
+                          { title: "3-Finger Workspace Swiping", val: "Enabled", desc: "Swipe horizontally across the trackpad with three fingers to switch workspaces seamlessly." },
+                          { title: "Tap to Click", val: "Enabled", desc: "Tap surface with 1 finger for primary click and 2 fingers for secondary click without physical depression." },
+                          { title: "Secondary Click (Clickfinger)", val: "Two-Finger Click", desc: "Clicking anywhere with two fingers emits a secondary (right) click." },
+                          { title: "Two-Finger Scroll Speed", val: "0.64x multiplier", desc: "Smooth two-finger scrolling multiplier calibrated for Apple Force Touch trackpads." },
+                          { title: "Acceleration Profile", val: "Adaptive", desc: "Dynamic macOS-style cursor acceleration curve based on finger velocity." },
+                          { title: "Pointer Speed (Sensitivity)", val: "Default (50%)", desc: "Balanced cursor tracking speed calibrated for Retina displays." },
+                          { title: "Disable While Typing", val: "Enabled", desc: "Prevents accidental cursor drift or accidental clicks while typing on the keyboard." },
+                          { title: "Tap Button Order", val: "LRM (Mac Default)", desc: "Maps multi-finger tap clicks in Apple order (1-finger Left, 2-finger Right, 3-finger Middle)." },
+                          { title: "Tap and Drag", val: "Enabled", desc: "Double-tap and slide with one finger to drag windows or select text." },
+                          { title: "Three-Finger Drag", val: "Disabled", desc: "Disabled to allow native 3-finger horizontal workspace swiping without gesture collisions." }
+                        ]
+
+                        delegate: BorderSurface {
+                          width: parent.width
+                          implicitHeight: optRow4.implicitHeight + Style.space(12)
+                          height: implicitHeight
+                          color: Util.alpha(root.foreground, 0.03)
+                          radius: Style.cornerRadius
+
+                          Row {
+                            id: optRow4
                             anchors.fill: parent
                             anchors.margins: Style.space(8)
                             spacing: Style.space(8)

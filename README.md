@@ -63,6 +63,7 @@ The panel organizes all hardware tunables and configurations into dedicated vert
 - **Disable While Typing (Palm Rejection)**: Temporarily disables trackpad pointer movement while typing on the built-in keyboard to prevent accidental thumb or palm touches.
 - **Left-Handed Mode**: Swap primary and secondary button assignments for left-handed ergonomics.
 - **Invert Horizontal / Vertical Axes (Flip X / Flip Y)**: Invert horizontal and vertical cursor motion.
+- **One-Click Recommended Defaults**: Instantly configures optimal Mac trackpad experience (natural scrolling, 3-finger horizontal workspace swiping, adaptive acceleration, tap-to-click, and secondary click) integrated into both the dedicated Trackpad tab and the global "Apply recommended defaults" wizard.
 - **Live Instant Preview & Persistent Configuration**: Generates `~/.config/hypr/t2-trackpad.lua` and applies settings live instantly via Hyprland IPC.
 
 ### 5. Sound
