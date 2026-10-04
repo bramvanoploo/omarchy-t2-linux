@@ -1592,12 +1592,12 @@ BarWidget {
           }
         }
 
-        // Centered Card (Large, 880x620)
+        // Centered Card (Large, 968x682)
         BorderSurface {
           id: mainCard
           anchors.centerIn: parent
-          width: Math.min(Style.space(880), parent.width - Style.space(48))
-          height: Math.min(Style.space(620), parent.height - Style.space(48))
+          width: Math.min(Style.space(968), parent.width - Style.space(48))
+          height: Math.min(Style.space(682), parent.height - Style.space(48))
           color: Color.popups.background
           borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
           radius: Style.cornerRadius
@@ -1713,7 +1713,7 @@ BarWidget {
               // -------------------------------------------------------------
               Item {
                 id: verticalTabsCol
-                width: Style.space(220)
+                width: Style.space(242)
                 height: parent.height
 
                 // Top: Navigation Tabs
