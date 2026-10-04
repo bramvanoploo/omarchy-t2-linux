@@ -5282,6 +5282,7 @@ BarWidget {
                                 Text {
                                   anchors.centerIn: parent
                                   text: modelData.name && modelData.name.length > 0 ? modelData.name.substring(0, 1).toUpperCase() : "󰏖"
+                                  textFormat: Text.PlainText
                                   color: modelData.updateAvailable ? Color.accent : (modelData.installed ? root.foreground : root.dim)
                                   font.family: root.fontFamily
                                   font.pixelSize: Style.font.body
@@ -5309,6 +5310,7 @@ BarWidget {
 
                                   Text {
                                     text: "v" + modelData.version
+                                    textFormat: Text.PlainText
                                     color: Color.accent
                                     font.family: root.fontFamily
                                     font.pixelSize: Style.font.caption
