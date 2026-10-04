@@ -11,7 +11,7 @@ SYSTEM_HELPER="/usr/local/libexec/omarchy-t2-helper"
 
 mkdir -p "$CONFIG_DIR"
 if [[ ! -f "$SETTINGS_FILE" ]]; then
-  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingFullscreen":"SUPER + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X"}' > "$SETTINGS_FILE"
+  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingFullscreen":"SUPER + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":0.64,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$SETTINGS_FILE"
 fi
 
 # ---------------------------------------------------------------------------

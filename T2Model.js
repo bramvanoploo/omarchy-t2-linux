@@ -753,11 +753,13 @@ function areAllTrackpadRecommendedApplied(status) {
     tp.tapToClick &&
     tp.clickfingerBehavior &&
     tp.disableWhileTyping &&
+    Math.abs(Number(tp.scrollFactor) - 0.64) < 0.01 &&
     tp.drag3fg === 0 &&
     tp.tapAndDrag &&
     !tp.dragLock &&
     !tp.middleButtonEmulation &&
     tp.tapButtonMap === "lrm" &&
+    Math.abs(Number(tp.sensitivity) - 0.0) < 0.01 &&
     tp.accelProfile === "adaptive" &&
     !tp.leftHanded &&
     !tp.flipX &&
