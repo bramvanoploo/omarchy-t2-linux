@@ -1812,7 +1812,7 @@ BarWidget {
                   }
                 }
 
-                // Bottom: "Apply recommended defaults" button + T2 Subsystem summary
+                // Bottom: "Apply recommended options" button + T2 Subsystem summary
                 Column {
                   id: sidebarFooterCol
                   anchors.left: parent.left
@@ -1824,7 +1824,7 @@ BarWidget {
                     id: applyRecommendedBtn
                     width: parent.width
                     height: Style.space(36)
-                    text: "Apply recommended defaults"
+                    text: "Apply recommended options"
                     iconText: "󰁨"
                     bordered: true
                     accent: root.accent
@@ -1993,10 +1993,10 @@ BarWidget {
                           }
 
                           iconText: allApplied ? "󰁌" : (root.currentTabId === "keybindings" ? "" : (root.currentTabId === "trackpad" ? "󱑣" : (root.currentTabId === "battery" ? "󰁹" : "󰤄")))
-                          text: allApplied ? "Reset to Defaults" : "Apply Recommended Defaults"
+                          text: allApplied ? "Reset to Defaults" : "Apply Recommended Options"
                           tooltipText: allApplied
                             ? ("Reset " + (root.tabs && root.tabs[root.activeTab] ? root.tabs[root.activeTab].title.toLowerCase() : "tab") + " to system defaults")
-                            : ("Set " + (root.tabs && root.tabs[root.activeTab] ? root.tabs[root.activeTab].title.toLowerCase() : "tab") + " to recommended defaults")
+                            : ("Set " + (root.tabs && root.tabs[root.activeTab] ? root.tabs[root.activeTab].title.toLowerCase() : "tab") + " to recommended options")
                           bordered: true
                           fontSize: Style.font.caption
                           iconSize: Style.font.bodySmall
@@ -2570,7 +2570,7 @@ BarWidget {
                       width: parent.width
                       spacing: Style.space(12)
 
-                      // Suspend Header & Recommended Defaults Card
+                      // Suspend Header & Recommended Options Card
                       BorderSurface {
                         width: parent.width
                         height: suspHeaderCol.implicitHeight + Style.space(28)
@@ -5749,7 +5749,7 @@ BarWidget {
                   Column {
                     spacing: 2
                     Text {
-                      text: "Apply recommended defaults"
+                      text: "Apply recommended options"
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.title
                       font.bold: true
@@ -5783,7 +5783,7 @@ BarWidget {
                     id: summaryText
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
-                    text: "Applying the recommended defaults means that the MacBook will wake from suspend easier, enjoy up to 40% less battery drain depending on system load, optimize trackpad gestures (natural scrolling, 3-finger workspace swiping, adaptive acceleration, Mac tap mapping), and configure standard Mac keyboard shortcuts (Cmd+A, Cmd+Backspace, Cmd+F, Cmd+Ctrl+F, Cmd+Z, Cmd+Shift+Z, Cmd+S, Cmd+X) with automatic conflict resolution."
+                    text: "Applying the recommended options means that the MacBook will wake from suspend easier, enjoy up to 40% less battery drain depending on system load, optimize trackpad gestures (natural scrolling, 3-finger workspace swiping, adaptive acceleration, Mac tap mapping), and configure standard Mac keyboard shortcuts (Cmd+A, Cmd+Backspace, Cmd+F, Cmd+Ctrl+F, Cmd+Z, Cmd+Shift+Z, Cmd+S, Cmd+X) with automatic conflict resolution."
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
                     color: root.foreground
@@ -6149,7 +6149,7 @@ BarWidget {
                   }
 
                   Button {
-                    text: "Apply recommended defaults"
+                    text: "Apply recommended options"
                     iconText: "󰁨"
                     bordered: true
                     accent: root.accent
