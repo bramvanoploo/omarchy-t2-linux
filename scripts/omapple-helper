@@ -14,7 +14,7 @@ fi
 
 mkdir -p "$CONFIG_DIR"
 if [[ ! -f "$SETTINGS_FILE" ]]; then
-  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingFullscreen":"SUPER + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":0.64,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$SETTINGS_FILE"
+  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingFullscreen":"SUPER + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","keybindingReload":"CTRL + R","keybindingSelectAddress":"CTRL + L","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":0.64,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$SETTINGS_FILE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -593,6 +593,8 @@ print_status_json() {
   kb_redo=$(get_setting "keybindingRedo" "CTRL + SHIFT + Z")
   kb_save=$(get_setting "keybindingSave" "CTRL + S")
   kb_cut=$(get_setting "keybindingCut" "CTRL + X")
+  kb_reload=$(get_setting "keybindingReload" "CTRL + R")
+  kb_select_address=$(get_setting "keybindingSelectAddress" "CTRL + L")
   inactive_eth=$(get_inactive_ethernet_json)
   pcie_compat=$(get_pcie_ports_compat)
 
@@ -737,6 +739,8 @@ PYEOF
   "keybindingRedo": "$kb_redo",
   "keybindingSave": "$kb_save",
   "keybindingCut": "$kb_cut",
+  "keybindingReload": "$kb_reload",
+  "keybindingSelectAddress": "$kb_select_address",
   "systemKeybindingOverrides": $sys_overrides,
   "systemKeybindings": $sys_map,
   "trackpad": $trackpad_json
@@ -826,7 +830,7 @@ save_user_setting() {
           ;;
       esac
       ;;
-    keybindingSelectAll|keybindingDelete|keybindingFind|keybindingFullscreen|keybindingUndo|keybindingRedo|keybindingSave|keybindingCut)
+    keybindingSelectAll|keybindingDelete|keybindingFind|keybindingFullscreen|keybindingUndo|keybindingRedo|keybindingSave|keybindingCut|keybindingReload|keybindingSelectAddress)
       if [[ ! "$val" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
         echo "Error: Invalid keybinding chord for $key: '$val'" >&2
         exit 1
@@ -1494,6 +1498,8 @@ undo_key = norm_c(settings.get("keybindingUndo", "CTRL + Z"))
 redo_key = norm_c(settings.get("keybindingRedo", "CTRL + SHIFT + Z"))
 save_key = norm_c(settings.get("keybindingSave", "CTRL + S"))
 cut_key = norm_c(settings.get("keybindingCut", "CTRL + X"))
+reload_key = norm_c(settings.get("keybindingReload", "CTRL + R"))
+select_address_key = norm_c(settings.get("keybindingSelectAddress", "CTRL + L"))
 system_overrides = settings.get("systemKeybindingOverrides", {})
 
 is_all_defaults = (
@@ -1505,6 +1511,8 @@ is_all_defaults = (
     (not redo_key or redo_key in ("CTRL + SHIFT + Z", "NONE")) and
     (not save_key or save_key in ("CTRL + S", "NONE")) and
     (not cut_key or cut_key in ("CTRL + X", "NONE")) and
+    (not reload_key or reload_key in ("CTRL + R", "NONE")) and
+    (not select_address_key or select_address_key in ("CTRL + L", "NONE")) and
     len(system_overrides) == 0
 )
 
@@ -1573,6 +1581,16 @@ if save_key and save_key not in ("NONE", "CTRL + S"):
 if cut_key and cut_key not in ("NONE", "CTRL + X"):
     unbinds.append(cut_key)
     binds.append(f'o.bind("{cut_key}", "Cut", hl.dsp.send_shortcut({{ mods = "CTRL", key = "x" }}))')
+
+# Reload
+if reload_key and reload_key not in ("NONE", "CTRL + R"):
+    unbinds.append(reload_key)
+    binds.append(f'o.bind("{reload_key}", "Reload", hl.dsp.send_shortcut({{ mods = "CTRL", key = "r" }}))')
+
+# Select address
+if select_address_key and select_address_key not in ("NONE", "CTRL + L"):
+    unbinds.append(select_address_key)
+    binds.append(f'o.bind("{select_address_key}", "Select address", hl.dsp.send_shortcut({{ mods = "CTRL", key = "l" }}))')
 
 # System Overrides
 for action, item in system_overrides.items():
@@ -1656,6 +1674,12 @@ set_keybindings() {
       keybinding_cut|keybindingCut)
         save_user_setting "keybindingCut" "$v"
         ;;
+      keybinding_reload|keybindingReload)
+        save_user_setting "keybindingReload" "$v"
+        ;;
+      keybinding_select_address|keybindingSelectAddress)
+        save_user_setting "keybindingSelectAddress" "$v"
+        ;;
       *)
         echo "Unknown keybinding key: $k" >&2
         return 1
@@ -1687,7 +1711,9 @@ if os.path.exists(settings_file):
         "keybindingUndo": "SUPER + Z",
         "keybindingRedo": "SUPER + SHIFT + Z",
         "keybindingSave": "SUPER + S",
-        "keybindingCut": "SUPER + X"
+        "keybindingCut": "SUPER + X",
+        "keybindingReload": "SUPER + R",
+        "keybindingSelectAddress": "SUPER + L"
     }
 
     changed = False
@@ -1747,7 +1773,9 @@ if os.path.exists(settings_file):
             "SUPER + Z": "undo",
             "SUPER + SHIFT + Z": "redo",
             "SUPER + S": "save",
-            "SUPER + X": "cut"
+            "SUPER + X": "cut",
+            "SUPER + R": "reload",
+            "SUPER + L": "select address"
         }
 
         def normalize_chord_tokens(c):
@@ -1777,7 +1805,7 @@ if os.path.exists(settings_file):
                 r_chord, r_name = norm_rec[c_norm]
                 desc_clean = desc.lower().replace(" ", "").replace("_", "").replace("-", "")
                 r_clean = r_name.replace(" ", "")
-                if desc_clean not in (r_clean, "delete", "fullscreen", "findindocument", "save", "cut", "universalcut"):
+                if desc_clean not in (r_clean, "delete", "fullscreen", "findindocument", "save", "cut", "universalcut", "reload", "selectaddress", "selectaddressbar", "focusaddressbar"):
                     rec_alt = get_rec(combo)
                     overrides[desc] = {
                         "action": desc,
@@ -1830,6 +1858,8 @@ settings["keybindingUndo"] = "CTRL + Z"
 settings["keybindingRedo"] = "CTRL + SHIFT + Z"
 settings["keybindingSave"] = "CTRL + S"
 settings["keybindingCut"] = "CTRL + X"
+settings["keybindingReload"] = "CTRL + R"
+settings["keybindingSelectAddress"] = "CTRL + L"
 settings["systemKeybindingOverrides"] = {}
 
 tmp_file = settings_file + ".tmp." + str(os.getpid())
@@ -1977,10 +2007,14 @@ tk_map = {
     "keybinding_save": "keybindingSave",
     "keybindingsave": "keybindingSave",
     "keybinding_cut": "keybindingCut",
-    "keybindingcut": "keybindingCut"
+    "keybindingcut": "keybindingCut",
+    "keybinding_reload": "keybindingReload",
+    "keybindingreload": "keybindingReload",
+    "keybinding_select_address": "keybindingSelectAddress",
+    "keybindingselectaddress": "keybindingSelectAddress"
 }
 norm_tk = tk_map.get(task_key.lower().replace("_", ""), task_key)
-if norm_tk in ("keybindingSelectAll", "keybindingDelete", "keybindingFind", "keybindingFullscreen", "keybindingUndo", "keybindingRedo", "keybindingSave", "keybindingCut"):
+if norm_tk in ("keybindingSelectAll", "keybindingDelete", "keybindingFind", "keybindingFullscreen", "keybindingUndo", "keybindingRedo", "keybindingSave", "keybindingCut", "keybindingReload", "keybindingSelectAddress"):
     settings[norm_tk] = task_chord
 
 overrides = settings.get("systemKeybindingOverrides", {})
@@ -2061,7 +2095,11 @@ friendly_task_names = {
     "keybinding_save": "Save",
     "keybindingSave": "Save",
     "keybinding_cut": "Cut",
-    "keybindingCut": "Cut"
+    "keybindingCut": "Cut",
+    "keybinding_reload": "Reload",
+    "keybindingReload": "Reload",
+    "keybinding_select_address": "Select address",
+    "keybindingSelectAddress": "Select address"
 }
 
 current_task_friendly = friendly_task_names.get(current_task_key, current_task_key).lower()
@@ -2075,7 +2113,9 @@ plugin_bindings = {
     "keybinding_undo": "CTRL + Z",
     "keybinding_redo": "CTRL + SHIFT + Z",
     "keybinding_save": "CTRL + S",
-    "keybinding_cut": "CTRL + X"
+    "keybinding_cut": "CTRL + X",
+    "keybinding_reload": "CTRL + R",
+    "keybinding_select_address": "CTRL + L"
 }
 sys_overrides = {}
 if settings_path and os.path.isfile(settings_path):
@@ -2152,7 +2192,7 @@ def get_rec(chord):
 for k_part, desc, disp, arg in raw_records:
     k_mods, k_key = normalize_chord(k_part)
     if k_key == t_key and k_mods == t_mods:
-        is_conflict = (desc.lower() != current_task_friendly and not (desc.lower() == "delete" and current_task_friendly == "forward delete") and not (desc.lower() == "universal cut" and current_task_friendly == "cut"))
+        is_conflict = (desc.lower() != current_task_friendly and not (desc.lower() == "delete" and current_task_friendly == "forward delete") and not (desc.lower() == "universal cut" and current_task_friendly == "cut") and not (desc.lower() in ("select address bar", "focus address bar") and current_task_friendly == "select address"))
         # If this action is already overridden to something else, this default chord is freed
         if desc in sys_overrides:
             ov_m, ov_k = normalize_chord(sys_overrides[desc].get("currentChord", ""))
@@ -2602,6 +2642,14 @@ case "${1:-status}" in
         ;;
       keybinding_cut)
         save_user_setting "keybindingCut" "$val"
+        apply_keybindings
+        ;;
+      keybinding_reload)
+        save_user_setting "keybindingReload" "$val"
+        apply_keybindings
+        ;;
+      keybinding_select_address)
+        save_user_setting "keybindingSelectAddress" "$val"
         apply_keybindings
         ;;
       trackpad_natural_scroll)

@@ -273,6 +273,8 @@ BarWidget {
       s.keybindingRedo = "SUPER + SHIFT + Z"
       s.keybindingSave = "SUPER + S"
       s.keybindingCut = "SUPER + X"
+      s.keybindingReload = "SUPER + R"
+      s.keybindingSelectAddress = "SUPER + L"
 
       var tp = Object.assign({}, s.trackpad || Model.emptyStatus().trackpad)
       tp.naturalScroll = true
@@ -294,8 +296,8 @@ BarWidget {
       s.trackpad = tp
 
       var ov = Object.assign({}, s.systemKeybindingOverrides || {})
-      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S", "SUPER + X"]
-      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save", "cut", "universalcut"]
+      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S", "SUPER + X", "SUPER + R", "SUPER + L"]
+      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save", "cut", "universalcut", "reload", "selectaddress", "focusaddressbar", "selectaddressbar"]
       if (s.systemKeybindings) {
         for (var rc = 0; rc < recChords.length; rc++) {
           var rNorm = Model.normalizeChord(recChords[rc])
@@ -635,6 +637,10 @@ BarWidget {
         s.keybindingSave = val
       } else if (key === "keybinding_cut") {
         s.keybindingCut = val
+      } else if (key === "keybinding_reload") {
+        s.keybindingReload = val
+      } else if (key === "keybinding_select_address") {
+        s.keybindingSelectAddress = val
       } else if (key.indexOf("trackpad_") === 0) {
         var tpKey = key.slice(9)
         var tp = Object.assign({}, s.trackpad || Model.emptyStatus().trackpad)
@@ -810,6 +816,8 @@ BarWidget {
           else if (tKey === "keybinding_redo") s.keybindingRedo = tChord
           else if (tKey === "keybinding_save") s.keybindingSave = tChord
           else if (tKey === "keybinding_cut") s.keybindingCut = tChord
+          else if (tKey === "keybinding_reload") s.keybindingReload = tChord
+          else if (tKey === "keybinding_select_address") s.keybindingSelectAddress = tChord
 
           var ov = Object.assign({}, s.systemKeybindingOverrides || {})
           ov[action] = {
@@ -858,6 +866,8 @@ BarWidget {
         else if (task === "keybinding_redo") s2.keybindingRedo = chord
         else if (task === "keybinding_save") s2.keybindingSave = chord
         else if (task === "keybinding_cut") s2.keybindingCut = chord
+        else if (task === "keybinding_reload") s2.keybindingReload = chord
+        else if (task === "keybinding_select_address") s2.keybindingSelectAddress = chord
 
         if (tKey2 === "keybinding_select_all") s2.keybindingSelectAll = tChord2
         else if (tKey2 === "keybinding_delete") s2.keybindingDelete = tChord2
@@ -867,6 +877,8 @@ BarWidget {
         else if (tKey2 === "keybinding_redo") s2.keybindingRedo = tChord2
         else if (tKey2 === "keybinding_save") s2.keybindingSave = tChord2
         else if (tKey2 === "keybinding_cut") s2.keybindingCut = tChord2
+        else if (tKey2 === "keybinding_reload") s2.keybindingReload = tChord2
+        else if (tKey2 === "keybinding_select_address") s2.keybindingSelectAddress = tChord2
 
         root.status = s2
       }
@@ -966,6 +978,8 @@ BarWidget {
         else if (targetKey === "keybinding_redo") s.keybindingRedo = targetChord
         else if (targetKey === "keybinding_save") s.keybindingSave = targetChord
         else if (targetKey === "keybinding_cut") s.keybindingCut = targetChord
+        else if (targetKey === "keybinding_reload") s.keybindingReload = targetChord
+        else if (targetKey === "keybinding_select_address") s.keybindingSelectAddress = targetChord
 
         var overrides = Object.assign({}, s.systemKeybindingOverrides || {})
         overrides[sysAction] = {
@@ -996,6 +1010,8 @@ BarWidget {
         else if (displacedKey === "keybinding_redo") s2.keybindingRedo = displacedChord
         else if (displacedKey === "keybinding_save") s2.keybindingSave = displacedChord
         else if (displacedKey === "keybinding_cut") s2.keybindingCut = displacedChord
+        else if (displacedKey === "keybinding_reload") s2.keybindingReload = displacedChord
+        else if (displacedKey === "keybinding_select_address") s2.keybindingSelectAddress = displacedChord
 
         if (targetKey === "keybinding_select_all") s2.keybindingSelectAll = targetChord
         else if (targetKey === "keybinding_delete") s2.keybindingDelete = targetChord
@@ -1005,6 +1021,8 @@ BarWidget {
         else if (targetKey === "keybinding_redo") s2.keybindingRedo = targetChord
         else if (targetKey === "keybinding_save") s2.keybindingSave = targetChord
         else if (targetKey === "keybinding_cut") s2.keybindingCut = targetChord
+        else if (targetKey === "keybinding_reload") s2.keybindingReload = targetChord
+        else if (targetKey === "keybinding_select_address") s2.keybindingSelectAddress = targetChord
 
         root.status = s2
       }
@@ -1153,10 +1171,12 @@ BarWidget {
       s.keybindingRedo = "SUPER + SHIFT + Z"
       s.keybindingSave = "SUPER + S"
       s.keybindingCut = "SUPER + X"
+      s.keybindingReload = "SUPER + R"
+      s.keybindingSelectAddress = "SUPER + L"
 
       var ov = Object.assign({}, s.systemKeybindingOverrides || {})
-      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S", "SUPER + X"]
-      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save", "cut", "universalcut"]
+      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S", "SUPER + X", "SUPER + R", "SUPER + L"]
+      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save", "cut", "universalcut", "reload", "selectaddress", "focusaddressbar", "selectaddressbar"]
       if (s.systemKeybindings) {
         for (var rc = 0; rc < recChords.length; rc++) {
           var rNorm = Model.normalizeChord(recChords[rc])
@@ -1208,6 +1228,8 @@ BarWidget {
       s.keybindingRedo = "CTRL + SHIFT + Z"
       s.keybindingSave = "CTRL + S"
       s.keybindingCut = "CTRL + X"
+      s.keybindingReload = "CTRL + R"
+      s.keybindingSelectAddress = "CTRL + L"
       s.systemKeybindingOverrides = {}
       root.status = s
     }
@@ -3918,6 +3940,204 @@ BarWidget {
                               }
                             }
                           }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // 9. Task: Reload
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+
+                              Text {
+                                id: t9Icon
+                                text: "󰑐"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                id: t9Title
+                                text: "Reload"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                text: "Reload active page or document"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                width: Math.max(0, parent.width - t9Icon.implicitWidth - t9Title.implicitWidth - Style.space(16))
+                              }
+                            }
+
+                            Row {
+                              id: t9Btns
+                              width: parent.width
+                              spacing: Style.space(6)
+                              readonly property real btnWidth: (width - spacing * 2) / 3
+
+                              readonly property string cur: root.status && root.status.keybindingReload ? root.status.keybindingReload : "CTRL + R"
+                              readonly property bool isMac: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + R")
+                              readonly property bool isLinux: Model.normalizeChord(cur) === Model.normalizeChord("CTRL + R")
+                              readonly property bool isCustom: !isMac && !isLinux
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CMD + R"
+                                tooltipText: "Mac preset (Command + R)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isMac
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_reload", "SUPER + R")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CTRL + R"
+                                tooltipText: "Standard Linux preset (Control + R)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isLinux
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_reload", "CTRL + R")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: "󰌌"
+                                text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
+                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isCustom
+                                accent: root.accent
+                                onClicked: root.openKeyRecorder("keybinding_reload", "Reload")
+                              }
+                            }
+                          }
+
+                          PanelSeparator {
+                            width: parent.width
+                            foreground: root.foreground
+                          }
+
+                          // 10. Task: Select Address
+                          Column {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Row {
+                              width: parent.width
+                              spacing: Style.space(8)
+
+                              Text {
+                                id: t10Icon
+                                text: "󰌷"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                id: t10Title
+                                text: "Select Address"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                font.bold: true
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                text: "Focus and select address or URL bar in browsers"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                width: Math.max(0, parent.width - t10Icon.implicitWidth - t10Title.implicitWidth - Style.space(16))
+                              }
+                            }
+
+                            Row {
+                              id: t10Btns
+                              width: parent.width
+                              spacing: Style.space(6)
+                              readonly property real btnWidth: (width - spacing * 2) / 3
+
+                              readonly property string cur: root.status && root.status.keybindingSelectAddress ? root.status.keybindingSelectAddress : "CTRL + L"
+                              readonly property bool isMac: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + L")
+                              readonly property bool isLinux: Model.normalizeChord(cur) === Model.normalizeChord("CTRL + L")
+                              readonly property bool isCustom: !isMac && !isLinux
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CMD + L"
+                                tooltipText: "Mac preset (Command + L)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isMac
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_select_address", "SUPER + L")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: ""
+                                text: "CTRL + L"
+                                tooltipText: "Standard Linux preset (Control + L)"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isLinux
+                                accent: root.accent
+                                onClicked: root.checkAndApplyKeybinding("keybinding_select_address", "CTRL + L")
+                              }
+
+                              Button {
+                                width: parent.btnWidth
+                                iconText: "󰌌"
+                                text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
+                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                bordered: true
+                                fontSize: Style.font.caption
+                                iconSize: Style.font.bodySmall
+                                height: Style.space(30)
+                                selected: parent.isCustom
+                                accent: root.accent
+                                onClicked: root.openKeyRecorder("keybinding_select_address", "Select Address")
+                              }
+                            }
+                          }
                         }
                       }
 
@@ -6471,6 +6691,18 @@ BarWidget {
                             val: "CMD + X",
                             desc: "Standard Mac shortcut for cutting selected text or items to the clipboard.",
                             applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingCut) === Model.normalizeChord("SUPER + X"))
+                          },
+                          {
+                            title: "Reload",
+                            val: "CMD + R",
+                            desc: "Standard Mac shortcut for reloading the active page or document.",
+                            applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingReload) === Model.normalizeChord("SUPER + R"))
+                          },
+                          {
+                            title: "Select Address",
+                            val: "CMD + L",
+                            desc: "Standard Mac shortcut for focusing and selecting the browser address bar.",
+                            applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingSelectAddress) === Model.normalizeChord("SUPER + L"))
                           },
                           {
                             title: "System Conflict Resolution",

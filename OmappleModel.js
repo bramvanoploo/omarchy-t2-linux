@@ -45,6 +45,8 @@ function emptyStatus() {
     keybindingRedo: "CTRL + SHIFT + Z",
     keybindingSave: "CTRL + S",
     keybindingCut: "CTRL + X",
+    keybindingReload: "CTRL + R",
+    keybindingSelectAddress: "CTRL + L",
     trackpad: {
       device: "Apple Force Touch Trackpad",
       present: true,
@@ -131,6 +133,8 @@ function parseStatus(raw) {
       data.keybindingRedo = data.keybindingRedo ? String(data.keybindingRedo).trim() : "CTRL + SHIFT + Z";
       data.keybindingSave = data.keybindingSave ? String(data.keybindingSave).trim() : "CTRL + S";
       data.keybindingCut = data.keybindingCut ? String(data.keybindingCut).trim() : "CTRL + X";
+      data.keybindingReload = data.keybindingReload ? String(data.keybindingReload).trim() : "CTRL + R";
+      data.keybindingSelectAddress = data.keybindingSelectAddress ? String(data.keybindingSelectAddress).trim() : "CTRL + L";
 
       if (data.hibernateDelay !== undefined) {
         var hd = String(data.hibernateDelay).toLowerCase().trim();
@@ -414,6 +418,8 @@ function getTaskFriendlyName(taskKey) {
   if (key === "keybindingredo") return "Redo";
   if (key === "keybindingsave") return "Save";
   if (key === "keybindingcut") return "Cut";
+  if (key === "keybindingreload") return "Reload";
+  if (key === "keybindingselectaddress") return "Select Address";
   return taskKey || "Keybinding";
 }
 
@@ -444,6 +450,12 @@ function getRecommendedAlternative(taskKey, conflictingChord) {
   if (key === "keybindingcut") {
     return (norm === normalizeChord("SUPER + X")) ? "CTRL + X" : "SUPER + X";
   }
+  if (key === "keybindingreload") {
+    return (norm === normalizeChord("SUPER + R")) ? "CTRL + R" : "SUPER + R";
+  }
+  if (key === "keybindingselectaddress") {
+    return (norm === normalizeChord("SUPER + L")) ? "CTRL + L" : "SUPER + L";
+  }
   return "";
 }
 
@@ -456,7 +468,9 @@ function findPluginConflict(targetTaskKey, newChord, currentStatus) {
     { key: "keybinding_undo", name: "Undo", chord: (currentStatus && currentStatus.keybindingUndo) ? currentStatus.keybindingUndo : "CTRL + Z" },
     { key: "keybinding_redo", name: "Redo", chord: (currentStatus && currentStatus.keybindingRedo) ? currentStatus.keybindingRedo : "CTRL + SHIFT + Z" },
     { key: "keybinding_save", name: "Save", chord: (currentStatus && currentStatus.keybindingSave) ? currentStatus.keybindingSave : "CTRL + S" },
-    { key: "keybinding_cut", name: "Cut", chord: (currentStatus && currentStatus.keybindingCut) ? currentStatus.keybindingCut : "CTRL + X" }
+    { key: "keybinding_cut", name: "Cut", chord: (currentStatus && currentStatus.keybindingCut) ? currentStatus.keybindingCut : "CTRL + X" },
+    { key: "keybinding_reload", name: "Reload", chord: (currentStatus && currentStatus.keybindingReload) ? currentStatus.keybindingReload : "CTRL + R" },
+    { key: "keybinding_select_address", name: "Select Address", chord: (currentStatus && currentStatus.keybindingSelectAddress) ? currentStatus.keybindingSelectAddress : "CTRL + L" }
   ];
 
   var normTarget = normalizeChord(newChord);
@@ -520,7 +534,7 @@ function findSystemConflict(targetTaskKey, newChord, currentStatus) {
         continue;
       }
       // If this is the plugin task's own counterpart, ignore
-      if (actNorm2 === friendly || (actNorm2 === "fullscreen" && friendly === "togglefullscreen") || (actNorm2 === "find" && friendly === "findindocument") || (actNorm2 === "selectall" && friendly === "selectall") || (actNorm2 === "undo" && friendly === "undo") || (actNorm2 === "redo" && friendly === "redo") || (actNorm2 === "save" && friendly === "save") || (actNorm2 === "delete" && friendly === "forwarddelete") || (actNorm2 === "universalcut" && friendly === "cut")) {
+      if (actNorm2 === friendly || (actNorm2 === "fullscreen" && friendly === "togglefullscreen") || (actNorm2 === "find" && friendly === "findindocument") || (actNorm2 === "selectall" && friendly === "selectall") || (actNorm2 === "undo" && friendly === "undo") || (actNorm2 === "redo" && friendly === "redo") || (actNorm2 === "save" && friendly === "save") || (actNorm2 === "delete" && friendly === "forwarddelete") || (actNorm2 === "universalcut" && friendly === "cut") || (actNorm2 === "reload" && friendly === "reload") || (actNorm2 === "selectaddress" && friendly === "selectaddress") || (actNorm2 === "focusaddressbar" && friendly === "selectaddress") || (actNorm2 === "selectaddressbar" && friendly === "selectaddress")) {
         continue;
       }
       return {
@@ -564,7 +578,9 @@ function getActiveConflicts(status) {
     { key: "keybinding_undo", prop: "keybindingUndo", name: "Undo", chord: (status && status.keybindingUndo) ? status.keybindingUndo : "CTRL + Z" },
     { key: "keybinding_redo", prop: "keybindingRedo", name: "Redo", chord: (status && status.keybindingRedo) ? status.keybindingRedo : "CTRL + SHIFT + Z" },
     { key: "keybinding_save", prop: "keybindingSave", name: "Save", chord: (status && status.keybindingSave) ? status.keybindingSave : "CTRL + S" },
-    { key: "keybinding_cut", prop: "keybindingCut", name: "Cut", chord: (status && status.keybindingCut) ? status.keybindingCut : "CTRL + X" }
+    { key: "keybinding_cut", prop: "keybindingCut", name: "Cut", chord: (status && status.keybindingCut) ? status.keybindingCut : "CTRL + X" },
+    { key: "keybinding_reload", prop: "keybindingReload", name: "Reload", chord: (status && status.keybindingReload) ? status.keybindingReload : "CTRL + R" },
+    { key: "keybinding_select_address", prop: "keybindingSelectAddress", name: "Select Address", chord: (status && status.keybindingSelectAddress) ? status.keybindingSelectAddress : "CTRL + L" }
   ];
 
   // 1. Check pairwise intra-plugin conflicts
@@ -598,7 +614,7 @@ function getActiveConflicts(status) {
   // 2. Check plugin tasks vs system keybindings
   var overrides = status.systemKeybindingOverrides || {};
   var systemMap = status.systemKeybindings || {};
-  var pluginActionNorms = ["togglefullscreen", "fullscreen", "findindocument", "find", "selectall", "undo", "redo", "save", "forwarddelete", "delete", "cut", "universalcut"];
+  var pluginActionNorms = ["togglefullscreen", "fullscreen", "findindocument", "find", "selectall", "undo", "redo", "save", "forwarddelete", "delete", "cut", "universalcut", "reload", "selectaddress", "focusaddressbar", "selectaddressbar"];
 
   for (var k = 0; k < tasks.length; k++) {
     var task = tasks[k];
@@ -682,6 +698,8 @@ function areAllMacShortcutsApplied(status) {
   var redo = normalizeChord(status.keybindingRedo);
   var save = normalizeChord(status.keybindingSave);
   var cut = normalizeChord(status.keybindingCut);
+  var reload = normalizeChord(status.keybindingReload);
+  var selectAddress = normalizeChord(status.keybindingSelectAddress);
 
   return (
     sel === normalizeChord("SUPER + A") &&
@@ -691,7 +709,9 @@ function areAllMacShortcutsApplied(status) {
     undo === normalizeChord("SUPER + Z") &&
     redo === normalizeChord("SUPER + SHIFT + Z") &&
     save === normalizeChord("SUPER + S") &&
-    cut === normalizeChord("SUPER + X")
+    cut === normalizeChord("SUPER + X") &&
+    reload === normalizeChord("SUPER + R") &&
+    selectAddress === normalizeChord("SUPER + L")
   );
 }
 
