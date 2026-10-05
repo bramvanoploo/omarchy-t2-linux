@@ -89,6 +89,19 @@ get_sys_vendor() {
   echo "$vendor"
 }
 
+get_cpu_name() {
+  local cpu=""
+  if [[ -r /proc/cpuinfo ]]; then
+    cpu=$(grep -m1 "^model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2- || true)
+    if [[ -z "$cpu" ]]; then
+      cpu=$(grep -E -m1 "^(Hardware|Model)" /proc/cpuinfo 2>/dev/null | cut -d: -f2- || true)
+    fi
+  fi
+  cpu=$(echo "$cpu" | sed -e 's/(R)//g' -e 's/(TM)//g' -e 's/  */ /g' -e 's/^[ \t]*//;s/[ \t]*$//' -e 's/ CPU.*//' -e 's/ @.*//')
+  [[ -z "$cpu" ]] && cpu=$(uname -m)
+  echo "$cpu"
+}
+
 # ---------------------------------------------------------------------------
 # Status Query
 # ---------------------------------------------------------------------------
@@ -660,12 +673,38 @@ PYEOF
     helper_installed=true
   fi
 
+  local cpu_name kernel_release sys_arch is_apple chip_label
+  cpu_name=$(get_cpu_name)
+  kernel_release=$(uname -r)
+  sys_arch=$(uname -m)
+
+  is_apple=false
+  if [[ "$vendor" =~ Apple ]] || [[ "$model" =~ Mac ]] || [[ "$is_t2" == "true" ]]; then
+    is_apple=true
+  fi
+
+  if [[ "$is_t2" == "true" ]]; then
+    chip_label="Apple T2 Security Chip"
+  elif [[ "$is_apple" == "true" ]]; then
+    if [[ "$sys_arch" == "aarch64" ]]; then
+      chip_label="Apple Silicon"
+    else
+      chip_label="Intel Mac (Non-T2)"
+    fi
+  else
+    chip_label="$vendor ($sys_arch)"
+  fi
+
   cat <<EOF
 {
   "isT2": $is_t2,
+  "isApple": $is_apple,
   "model": "$model",
   "vendor": "$vendor",
-  "chip": "Apple T2 Security Chip",
+  "chip": "$chip_label",
+  "cpu": "$cpu_name",
+  "kernel": "$kernel_release",
+  "arch": "$sys_arch",
   "helperInstalled": $helper_installed,
   "battery": $battery_json,
   "epp": "$epp",

@@ -3,9 +3,13 @@
 function emptyStatus() {
   return {
     isT2: true,
+    isApple: true,
     model: "Detecting…",
     vendor: "Apple Inc.",
     chip: "Apple T2 Security Chip",
+    cpu: "Detecting…",
+    kernel: "Detecting…",
+    arch: "x86_64",
     helperInstalled: false,
     battery: {
       present: false,

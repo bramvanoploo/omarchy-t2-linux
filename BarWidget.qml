@@ -1800,7 +1800,7 @@ BarWidget {
                       spacing: Style.space(4)
 
                       Text {
-                        text: "T2 SUBSYSTEM"
+                        text: (root.status && root.status.isT2) ? "T2 SUBSYSTEM" : ((root.status && root.status.isApple) ? "APPLE HARDWARE" : "SYSTEM HARDWARE")
                         color: root.accent
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
@@ -1809,25 +1809,64 @@ BarWidget {
                       }
 
                       Text {
-                        text: "Model: " + (root.status.model || "MacBook")
+                        text: "Model: " + (root.status.model || "Unknown Device")
                         color: root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                         elide: Text.ElideRight
+                        width: parent.width
                       }
 
+                      // T2 Case: Kernel & Chip details
                       Text {
-                        text: "Kernel: T2 Patched"
+                        visible: Boolean(root.status && root.status.isT2)
+                        text: "Kernel: " + (root.status.kernel || "T2 Patched")
                         color: root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                        width: parent.width
                       }
 
                       Text {
-                        text: "Chip: Apple T2 (106b:1801)"
+                        visible: Boolean(root.status && root.status.isT2)
+                        text: "Chip: " + (root.status.chip || "Apple T2 (106b:1801)")
                         color: root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                        width: parent.width
+                      }
+
+                      // Non-T2 Case: CPU, Platform, and Kernel
+                      Text {
+                        visible: !Boolean(root.status && root.status.isT2)
+                        text: "CPU: " + (root.status.cpu || "Standard Processor")
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                        width: parent.width
+                      }
+
+                      Text {
+                        visible: !Boolean(root.status && root.status.isT2)
+                        text: "Kernel: " + (root.status.kernel || "Linux")
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                        width: parent.width
+                      }
+
+                      Text {
+                        visible: !Boolean(root.status && root.status.isT2)
+                        text: (root.status && root.status.isApple) ? "Platform: Apple (Non-T2)" : ("Subsystem: " + (root.status.chip || (root.status.arch ? root.status.arch : "Standard PC")))
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                        width: parent.width
                       }
                     }
                   }
