@@ -5735,6 +5735,35 @@ BarWidget {
                   }
                 }
 
+                // Footer Buttons
+                Row {
+                  id: t2FooterRow
+                  anchors.bottom: parent.bottom
+                  anchors.right: parent.right
+                  anchors.margins: Style.space(20)
+                  spacing: Style.space(10)
+                  z: 2
+
+                  Button {
+                    text: "Cancel"
+                    bordered: true
+                    onClicked: {
+                      root.t2FixesConfirmOpen = false
+                    }
+                  }
+
+                  Button {
+                    text: "Apply T2 fixes only"
+                    iconText: ""
+                    bordered: true
+                    accent: root.accent
+                    selected: true
+                    onClicked: {
+                      root.applyT2Fixes()
+                    }
+                  }
+                }
+
                 // Scrollable list of options
                 Flickable {
                   id: t2OptFlickable
@@ -5842,34 +5871,6 @@ BarWidget {
                     }
                   }
                 }
-
-                // Footer Buttons
-                Row {
-                  id: t2FooterRow
-                  anchors.bottom: parent.bottom
-                  anchors.right: parent.right
-                  anchors.margins: Style.space(20)
-                  spacing: Style.space(10)
-
-                  Button {
-                    text: "Cancel"
-                    bordered: true
-                    onClicked: {
-                      root.t2FixesConfirmOpen = false
-                    }
-                  }
-
-                  Button {
-                    text: "Apply T2 fixes only"
-                    iconText: ""
-                    bordered: true
-                    accent: root.accent
-                    selected: true
-                    onClicked: {
-                      root.applyT2Fixes()
-                    }
-                  }
-                }
               }
             }
           }
@@ -5959,6 +5960,36 @@ BarWidget {
                     color: root.foreground
                     wrapMode: Text.WordWrap
                     lineHeight: 1.2
+                  }
+                }
+
+                // Footer Buttons
+                Row {
+                  id: recFooterRow
+                  anchors.bottom: parent.bottom
+                  anchors.right: parent.right
+                  anchors.margins: Style.space(20)
+                  spacing: Style.space(10)
+                  z: 2
+
+                  Button {
+                    text: "Cancel"
+                    bordered: true
+                    onClicked: {
+                      root.recommendedConfirmOpen = false
+                      root.dismissRecommendedPrompt()
+                    }
+                  }
+
+                  Button {
+                    text: "Apply recommended options"
+                    iconText: "󰁨"
+                    bordered: true
+                    accent: root.accent
+                    selected: true
+                    onClicked: {
+                      root.applyRecommendedOptions()
+                    }
                   }
                 }
 
@@ -6471,36 +6502,6 @@ BarWidget {
                         }
                       }
                     }
-                  }
-                }
-
-                // Footer Buttons
-                Row {
-                  id: recFooterRow
-                  anchors.bottom: parent.bottom
-                  anchors.right: parent.right
-                  anchors.margins: Style.space(20)
-                  spacing: Style.space(10)
-
-                  Button {
-                    text: "Cancel"
-                    bordered: true
-                    onClicked: {
-                      root.recommendedConfirmOpen = false
-                      root.dismissRecommendedPrompt()
-                    }
-                  }
-
-                  Button {
-                    text: "Apply recommended options"
-                    iconText: "󰁨"
-                    bordered: true
-                    accent: root.accent
-                    selected: true
-                    onClicked: {
-                      root.applyRecommendedOptions()
-                    }
-                  }
                 }
               }
             }
@@ -7077,5 +7078,7 @@ BarWidget {
       }
     }
   }
+}
+}
 }
 }
