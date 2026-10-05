@@ -350,6 +350,50 @@ def matches_q_t2(plugin):
     return any(w.startswith("t2") for w in words)
 
 
+def is_apple_plugin(plugin):
+    """
+    Search logic for all Apple-related Omarchy plugins:
+    Matches Apple, MacBook, Mac, macOS, Touch Bar, AirDrop, Sidecar, iCloud, Magic Mouse/Trackpad, etc.
+    """
+    pid = plugin.get("id", "")
+    if pid == "bramvanoploo.omarchy-t2-linux":
+        return False
+
+    if matches_q_t2(plugin):
+        return True
+
+    name = plugin.get("name", "").lower()
+    pid_lower = pid.lower()
+    desc = plugin.get("description", "").lower()
+    tags = [t.lower() for t in plugin.get("tags", [])]
+    author = plugin.get("author", "").lower()
+    full_text = f"{name} {pid_lower} {desc} {' '.join(tags)} {author}"
+
+    apple_phrases = [
+        "apple", "macbook", "macos", "mac os", "mac-style", "mac style",
+        "mac-like", "mac like", "touch bar", "touchbar", "touch-bar",
+        "imac", "mac mini", "mac pro", "magic mouse", "magic trackpad",
+        "magic keyboard", "butterfly keyboard", "airdrop", "airplay",
+        "sidecar", "icloud", "mbpfan", "afanctl", "tiny-dfr",
+        "apple silicon", "apple tv", "apple music", "studio display",
+        "omafan", "kait2en", "t2fanrd", "retina"
+    ]
+    for phrase in apple_phrases:
+        if phrase in full_text:
+            return True
+
+    if any(t in ["apple", "mac", "macos", "macbook", "t2", "touchbar"] for t in tags):
+        return True
+
+    # Standalone "mac" word, ignoring "mac address" / "mac addresses"
+    clean_desc = re.sub(r'\bmac\s+address(es)?\b', '', desc)
+    clean_text = f"{name} {pid_lower} {clean_desc} {author}"
+    if re.search(r'\bmac(s)?\b', clean_text):
+        return True
+
+    return False
+
+
 def parse_listing_time(plugin):
     val = plugin.get("listedAt") or plugin.get("addedAt") or ""
     try:
@@ -371,14 +415,15 @@ def list_plugins(force_refresh=False):
 
     matched_dict = {}
 
-    # 1. Matches for q=T2
+    # 1. Matches for Apple & T2 plugins
     for p in catalog_plugins:
         pid = p.get("id", "")
         # Don't show this plugin itself
         if pid == "bramvanoploo.omarchy-t2-linux":
             continue
 
-        if matches_q_t2(p):
+        if is_apple_plugin(p):
+            t2_flag = matches_q_t2(p)
             inst = installed_map.get(pid)
             is_installed = inst is not None or os.path.exists(os.path.join(PLUGINS_DIR, pid))
             is_enabled = inst.get("enabled", False) if inst else False
@@ -423,8 +468,10 @@ def list_plugins(force_refresh=False):
                 "hearts": p_stats.get("hearts", 0),
                 "accent": p.get("accent", "cyan"),
                 "webUrl": f"https://plugins.omarchy.org/plugin.html?id={urllib.parse.quote(pid)}",
-                "isExactT2": True,
-                "category": "T2 Plugin",
+                "isExactT2": t2_flag,
+                "isT2": t2_flag,
+                "isApple": True,
+                "category": "T2 Plugin" if t2_flag else "Apple Plugin",
                 "_listingTime": parse_listing_time(p)
             }
             matched_dict[pid] = entry
@@ -467,23 +514,29 @@ def list_plugins(force_refresh=False):
                 "accent": fb.get("accent", "lime"),
                 "webUrl": f"https://plugins.omarchy.org/plugin.html?id={urllib.parse.quote(pid)}",
                 "isExactT2": True,
+                "isT2": True,
+                "isApple": True,
                 "category": "T2 Plugin",
                 "_listingTime": parse_listing_time(fb)
             }
 
     # Site default sort: recently added (listingTime descending, then name ascending)
     items = list(matched_dict.values())
+    if "--t2-only" in sys.argv:
+        items = [x for x in items if x.get("isT2") or x.get("isExactT2")]
+
     items.sort(key=lambda x: (-x.get("_listingTime", 0.0), x["name"].lower()))
     for x in items:
         x.pop("_listingTime", None)
 
     output = {
         "status": "ok",
-        "fetchedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "sourceUrl": QUERY_URL,
-        "query": "q=T2",
+        "fetchedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "sourceUrl": "https://plugins.omarchy.org/?q=Apple",
+        "query": "q=Apple",
         "totalCount": len(items),
-        "exactT2Count": len(items),
+        "appleCount": len(items),
+        "t2Count": sum(1 for x in items if x.get("isT2") or x.get("isExactT2")),
         "installedCount": sum(1 for x in items if x["installed"]),
         "plugins": items
     }

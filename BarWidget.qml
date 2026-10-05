@@ -65,7 +65,7 @@ BarWidget {
     { id: "keybindings", title: "Keybindings", icon: "󰌘", desc: "Keyboard shortcuts & layout" },
     { id: "trackpad", title: "Trackpad", icon: "󱑣", desc: "Pointer & gesture controls" },
     // { id: "sound", title: "Sound", icon: "󰕾", desc: "Audio devices & configuration" }, // Hidden for now
-    { id: "plugins", title: "Plugins", icon: "󰏓", desc: "T2 community plugins" }
+    { id: "plugins", title: "Plugins", icon: "󰏓", desc: "Apple community plugins" }
   ]
 
   property var pluginList: []
@@ -73,10 +73,14 @@ BarWidget {
   property string pluginActionStatus: ""
   property string activePluginOpId: ""
   property string pluginFilterQuery: ""
-  property int pluginFilterMode: 0 // 0: All T2 Plugins, 1: Installed
+  property int pluginFilterMode: 0 // 0: All Apple Plugins, 1: Installed
+  property bool filterT2Only: false
 
   readonly property var filteredPlugins: {
     var list = root.pluginList || []
+    if (root.filterT2Only && root.status && root.status.isT2) {
+      list = list.filter(function(p) { return Boolean(p && (p.isT2 || p.isExactT2)) })
+    }
     if (root.pluginFilterMode === 1) {
       list = list.filter(function(p) { return Boolean(p && p.installed) })
     }
@@ -86,7 +90,8 @@ BarWidget {
         if (!p) return false
         return (p.name && p.name.toLowerCase().indexOf(q) !== -1) ||
                (p.id && p.id.toLowerCase().indexOf(q) !== -1) ||
-               (p.description && p.description.toLowerCase().indexOf(q) !== -1)
+               (p.description && p.description.toLowerCase().indexOf(q) !== -1) ||
+               (p.author && p.author.toLowerCase().indexOf(q) !== -1)
       })
     }
     return list
@@ -733,6 +738,7 @@ BarWidget {
     }
     function setPluginFilter(query: string): void { root.pluginFilterQuery = query }
     function setPluginMode(mode: int): void { root.pluginFilterMode = mode }
+    function setT2Filter(enable: bool): void { root.filterT2Only = enable }
     function scroll(y: real): void { flickable.contentY = y }
     function refreshPlugins(): void { root.fetchPlugins(true) }
     function togglePlugin(pluginId: string, enable: bool): void { root.togglePlugin(pluginId, enable) }
@@ -1897,7 +1903,7 @@ BarWidget {
                                         ? "Configure pointer speed, natural scrolling, Force Touch gestures, and palm rejection for the Apple internal trackpad."
                                         : (root.currentTabId === "sound"
                                             ? "Manage Apple T2 audio outputs, power saving, and sound profiles."
-                                            : "Discover, install, update, and remove T2-optimized plugins from plugins.omarchy.org."))))
+                                            : "Discover, install, update, and remove Apple and T2 community plugins from plugins.omarchy.org."))))
                           color: root.dim
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
@@ -5204,7 +5210,88 @@ BarWidget {
                       width: parent.width
                       spacing: Style.space(12)
 
+                      // Toolbar: Search box, T2 filter, Installed filter, plugin count, and refresh
+                      Item {
+                        width: parent.width
+                        height: Style.space(32)
 
+                        Row {
+                          anchors.left: parent.left
+                          anchors.verticalCenter: parent.verticalCenter
+                          spacing: Style.space(8)
+
+                          TextField {
+                            id: pluginSearchField
+                            width: Style.space(220)
+                            height: Style.space(32)
+                            verticalPadding: Style.space(4)
+                            font.pixelSize: Style.font.caption
+                            font.family: root.fontFamily
+                            placeholderText: "Search Apple plugins..."
+                            text: root.pluginFilterQuery
+                            onTextEdited: root.pluginFilterQuery = text
+                            Keys.onPressed: function(event) {
+                              if (event.key === Qt.Key_Escape) {
+                                text = ""
+                                root.pluginFilterQuery = ""
+                                event.accepted = true
+                              }
+                            }
+                          }
+
+                          Button {
+                            id: t2FilterBtn
+                            visible: Boolean(root.status && root.status.isT2)
+                            height: Style.space(32)
+                            fontSize: Style.font.caption
+                            iconSize: Style.font.bodySmall
+                            iconText: ""
+                            text: "T2 plugins only"
+                            bordered: true
+                            selected: root.filterT2Only
+                            tooltipText: root.filterT2Only ? "Show all Apple plugins" : "Show only plugins tailored specifically for Apple T2 MacBooks"
+                            onClicked: root.filterT2Only = !root.filterT2Only
+                          }
+
+                          Button {
+                            id: installedFilterBtn
+                            height: Style.space(32)
+                            fontSize: Style.font.caption
+                            iconSize: Style.font.bodySmall
+                            iconText: "󰄲"
+                            text: "Installed"
+                            bordered: true
+                            selected: root.pluginFilterMode === 1
+                            tooltipText: root.pluginFilterMode === 1 ? "Show all plugins" : "Show only installed plugins"
+                            onClicked: root.pluginFilterMode = (root.pluginFilterMode === 1 ? 0 : 1)
+                          }
+                        }
+
+                        Row {
+                          anchors.right: parent.right
+                          anchors.verticalCenter: parent.verticalCenter
+                          spacing: Style.space(10)
+
+                          Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: root.filteredPlugins.length + " plugins"
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                          }
+
+                          Button {
+                            id: refreshPluginsBtn
+                            height: Style.space(32)
+                            iconText: "󰑐"
+                            tooltipText: "Refresh plugins catalog"
+                            bordered: true
+                            iconSpinning: root.pluginsLoading
+                            enabled: !root.pluginsLoading
+                            onClicked: root.fetchPlugins(true)
+                          }
+                        }
+                      }
 
                       // Operation in progress / feedback banner
                       BorderSurface {
@@ -5437,6 +5524,36 @@ BarWidget {
                                 id: badgesRow
                                 anchors.verticalCenter: parent.verticalCenter
                                 spacing: Style.space(6)
+
+                                // T2 Specific Badge
+                                Rectangle {
+                                  visible: Boolean(modelData.isT2 || modelData.isExactT2)
+                                  height: Style.space(22)
+                                  width: t2BadgeRow.implicitWidth + Style.space(12)
+                                  radius: Style.cornerRadius
+                                  color: Util.alpha(Color.accent, 0.14)
+                                  border.color: Util.alpha(Color.accent, 0.5)
+                                  border.width: 1
+
+                                  Row {
+                                    id: t2BadgeRow
+                                    anchors.centerIn: parent
+                                    spacing: Style.space(4)
+                                    Text {
+                                      text: ""
+                                      color: Color.accent
+                                      font.family: root.fontFamily
+                                      font.pixelSize: Style.font.caption
+                                    }
+                                    Text {
+                                      text: "T2"
+                                      color: Color.accent
+                                      font.family: root.fontFamily
+                                      font.pixelSize: Style.font.caption
+                                      font.bold: true
+                                    }
+                                  }
+                                }
 
                                 // Update Available Badge
                                 Rectangle {
