@@ -1,8 +1,8 @@
 # Omapple
 
-An [Omarchy](https://omarchy.org) status bar plugin designed to optimize Linux installations on Apple MacBooks equipped with the **Apple T2 Security Chip** (2018–2020 Intel MacBook Pro, MacBook Air, and Mac mini).
+An [Omarchy](https://omarchy.org) status bar plugin and settings center for Apple hardware running Linux. It provides comprehensive controls for battery life, sleep/wake behavior, macOS keybindings, Force Touch trackpad gestures, and an Apple community plugin catalog—with specialized optimizations and fixes when an **Apple T2 Security Chip** is detected (2018–2020 Intel MacBook Pro, MacBook Air, and Mac mini).
 
-Clicking the bar icon (``) opens a dedicated settings panel featuring vertical tabs for tuning hardware power profiles, sleep states, wake behaviors, and peripheral battery drain.
+Clicking the bar icon (``) opens a dedicated control panel with organized tabs for tuning hardware power profiles, suspend states, input ergonomics, and community extensions.
 
 ![Omapple Preview](preview.png)
 
@@ -71,18 +71,19 @@ The panel organizes all hardware tunables and configurations into dedicated vert
 - **Audio Controller Power Save**: Powers down internal Apple audio hardware when idle to eliminate background battery drain.
 
 ### 6. Plugins
-- **T2 Community Plugins**: Discover, install, update, and manage community-built plugins from plugins.omarchy.org.
+- **Apple Community Plugins**: Discover, install, update, and manage Apple-related plugins from plugins.omarchy.org. When running on hardware with an Apple T2 chip, a dedicated "T2 plugins only" filter and badge highlight plugins built specifically for T2 MacBooks.
 
 ---
 
-## Hardware Compatibility & Non-T2 Protection
+## Hardware Detection & T2 Subsystem Support
 
-The plugin performs low-level hardware verification upon activation:
+The plugin automatically detects your hardware on startup:
 - Probes `/sys/bus/pci/devices/*/device` for PCI Vendor `0x106b` and Device IDs `0x1801` / `0x1802` (Apple T2 Bridge Controller & Secure Enclave Processor).
 - Checks DMI system identifiers (`product_name` and `sys_vendor`).
 
-### Non-T2 System Handling
-When running on hardware without an Apple T2 chip, the plugin remains accessible for general power, trackpad, and keybinding management. However, T2-specific hardware controls—including the global "Apply T2 fixes only" button in the sidebar and the "PCIe ports compatibility" option under Battery life—are automatically hidden.
+### Adaptive Hardware Handling
+- **Apple T2 MacBooks** (2018–2020 Intel MacBook Pro, MacBook Air, and Mac mini): Unlocks specialized T2 controls, including the one-click "Apply T2 fixes only" button, PCIe port compatibility tunables, T2 audio power management, Touch Bar sleep blanking, and T2-specific plugin filtering.
+- **Other Apple & Linux Hardware**: Provides the full suite of battery life optimizations, CPU EPP profiles, sleep/wake settings, Force Touch trackpad gestures, macOS keybindings, and Apple community plugins, while automatically hiding controls that only apply to T2 chips.
 
 ---
 

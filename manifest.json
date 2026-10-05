@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Bram van Oploo",
   "license": "MIT",
-  "description": "Optimize Omarchy Linux on Apple T2 MacBooks: battery life, suspend behavior, trackpad gestures, and hardware power settings.",
+  "description": "Optimize Omarchy Linux on Apple MacBooks: battery life, suspend behavior, trackpad gestures, macOS keybindings, and Apple community plugins with Apple T2 support.",
   "kinds": [
     "bar-widget"
   ],
@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "Omapple",
-    "description": "Apple T2 MacBook optimizations for battery life, suspend behavior, and trackpad controls",
+    "description": "Apple MacBook optimizations for battery life, suspend behavior, trackpad controls, and community plugins",
     "category": "System",
     "defaultSection": "right",
     "allowMultiple": false
