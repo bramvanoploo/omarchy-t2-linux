@@ -65,9 +65,14 @@ detect_t2() {
     return 0
   fi
 
-  # 3. Kernel cmdline check (apple-t2 kernel)
-  if grep -qi "Watanare-T2\|apple-t2" /proc/version 2>/dev/null; then
-    return 0
+  # 3. Known T2 DMI models (only if vendor is Apple)
+  local sys_vendor model
+  sys_vendor=$(get_sys_vendor)
+  if [[ "$sys_vendor" =~ Apple ]]; then
+    model=$(get_model_name)
+    if [[ "$model" =~ ^MacBookPro1[56], || "$model" =~ ^MacBookAir[89], || "$model" == "Macmini8,1" || "$model" =~ ^iMac20, || "$model" == "iMacPro1,1" || "$model" == "MacPro7,1" ]]; then
+      return 0
+    fi
   fi
 
   return 1
@@ -2797,9 +2802,11 @@ case "${1:-status}" in
   do-apply-recommended)
     shift
     local skip_limine=false
+    local skip_pcie=false
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --skip-limine) skip_limine=true; shift ;;
+        --skip-pcie) skip_pcie=true; shift ;;
         *) shift ;;
       esac
     done
@@ -2877,7 +2884,7 @@ case "${1:-status}" in
       apply_usb_autosuspend "true"
     fi
 
-    if detect_t2; then
+    if [[ "$skip_pcie" != "true" ]] && detect_t2; then
       local cur_pcie
       cur_pcie=$(get_pcie_ports_compat)
       if [[ "$cur_pcie" != "true" ]]; then
@@ -2972,9 +2979,11 @@ case "${1:-status}" in
   do-apply-recommended-battery)
     shift
     local skip_limine=false
+    local skip_pcie=false
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --skip-limine) skip_limine=true; shift ;;
+        --skip-pcie) skip_pcie=true; shift ;;
         *) shift ;;
       esac
     done
@@ -3016,7 +3025,7 @@ case "${1:-status}" in
       apply_usb_autosuspend "true"
     fi
 
-    if detect_t2; then
+    if [[ "$skip_pcie" != "true" ]] && detect_t2; then
       local cur_pcie
       cur_pcie=$(get_pcie_ports_compat)
       if [[ "$cur_pcie" != "true" ]]; then
@@ -3039,7 +3048,9 @@ case "${1:-status}" in
     fi
     apply_audio_powersave "false"
     apply_usb_autosuspend "false"
-    apply_pcie_ports_compat "off"
+    if detect_t2; then
+      apply_pcie_ports_compat "off"
+    fi
     ;;
   install-system)
     run_privileged do-install-system ;;

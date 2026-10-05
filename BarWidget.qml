@@ -246,8 +246,9 @@ BarWidget {
       return
     }
 
+    var isT2Detected = Boolean(root.status && root.status.isT2)
     var memNeedsUpdate = Boolean(root.status && root.status.memSleepModes && root.status.memSleepModes.indexOf("deep") !== -1 && root.status.memSleep !== "deep")
-    var pcieNeedsUpdate = Boolean(root.status && root.status.isT2 && !root.status.pciePortsCompat)
+    var pcieNeedsUpdate = Boolean(isT2Detected && !root.status.pciePortsCompat)
 
     if (root.status) {
       var s = Object.assign({}, root.status)
@@ -262,7 +263,7 @@ BarWidget {
       s.audioPowerSave = true
       s.usbAutosuspend = true
       s.kbdTimeout = "1m"
-      if (s.isT2) s.pciePortsCompat = true
+      if (isT2Detected) s.pciePortsCompat = true
       s.recommendedPromptShown = true
       s.keybindingSelectAll = "SUPER + A"
       s.keybindingDelete = "SUPER + BACKSPACE"
@@ -334,12 +335,16 @@ BarWidget {
     root.lastNotice = "Applying recommended power, suspend, trackpad, and keybinding settings…"
     if (memNeedsUpdate || pcieNeedsUpdate) {
       root.limineUpdating = true
-      limineProc.command = ["bash", helper, "apply-recommended"]
+      var cmd = ["bash", helper, "apply-recommended"]
+      if (!isT2Detected) cmd.push("--skip-pcie")
+      limineProc.command = cmd
       limineProc.running = true
     } else {
       if (actionProc.running) actionProc.running = false
       root.applying = true
-      actionProc.command = ["bash", helper, "apply-recommended", "--skip-limine"]
+      var cmd2 = ["bash", helper, "apply-recommended", "--skip-limine"]
+      if (!isT2Detected) cmd2.push("--skip-pcie")
+      actionProc.command = cmd2
       actionProc.running = true
     }
   }
@@ -417,14 +422,15 @@ BarWidget {
       return
     }
 
-    var pcieNeedsUpdate = Boolean(root.status && root.status.isT2 && !root.status.pciePortsCompat)
+    var isT2Detected = Boolean(root.status && root.status.isT2)
+    var pcieNeedsUpdate = Boolean(isT2Detected && !root.status.pciePortsCompat)
 
     if (root.status) {
       var s = Object.assign({}, root.status)
       s.wifiPowerSave = false
       s.audioPowerSave = true
       s.usbAutosuspend = true
-      if (s.isT2) s.pciePortsCompat = true
+      if (isT2Detected) s.pciePortsCompat = true
       s.kbdTimeout = "1m"
       if (s.inactiveEthernet) {
         s.inactiveEthernet = s.inactiveEthernet.map(function(item) {
@@ -437,12 +443,16 @@ BarWidget {
     root.lastNotice = "Applying recommended battery life settings…"
     if (pcieNeedsUpdate) {
       root.limineUpdating = true
-      limineProc.command = ["bash", helper, "apply-recommended-battery"]
+      var cmd = ["bash", helper, "apply-recommended-battery"]
+      if (!isT2Detected) cmd.push("--skip-pcie")
+      limineProc.command = cmd
       limineProc.running = true
     } else {
       if (actionProc.running) actionProc.running = false
       root.applying = true
-      actionProc.command = ["bash", helper, "apply-recommended-battery", "--skip-limine"]
+      var cmd = ["bash", helper, "apply-recommended-battery", "--skip-limine"]
+      if (!isT2Detected) cmd.push("--skip-pcie")
+      actionProc.command = cmd
       actionProc.running = true
     }
   }
@@ -457,7 +467,7 @@ BarWidget {
       s.wifiPowerSave = true
       s.audioPowerSave = false
       s.usbAutosuspend = false
-      s.pciePortsCompat = false
+      if (s.isT2) s.pciePortsCompat = false
       s.kbdTimeout = "off"
       if (s.inactiveEthernet) {
         s.inactiveEthernet = s.inactiveEthernet.map(function(item) {
