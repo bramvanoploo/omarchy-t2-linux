@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "id": "bramvanoploo.omarchy-t2-linux",
-  "name": "Omarchy T2 Linux",
-  "version": "0.9.5",
+  "name": "Omapple",
+  "version": "1.0.0",
   "author": "Bram van Oploo",
   "license": "MIT",
   "description": "Optimize Omarchy Linux on Apple T2 MacBooks: battery life, suspend behavior, trackpad gestures, and hardware power settings.",
@@ -14,7 +14,7 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Omarchy T2 Linux",
+    "displayName": "Omapple",
     "description": "Apple T2 MacBook optimizations for battery life, suspend behavior, and trackpad controls",
     "category": "System",
     "defaultSection": "right",

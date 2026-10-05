@@ -1,10 +1,10 @@
-# Omarchy T2 Linux
+# Omapple
 
 An [Omarchy](https://omarchy.org) status bar plugin designed to optimize Linux installations on Apple MacBooks equipped with the **Apple T2 Security Chip** (2018–2020 Intel MacBook Pro, MacBook Air, and Mac mini).
 
 Clicking the bar icon (``) opens a dedicated settings panel featuring vertical tabs for tuning hardware power profiles, sleep states, wake behaviors, and peripheral battery drain.
 
-![Omarchy T2 Linux Preview](preview.png)
+![Omapple Preview](preview.png)
 
 ---
 
@@ -81,13 +81,8 @@ The plugin performs low-level hardware verification upon activation:
 - Probes `/sys/bus/pci/devices/*/device` for PCI Vendor `0x106b` and Device IDs `0x1801` / `0x1802` (Apple T2 Bridge Controller & Secure Enclave Processor).
 - Checks DMI system identifiers (`product_name` and `sys_vendor`).
 
-### Incompatible System Notification Dialog
-If a user clicks the bar icon on an Omarchy installation that is **not** running on a T2 MacBook, the settings panel will **not** open. Instead, an interactive modal notification dialog is presented:
-
-> **Omarchy T2 Linux — Incompatible Hardware Detected**  
-> *"This plugin is intended for use with Macbooks with the T2 chip and that chip has not been found in your computer."*
-
-The dialog clearly informs the user that the Apple T2 Security Chip was not found and allows dismissing the notification safely.
+### Non-T2 System Handling
+When running on hardware without an Apple T2 chip, the plugin remains accessible for general power, trackpad, and keybinding management. However, T2-specific hardware controls—including the global "Apply T2 fixes only" button in the sidebar and the "PCIe ports compatibility" option under Battery life—are automatically hidden.
 
 ---
 

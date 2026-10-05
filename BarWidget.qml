@@ -5,7 +5,7 @@ import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
-import "T2Model.js" as Model
+import "OmappleModel.js" as Model
 
 BarWidget {
   id: root
@@ -15,12 +15,13 @@ BarWidget {
   property var status: Model.emptyStatus()
   property int activeTab: 0
   readonly property string currentTabId: (tabs && tabs[activeTab] ? tabs[activeTab].id : "battery")
-  property bool nonT2DialogOpen: false
   property bool applying: false
   property string lastNotice: ""
   property bool limineUpdating: false
   property bool rebootConfirmOpen: false
   property bool recommendedConfirmOpen: false
+  property bool t2FixesConfirmOpen: false
+  property bool openedViaBarButton: false
   property bool keyRecorderOpen: false
   property string keyRecorderTaskKey: ""
   property string keyRecorderTaskName: ""
@@ -50,7 +51,7 @@ BarWidget {
   property string pendingConflictTargetChord: ""
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
-  readonly property string helper: pluginDir + "/scripts/t2-helper"
+  readonly property string helper: pluginDir + "/scripts/omapple-helper"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color accent: Color.accent
@@ -102,7 +103,9 @@ BarWidget {
     var parsed = Model.parseStatus(raw)
     if (parsed) {
       status = parsed
-      if (root.opened && parsed.isT2 && !parsed.recommendedPromptShown && !root.limineUpdating && !root.rebootConfirmOpen) {
+      if (root.opened && root.openedViaBarButton && parsed.isT2 && !Model.areAllT2FixesApplied(parsed) && !root.limineUpdating && !root.rebootConfirmOpen) {
+        root.t2FixesConfirmOpen = true
+      } else if (root.opened && parsed.isT2 && !parsed.recommendedPromptShown && !root.limineUpdating && !root.rebootConfirmOpen && !root.t2FixesConfirmOpen) {
         root.recommendedConfirmOpen = true
       }
     }
@@ -121,27 +124,22 @@ BarWidget {
   }
 
   function handleBarIconClick() {
-    if (!root.status.isT2) {
-      root.showNonT2Dialog()
+    if (!root.opened) {
+      root.openedViaBarButton = true
+      root.open()
+      if (root.status && root.status.isT2 && !Model.areAllT2FixesApplied(root.status) && !root.limineUpdating && !root.rebootConfirmOpen) {
+        root.t2FixesConfirmOpen = true
+      }
     } else {
-      root.toggle()
+      root.close()
     }
   }
 
   function toggle() {
-    if (!root.status.isT2) {
-      root.showNonT2Dialog()
-      return
-    }
     opened ? close() : open()
   }
 
   function open() {
-    if (!root.status.isT2) {
-      root.showNonT2Dialog()
-      return
-    }
-    nonT2DialogOpen = false
     opened = true
     refresh()
     if (root.tabs[root.activeTab] && root.tabs[root.activeTab].id === "plugins") {
@@ -154,12 +152,8 @@ BarWidget {
   function close() {
     if (root.limineUpdating) return
     opened = false
-    nonT2DialogOpen = false
-  }
-
-  function showNonT2Dialog() {
-    if (root.opened) root.close()
-    nonT2DialogOpen = true
+    openedViaBarButton = false
+    t2FixesConfirmOpen = false
   }
 
   function togglePciePortsCompat(enable) {
@@ -190,10 +184,65 @@ BarWidget {
     limineProc.running = true
   }
 
+  function applyT2Fixes() {
+    t2FixesConfirmOpen = false
+    if (root.limineUpdating || limineProc.running || actionProc.running) return
+
+    var pcieAlreadyApplied = Boolean(root.status && root.status.pciePortsCompat)
+    var ethAlreadyApplied = Model.areAllEthernetUnmanaged(root.status)
+
+    if (pcieAlreadyApplied && ethAlreadyApplied) {
+      noticeTimer.stop()
+      root.lastNotice = "All T2 fixes are already applied."
+      noticeTimer.restart()
+      return
+    }
+
+    if (root.status) {
+      var s = Object.assign({}, root.status)
+      if (!pcieAlreadyApplied) {
+        s.pciePortsCompat = true
+      }
+      if (!ethAlreadyApplied && s.inactiveEthernet) {
+        s.inactiveEthernet = s.inactiveEthernet.map(function(item) {
+          return { device: item.device, managed: false, state: "unmanaged" }
+        })
+      }
+      root.status = s
+    }
+
+    noticeTimer.stop()
+
+    if (!pcieAlreadyApplied) {
+      root.limineUpdating = true
+      root.lastNotice = "Applying T2 fixes (updating Limine boot configuration)…"
+      if (ethAlreadyApplied) {
+        limineProc.command = ["bash", helper, "apply-t2-fixes", "--skip-eth"]
+      } else {
+        limineProc.command = ["bash", helper, "apply-t2-fixes"]
+      }
+      limineProc.running = true
+    } else {
+      if (actionProc.running) actionProc.running = false
+      root.applying = true
+      root.lastNotice = "Applying T2 ethernet fixes…"
+      actionProc.command = ["bash", helper, "apply-t2-fixes", "--skip-pcie"]
+      actionProc.running = true
+    }
+  }
+
   function applyRecommendedOptions() {
     recommendedConfirmOpen = false
     if (root.limineUpdating) return
-    root.limineUpdating = true
+
+    if (root.status && Model.areAllRecommendedApplied(root.status)) {
+      root.lastNotice = "All recommended options are already applied."
+      noticeTimer.restart()
+      return
+    }
+
+    var memNeedsUpdate = Boolean(root.status && root.status.memSleepModes && root.status.memSleepModes.indexOf("deep") !== -1 && root.status.memSleep !== "deep")
+    var pcieNeedsUpdate = Boolean(root.status && root.status.isT2 && !root.status.pciePortsCompat)
 
     if (root.status) {
       var s = Object.assign({}, root.status)
@@ -208,7 +257,7 @@ BarWidget {
       s.audioPowerSave = true
       s.usbAutosuspend = true
       s.kbdTimeout = "1m"
-      s.pciePortsCompat = true
+      if (s.isT2) s.pciePortsCompat = true
       s.recommendedPromptShown = true
       s.keybindingSelectAll = "SUPER + A"
       s.keybindingDelete = "SUPER + BACKSPACE"
@@ -278,14 +327,29 @@ BarWidget {
 
     noticeTimer.stop()
     root.lastNotice = "Applying recommended power, suspend, trackpad, and keybinding settings…"
-    limineProc.command = ["bash", helper, "apply-recommended"]
-    limineProc.running = true
+    if (memNeedsUpdate || pcieNeedsUpdate) {
+      root.limineUpdating = true
+      limineProc.command = ["bash", helper, "apply-recommended"]
+      limineProc.running = true
+    } else {
+      if (actionProc.running) actionProc.running = false
+      root.applying = true
+      actionProc.command = ["bash", helper, "apply-recommended", "--skip-limine"]
+      actionProc.running = true
+    }
   }
 
   function applyRecommendedSuspend() {
     if (root.limineUpdating || limineProc.running) return
-    root.limineUpdating = true
     noticeTimer.stop()
+
+    if (root.status && Model.areAllSuspendRecommendedApplied(root.status)) {
+      root.lastNotice = "Recommended suspend settings are already applied."
+      noticeTimer.restart()
+      return
+    }
+
+    var memNeedsUpdate = Boolean(root.status && root.status.memSleepModes && root.status.memSleepModes.indexOf("deep") !== -1 && root.status.memSleep !== "deep")
 
     if (root.status) {
       var s = Object.assign({}, root.status)
@@ -302,8 +366,16 @@ BarWidget {
     }
 
     root.lastNotice = "Applying recommended suspend settings…"
-    limineProc.command = ["bash", helper, "apply-recommended-suspend"]
-    limineProc.running = true
+    if (memNeedsUpdate) {
+      root.limineUpdating = true
+      limineProc.command = ["bash", helper, "apply-recommended-suspend"]
+      limineProc.running = true
+    } else {
+      if (actionProc.running) actionProc.running = false
+      root.applying = true
+      actionProc.command = ["bash", helper, "apply-recommended-suspend", "--skip-limine"]
+      actionProc.running = true
+    }
   }
 
   function resetSuspendToDefaults() {
@@ -332,15 +404,22 @@ BarWidget {
 
   function applyRecommendedBattery() {
     if (root.limineUpdating || limineProc.running) return
-    root.limineUpdating = true
     noticeTimer.stop()
+
+    if (root.status && Model.areAllBatteryRecommendedApplied(root.status)) {
+      root.lastNotice = "Recommended battery settings are already applied."
+      noticeTimer.restart()
+      return
+    }
+
+    var pcieNeedsUpdate = Boolean(root.status && root.status.isT2 && !root.status.pciePortsCompat)
 
     if (root.status) {
       var s = Object.assign({}, root.status)
       s.wifiPowerSave = false
       s.audioPowerSave = true
       s.usbAutosuspend = true
-      s.pciePortsCompat = true
+      if (s.isT2) s.pciePortsCompat = true
       s.kbdTimeout = "1m"
       if (s.inactiveEthernet) {
         s.inactiveEthernet = s.inactiveEthernet.map(function(item) {
@@ -351,8 +430,16 @@ BarWidget {
     }
 
     root.lastNotice = "Applying recommended battery life settings…"
-    limineProc.command = ["bash", helper, "apply-recommended-battery"]
-    limineProc.running = true
+    if (pcieNeedsUpdate) {
+      root.limineUpdating = true
+      limineProc.command = ["bash", helper, "apply-recommended-battery"]
+      limineProc.running = true
+    } else {
+      if (actionProc.running) actionProc.running = false
+      root.applying = true
+      actionProc.command = ["bash", helper, "apply-recommended-battery", "--skip-limine"]
+      actionProc.running = true
+    }
   }
 
   function resetBatteryToDefaults() {
@@ -382,6 +469,11 @@ BarWidget {
 
   function applyRecommendedTrackpad() {
     noticeTimer.stop()
+    if (root.status && Model.areAllTrackpadRecommendedApplied(root.status)) {
+      root.lastNotice = "Recommended trackpad settings are already applied."
+      noticeTimer.restart()
+      return
+    }
     if (root.status) {
       var s = Object.assign({}, root.status)
       var tp = Object.assign({}, s.trackpad || Model.emptyStatus().trackpad)
@@ -405,6 +497,8 @@ BarWidget {
       root.status = s
     }
     root.lastNotice = "Applying recommended trackpad defaults…"
+    if (actionProc.running) actionProc.running = false
+    root.applying = true
     actionProc.command = ["bash", helper, "apply-recommended-trackpad"]
     actionProc.running = true
   }
@@ -629,6 +723,8 @@ BarWidget {
     }
     function showRecommendedDialog(): void { root.open(); root.recommendedConfirmOpen = true }
     function applyRecommendedOptions(): void { root.applyRecommendedOptions() }
+    function showT2FixesDialog(): void { root.open(); root.t2FixesConfirmOpen = true }
+    function applyT2Fixes(): void { root.applyT2Fixes() }
     function selectTab(index: int): void {
       root.activeTab = index
       if (root.tabs[index] && root.tabs[index].id === "plugins" && root.opened) {
@@ -1021,9 +1117,15 @@ BarWidget {
   }
 
   function applyRecommendedKeybindings() {
+    noticeTimer.stop()
+    if (root.status && Model.areAllMacShortcutsApplied(root.status)) {
+      root.lastNotice = "Recommended keybindings are already applied."
+      noticeTimer.restart()
+      return
+    }
+
     if (actionProc.running) actionProc.running = false
     root.applying = true
-    noticeTimer.stop()
 
     if (root.status) {
       var s = Object.assign({}, root.status)
@@ -1120,21 +1222,20 @@ BarWidget {
 
   onOpenedChanged: {
     if (opened) {
-      if (!root.status.isT2) {
-        root.close()
-        root.showNonT2Dialog()
-        return
-      }
       refresh()
       if (root.tabs[root.activeTab] && root.tabs[root.activeTab].id === "plugins") {
         fetchPlugins(true)
       } else {
         fetchPlugins(false)
       }
-      if (root.status && root.status.isT2 && !root.status.recommendedPromptShown && !root.limineUpdating && !root.rebootConfirmOpen) {
+      if (root.openedViaBarButton && root.status && root.status.isT2 && !Model.areAllT2FixesApplied(root.status) && !root.limineUpdating && !root.rebootConfirmOpen) {
+        root.t2FixesConfirmOpen = true
+      } else if (root.status && root.status.isT2 && !root.status.recommendedPromptShown && !root.limineUpdating && !root.rebootConfirmOpen && !root.t2FixesConfirmOpen) {
         root.recommendedConfirmOpen = true
       }
     } else {
+      root.openedViaBarButton = false
+      root.t2FixesConfirmOpen = false
       root.lastNotice = ""
       noticeTimer.stop()
     }
@@ -1329,188 +1430,6 @@ BarWidget {
     }
   }
 
-  // --- Non-T2 Notification Dialog Window (Overlay, Centered) ---
-  PanelWindow {
-    id: nonT2ModalWindow
-    visible: root.nonT2DialogOpen
-    screen: button && button.QsWindow && button.QsWindow.window ? button.QsWindow.window.screen : null
-    anchors { top: true; bottom: true; left: true; right: true }
-    color: "transparent"
-    WlrLayershell.namespace: "omarchy-t2-dialog"
-    WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: root.nonT2DialogOpen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
-    exclusionMode: ExclusionMode.Ignore
-
-    onVisibleChanged: {
-      if (visible) {
-        Qt.callLater(function() {
-          if (nonT2ModalWindow.visible) dialogKeyCatcher.forceActiveFocus()
-        })
-      }
-    }
-
-    Item {
-      id: dialogKeyCatcher
-      anchors.fill: parent
-      focus: true
-
-      Keys.onPressed: function(event) {
-        if (event.key === Qt.Key_Escape || event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-          root.nonT2DialogOpen = false
-          event.accepted = true
-        }
-      }
-
-      Rectangle {
-        anchors.fill: parent
-        color: Qt.rgba(0, 0, 0, 0.65)
-
-        MouseArea {
-          anchors.fill: parent
-          onClicked: root.nonT2DialogOpen = false
-        }
-
-        BorderSurface {
-          id: dialogCard
-          width: Math.min(Style.space(520), parent.width - Style.space(48))
-          height: Math.min(dialogCol.implicitHeight + Style.space(48), parent.height - Style.space(48))
-          anchors.centerIn: parent
-          color: Color.popups.background
-          borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
-          radius: Style.cornerRadius
-
-          MouseArea {
-            anchors.fill: parent
-            onClicked: {}
-          }
-
-          Column {
-            id: dialogCol
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.margins: Style.space(24)
-            spacing: Style.space(14)
-
-            // Dialog Header
-            Row {
-              width: parent.width
-              spacing: Style.space(14)
-
-              Rectangle {
-                width: Style.space(44)
-                height: Style.space(44)
-                radius: Style.cornerRadius
-                color: Util.alpha(Color.accent, 0.16)
-                anchors.verticalCenter: parent.verticalCenter
-
-                Text {
-                  anchors.centerIn: parent
-                  text: "󰌢"
-                  color: Color.accent
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.display
-                }
-              }
-
-              Column {
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(2)
-
-                Text {
-                  text: "Omarchy T2 Linux"
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.title
-                  font.bold: true
-                }
-
-                Text {
-                  text: "Incompatible Hardware Detected"
-                  color: Qt.darker(root.foreground, 1.4)
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-              }
-            }
-
-            PanelSeparator {
-              width: parent.width
-              foreground: root.foreground
-            }
-
-            // Main Notification Message
-            Text {
-              width: parent.width
-              wrapMode: Text.WordWrap
-              text: "This plugin is intended for use with Macbooks with the T2 chip and that chip has not been found in your computer."
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-              font.bold: true
-              lineHeight: 1.3
-            }
-
-            Text {
-              width: parent.width
-              wrapMode: Text.WordWrap
-              text: "The Apple T2 Security Chip (PCI 106b:1801 / 1802) provides hardware security, thermal control, and custom power management specific to 2018–2020 Intel MacBooks. Because your system does not contain this chip, these optimizations cannot be applied."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              lineHeight: 1.25
-            }
-
-            // System info readout
-            BorderSurface {
-              width: parent.width
-              height: sysInfoCol.implicitHeight + Style.space(20)
-              color: Util.alpha(root.foreground, 0.04)
-              radius: Style.cornerRadius
-
-              Column {
-                id: sysInfoCol
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: Style.space(10)
-                spacing: Style.space(4)
-
-                Text {
-                  text: "System: " + (root.status.model || "Unknown") + " (" + (root.status.vendor || "Unknown") + ")"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-
-                Text {
-                  text: "Status: Apple T2 Bridge Controller not found"
-                  color: Color.accent
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-              }
-            }
-
-            // Action Buttons
-            Row {
-              anchors.right: parent.right
-              spacing: Style.space(10)
-
-              Button {
-                text: "Dismiss"
-                iconText: "󰅖"
-                bordered: true
-                accent: root.accent
-                onClicked: root.nonT2DialogOpen = false
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
   // --- Main Settings Panel Window (Overlay, Centered, Large) ---
   PanelWindow {
     id: centerPanelWindow
@@ -1552,6 +1471,13 @@ BarWidget {
             return
           }
         }
+        if (root.t2FixesConfirmOpen) {
+          if (event.key === Qt.Key_Escape) {
+            root.t2FixesConfirmOpen = false
+            event.accepted = true
+            return
+          }
+        }
         if (root.recommendedConfirmOpen) {
           if (event.key === Qt.Key_Escape) {
             root.recommendedConfirmOpen = false
@@ -1586,7 +1512,7 @@ BarWidget {
         MouseArea {
           anchors.fill: parent
           onClicked: {
-            if (!root.limineUpdating && !limineProc.running && !root.rebootConfirmOpen && !root.recommendedConfirmOpen && !root.keyRecorderOpen && !root.conflictDialogOpen) {
+            if (!root.limineUpdating && !limineProc.running && !root.rebootConfirmOpen && !root.recommendedConfirmOpen && !root.t2FixesConfirmOpen && !root.keyRecorderOpen && !root.conflictDialogOpen) {
               root.close()
             }
           }
@@ -1650,7 +1576,7 @@ BarWidget {
                     spacing: Style.space(2)
 
                     Text {
-                      text: "Omarchy T2 Linux"
+                      text: "Omapple"
                       color: root.foreground
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.title
@@ -1812,13 +1738,29 @@ BarWidget {
                   }
                 }
 
-                // Bottom: "Apply recommended options" button + T2 Subsystem summary
+                // Bottom: "Apply T2 fixes only" + "Apply recommended options" button + T2 Subsystem summary
                 Column {
                   id: sidebarFooterCol
                   anchors.left: parent.left
                   anchors.right: parent.right
                   anchors.bottom: parent.bottom
-                  spacing: Style.space(10)
+                  spacing: Style.space(8)
+
+                  Button {
+                    id: applyT2FixesBtn
+                    visible: Boolean(root.status && root.status.isT2 && !Model.areAllT2FixesApplied(root.status))
+                    width: parent.width
+                    height: Style.space(36)
+                    text: "Apply T2 fixes only"
+                    iconText: ""
+                    bordered: true
+                    accent: root.accent
+                    fontSize: Style.font.bodySmall
+                    horizontalPadding: Style.space(8)
+                    onClicked: {
+                      root.t2FixesConfirmOpen = true
+                    }
+                  }
 
                   Button {
                     id: applyRecommendedBtn
@@ -2348,6 +2290,7 @@ BarWidget {
 
                       // PCIe Ports Compatibility (pcie_ports=compat in /etc/limine-entry-tool.d/t2-mac.conf)
                       BorderSurface {
+                        visible: Boolean(root.status && root.status.isT2)
                         width: parent.width
                         height: Math.max(Style.space(62), pcieCol.implicitHeight + Style.space(20))
                         color: Util.alpha(root.foreground, 0.03)
@@ -4404,7 +4347,7 @@ BarWidget {
                               }
                             }
 
-                            T2Slider {
+                            OmappleSlider {
                               width: parent.width
                               height: Style.space(24)
                               bar: root.bar
@@ -4528,7 +4471,7 @@ BarWidget {
                               }
                             }
 
-                            T2Slider {
+                            OmappleSlider {
                               width: parent.width
                               height: Style.space(24)
                               bar: root.bar
@@ -5704,6 +5647,233 @@ BarWidget {
             }
           }
 
+          // T2 fixes confirmation dialog
+          Rectangle {
+            id: t2FixesDialogOverlay
+            visible: root.t2FixesConfirmOpen && !root.limineUpdating && !limineProc.running
+            anchors.fill: parent
+            radius: Style.cornerRadius
+            color: Qt.rgba(0, 0, 0, 0.75)
+            z: 9997
+
+            // Absorb background clicks
+            MouseArea {
+              anchors.fill: parent
+              onClicked: {}
+            }
+
+            BorderSurface {
+              anchors.centerIn: parent
+              width: Math.min(parent.width - Style.space(32), Style.space(660))
+              height: Math.min(parent.height - Style.space(32), Style.space(480))
+              color: Color.popups.background
+              borderSpec: Border.flat(Color.accent, Style.normalBorderWidth)
+              radius: Style.cornerRadius
+
+              Item {
+                anchors.fill: parent
+
+                // Header
+                Row {
+                  id: t2HeaderRow
+                  anchors.top: parent.top
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.margins: Style.space(20)
+                  spacing: Style.space(12)
+
+                  Text {
+                    text: ""
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title * 1.5
+                    color: root.accent
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                  Column {
+                    spacing: 2
+                    Text {
+                      text: "Apply T2 fixes only"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.title
+                      font.bold: true
+                      color: root.foreground
+                    }
+                    Text {
+                      text: "Hardware-specific stability and power optimizations for Apple T2 MacBooks"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      color: root.dim
+                    }
+                  }
+                }
+
+                // Explanation Banner
+                BorderSurface {
+                  id: t2SummaryBox
+                  anchors.top: t2HeaderRow.bottom
+                  anchors.topMargin: Style.space(10)
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.leftMargin: Style.space(20)
+                  anchors.rightMargin: Style.space(20)
+                  implicitHeight: t2SummaryText.implicitHeight + Style.space(16)
+                  height: implicitHeight
+                  color: Util.alpha(root.accent, 0.08)
+                  borderSpec: Border.flat(Util.alpha(root.accent, 0.28), 1)
+                  radius: Style.cornerRadius
+
+                  Text {
+                    id: t2SummaryText
+                    anchors.fill: parent
+                    anchors.margins: Style.space(10)
+                    text: "Without these fixes, Omarchy will not behave properly on Apple devices containing the T2 chip because of missing specific configurations needed for T2 hardware.\n\nApplying the T2 fixes sets inactive Ethernet interfaces to unmanaged to prevent post-suspend DHCP freezes, and enables PCIe ports compatibility (pcie_ports=compat) to allow deep bus power saving and prevent power glitches."
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    color: root.foreground
+                    wrapMode: Text.WordWrap
+                    lineHeight: 1.2
+                  }
+                }
+
+                // Scrollable list of options
+                Flickable {
+                  id: t2OptFlickable
+                  anchors.top: t2SummaryBox.bottom
+                  anchors.topMargin: Style.space(12)
+                  anchors.bottom: t2FooterRow.top
+                  anchors.bottomMargin: Style.space(12)
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.leftMargin: Style.space(20)
+                  anchors.rightMargin: Style.space(20)
+                  contentWidth: width
+                  contentHeight: t2OptContentCol.implicitHeight
+                  boundsBehavior: Flickable.StopAtBounds
+                  flickableDirection: Flickable.VerticalFlick
+                  interactive: contentHeight > height
+                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                  clip: true
+
+                  Column {
+                    id: t2OptContentCol
+                    width: parent.width
+                    spacing: Style.space(14)
+
+                    Column {
+                      width: parent.width
+                      spacing: Style.space(6)
+
+                      Text {
+                        text: "T2 HARDWARE FIXES"
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                        color: root.accent
+                        font.letterSpacing: 0.8
+                      }
+
+                      Repeater {
+                        model: [
+                          {
+                            title: "Ethernet Management",
+                            val: Model.areAllEthernetUnmanaged(root.status) ? "Unmanaged (Already applied)" : "Unmanaged (All devices)",
+                            desc: "Sets all inactive T2 network interfaces (such as Apple iBridge CDC-NCM) to unmanaged to prevent NetworkManager DHCP query stalls after sleep/wake.",
+                            applied: Model.areAllEthernetUnmanaged(root.status)
+                          },
+                          {
+                            title: "PCIe ports compatibility",
+                            val: Boolean(root.status && root.status.pciePortsCompat) ? "Enabled (Already applied)" : "Enabled",
+                            desc: "Enables low-power states on internal PCIe buses (pcie_ports=compat in bootloader) to eliminate battery drain and prevent power glitches on T2 MacBooks.",
+                            applied: Boolean(root.status && root.status.pciePortsCompat)
+                          }
+                        ]
+
+                        delegate: BorderSurface {
+                          width: parent.width
+                          implicitHeight: t2OptRow.implicitHeight + Style.space(12)
+                          height: implicitHeight
+                          color: Util.alpha(root.foreground, 0.03)
+                          radius: Style.cornerRadius
+
+                          Row {
+                            id: t2OptRow
+                            anchors.fill: parent
+                            anchors.margins: Style.space(8)
+                            spacing: Style.space(8)
+
+                            Text {
+                              text: modelData.applied ? "" : "•"
+                              color: root.accent
+                              font.bold: true
+                              font.family: root.fontFamily
+                            }
+                            Column {
+                              width: parent.width - Style.space(20)
+                              spacing: 2
+                              Row {
+                                spacing: Style.space(8)
+                                Text {
+                                  text: modelData.title + ":"
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.bodySmall
+                                  font.bold: true
+                                  color: root.foreground
+                                }
+                                Text {
+                                  text: modelData.val
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.bodySmall
+                                  font.bold: true
+                                  color: root.accent
+                                }
+                              }
+                              Text {
+                                text: modelData.desc
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                color: root.dim
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // Footer Buttons
+                Row {
+                  id: t2FooterRow
+                  anchors.bottom: parent.bottom
+                  anchors.right: parent.right
+                  anchors.margins: Style.space(20)
+                  spacing: Style.space(10)
+
+                  Button {
+                    text: "Cancel"
+                    bordered: true
+                    onClicked: {
+                      root.t2FixesConfirmOpen = false
+                    }
+                  }
+
+                  Button {
+                    text: "Apply T2 fixes only"
+                    iconText: ""
+                    bordered: true
+                    accent: root.accent
+                    selected: true
+                    onClicked: {
+                      root.applyT2Fixes()
+                    }
+                  }
+                }
+              }
+            }
+          }
+
           // Recommended options confirmation dialog
           Rectangle {
             id: recommendedDialogOverlay
@@ -5832,13 +6002,48 @@ BarWidget {
 
                       Repeater {
                         model: [
-                          { title: "Sleep mode", val: "Deep Sleep", desc: "Enters traditional ACPI S3 deep sleep state to minimize battery drain when suspended." },
-                          { title: "Lid Close Action", val: "Suspend", desc: "Suspends the MacBook to preserve power when closing the display lid on battery." },
-                          { title: "Clam Shell Mode", val: "Stay Awake", desc: "Keeps the system awake when connected to an external monitor and charger with lid closed." },
-                          { title: "Wake On Lid Open", val: "Enabled", desc: "Automatically and instantly wakes the system when opening the laptop lid." },
-                          { title: "Wake on AC Charger Connect", val: "Disabled", desc: "Prevents unwanted wakeups when plugging in the USB-C or MagSafe charger." },
-                          { title: "Hibernate Delay", val: "Never", desc: "Prevents unexpected transitions to disk hibernation to maintain quick sleep responsiveness." },
-                          { title: "Touch Bar Blanking on Sleep", val: "Enabled", desc: "Ensures the OLED Touch Bar is powered off cleanly immediately upon suspend." }
+                          {
+                            title: "Sleep mode",
+                            val: "Deep Sleep",
+                            desc: "Enters traditional ACPI S3 deep sleep state to minimize battery drain when suspended.",
+                            applied: Boolean(root.status && (root.status.memSleepModes ? (root.status.memSleepModes.indexOf("deep") === -1 || root.status.memSleep === "deep") : root.status.memSleep === "deep"))
+                          },
+                          {
+                            title: "Lid Close Action",
+                            val: "Suspend",
+                            desc: "Suspends the MacBook to preserve power when closing the display lid on battery.",
+                            applied: Boolean(root.status && (root.status.lidAction === "suspend" || root.status.lidAction === "suspend-then-hibernate"))
+                          },
+                          {
+                            title: "Clam Shell Mode",
+                            val: "Stay Awake",
+                            desc: "Keeps the system awake when connected to an external monitor and charger with lid closed.",
+                            applied: Boolean(root.status && root.status.clamshellMode === true)
+                          },
+                          {
+                            title: "Wake On Lid Open",
+                            val: "Enabled",
+                            desc: "Automatically and instantly wakes the system when opening the laptop lid.",
+                            applied: Boolean(root.status && root.status.wakeOnLid === true)
+                          },
+                          {
+                            title: "Wake on AC Charger Connect",
+                            val: "Disabled",
+                            desc: "Prevents unwanted wakeups when plugging in the USB-C or MagSafe charger.",
+                            applied: Boolean(root.status && root.status.wakeOnAc === false)
+                          },
+                          {
+                            title: "Hibernate Delay",
+                            val: "Never",
+                            desc: "Prevents unexpected transitions to disk hibernation to maintain quick sleep responsiveness.",
+                            applied: Boolean(root.status && (root.status.hibernateDelay === "off" || root.status.hibernateDelay === "0" || root.status.hibernateDelay === "never"))
+                          },
+                          {
+                            title: "Touch Bar Blanking on Sleep",
+                            val: "Enabled",
+                            desc: "Ensures the OLED Touch Bar is powered off cleanly immediately upon suspend.",
+                            applied: Boolean(root.status && root.status.touchbarBlank === true)
+                          }
                         ]
 
                         delegate: BorderSurface {
@@ -5855,9 +6060,10 @@ BarWidget {
                             spacing: Style.space(8)
 
                             Text {
-                              text: "•"
+                              text: modelData.applied ? "" : "•"
                               color: root.accent
                               font.bold: true
+                              font.family: root.fontFamily
                             }
                             Column {
                               width: parent.width - Style.space(20)
@@ -5872,7 +6078,7 @@ BarWidget {
                                   color: root.foreground
                                 }
                                 Text {
-                                  text: modelData.val
+                                  text: modelData.val + (modelData.applied ? " (Already applied)" : "")
                                   font.family: root.fontFamily
                                   font.pixelSize: Style.font.bodySmall
                                   font.bold: true
@@ -5908,14 +6114,49 @@ BarWidget {
                       }
 
                       Repeater {
-                        model: [
-                          { title: "Wi-Fi Power Management", val: "Disabled", desc: "Prevents wireless sleep states that can cause Wi-Fi drops or stall system wakeups." },
-                          { title: "Ethernet Management", val: "Unmanaged (All devices)", desc: "Stops NetworkManager from querying inactive internal T2 network interfaces." },
-                          { title: "Audio Controller Power Save", val: "Enabled", desc: "Powers down the internal audio hardware when inactive to reduce idle battery drain." },
-                          { title: "USB Device Autosuspend", val: "Enabled", desc: "Puts unused internal USB controllers into low-power mode to preserve battery." },
-                          { title: "Keyboard Backlight Idle Auto-Dim", val: "1 min", desc: "Dims the keyboard illumination after 1 minute of inactivity to save energy." },
-                          { title: "PCIe ports compatibility", val: "Enabled", desc: "Enables low-power PCIe bus states to eliminate battery drain (updates bootloader)." }
-                        ]
+                        model: {
+                          var items = [
+                            {
+                              title: "Wi-Fi Power Management",
+                              val: "Disabled",
+                              desc: "Prevents wireless sleep states that can cause Wi-Fi drops or stall system wakeups.",
+                              applied: Boolean(root.status && root.status.wifiPowerSave === false)
+                            },
+                            {
+                              title: "Ethernet Management",
+                              val: "Unmanaged (All devices)",
+                              desc: "Stops NetworkManager from querying inactive internal T2 network interfaces.",
+                              applied: Model.areAllEthernetUnmanaged(root.status)
+                            },
+                            {
+                              title: "Audio Controller Power Save",
+                              val: "Enabled",
+                              desc: "Powers down the internal audio hardware when inactive to reduce idle battery drain.",
+                              applied: Boolean(root.status && root.status.audioPowerSave === true)
+                            },
+                            {
+                              title: "USB Device Autosuspend",
+                              val: "Enabled",
+                              desc: "Puts unused internal USB controllers into low-power mode to preserve battery.",
+                              applied: Boolean(root.status && root.status.usbAutosuspend === true)
+                            },
+                            {
+                              title: "Keyboard Backlight Idle Auto-Dim",
+                              val: "1 min",
+                              desc: "Dims the keyboard illumination after 1 minute of inactivity to save energy.",
+                              applied: Boolean(root.status && root.status.kbdTimeout === "1m")
+                            }
+                          ]
+                          if (root.status && root.status.isT2) {
+                            items.push({
+                              title: "PCIe ports compatibility",
+                              val: "Enabled",
+                              desc: "Enables low-power PCIe bus states to eliminate battery drain (updates bootloader).",
+                              applied: Boolean(root.status && root.status.pciePortsCompat === true)
+                            })
+                          }
+                          return items
+                        }
 
                         delegate: BorderSurface {
                           width: parent.width
@@ -5931,9 +6172,10 @@ BarWidget {
                             spacing: Style.space(8)
 
                             Text {
-                              text: "•"
+                              text: modelData.applied ? "" : "•"
                               color: root.accent
                               font.bold: true
+                              font.family: root.fontFamily
                             }
                             Column {
                               width: parent.width - Style.space(20)
@@ -5948,7 +6190,7 @@ BarWidget {
                                   color: root.foreground
                                 }
                                 Text {
-                                  text: modelData.val
+                                  text: modelData.val + (modelData.applied ? " (Already applied)" : "")
                                   font.family: root.fontFamily
                                   font.pixelSize: Style.font.bodySmall
                                   font.bold: true
@@ -5985,15 +6227,60 @@ BarWidget {
 
                       Repeater {
                         model: [
-                          { title: "Select All", val: "CMD + A", desc: "Selects all content or text using standard macOS Cmd + A chord." },
-                          { title: "Delete Forward", val: "CMD + BACKSPACE", desc: "Maps Command + Backspace to forward delete, relocating any conflicting system shortcut." },
-                          { title: "Find in Document", val: "CMD + F", desc: "Standard Mac shortcut for searching text in editors and browsers." },
-                          { title: "Toggle Fullscreen", val: "CMD + CTRL + F", desc: "Standard macOS fullscreen shortcut (Command + Control + F)." },
-                          { title: "Undo", val: "CMD + Z", desc: "Standard Mac shortcut for undoing actions in applications." },
-                          { title: "Redo", val: "CMD + SHIFT + Z", desc: "Standard Mac shortcut for redoing actions in applications." },
-                          { title: "Save", val: "CMD + S", desc: "Standard Mac shortcut for saving documents and files." },
-                          { title: "Cut", val: "CMD + X", desc: "Standard Mac shortcut for cutting selected text or items to the clipboard." },
-                          { title: "System Conflict Resolution", val: "Auto-migrated", desc: "Safely relocates any overlapping system shortcuts (such as Super + Backspace) to prevent conflicts." }
+                          {
+                            title: "Select All",
+                            val: "CMD + A",
+                            desc: "Selects all content or text using standard macOS Cmd + A chord.",
+                            applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingSelectAll) === Model.normalizeChord("SUPER + A"))
+                          },
+                          {
+                            title: "Delete Forward",
+                            val: "CMD + BACKSPACE",
+                            desc: "Maps Command + Backspace to forward delete, relocating any conflicting system shortcut.",
+                            applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingDelete) === Model.normalizeChord("SUPER + BACKSPACE"))
+                          },
+                          {
+                            title: "Find in Document",
+                            val: "CMD + F",
+                            desc: "Standard Mac shortcut for searching text in editors and browsers.",
+                            applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingFind) === Model.normalizeChord("SUPER + F"))
+                          },
+                          {
+                            title: "Toggle Fullscreen",
+                            val: "CMD + CTRL + F",
+                            desc: "Standard macOS fullscreen shortcut (Command + Control + F).",
+                            applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingFullscreen) === Model.normalizeChord("SUPER + CTRL + F"))
+                          },
+                          {
+                            title: "Undo",
+                            val: "CMD + Z",
+                            desc: "Standard Mac shortcut for undoing actions in applications.",
+                            applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingUndo) === Model.normalizeChord("SUPER + Z"))
+                          },
+                          {
+                            title: "Redo",
+                            val: "CMD + SHIFT + Z",
+                            desc: "Standard Mac shortcut for redoing actions in applications.",
+                            applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingRedo) === Model.normalizeChord("SUPER + SHIFT + Z"))
+                          },
+                          {
+                            title: "Save",
+                            val: "CMD + S",
+                            desc: "Standard Mac shortcut for saving documents and files.",
+                            applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingSave) === Model.normalizeChord("SUPER + S"))
+                          },
+                          {
+                            title: "Cut",
+                            val: "CMD + X",
+                            desc: "Standard Mac shortcut for cutting selected text or items to the clipboard.",
+                            applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingCut) === Model.normalizeChord("SUPER + X"))
+                          },
+                          {
+                            title: "System Conflict Resolution",
+                            val: "Auto-migrated",
+                            desc: "Safely relocates any overlapping system shortcuts (such as Super + Backspace) to prevent conflicts.",
+                            applied: Boolean(root.status && Model.areAllMacShortcutsApplied(root.status))
+                          }
                         ]
 
                         delegate: BorderSurface {
@@ -6010,9 +6297,10 @@ BarWidget {
                             spacing: Style.space(8)
 
                             Text {
-                              text: "•"
+                              text: modelData.applied ? "" : "•"
                               color: root.accent
                               font.bold: true
+                              font.family: root.fontFamily
                             }
                             Column {
                               width: parent.width - Style.space(20)
@@ -6027,7 +6315,7 @@ BarWidget {
                                   color: root.foreground
                                 }
                                 Text {
-                                  text: modelData.val
+                                  text: modelData.val + (modelData.applied ? " (Already applied)" : "")
                                   font.family: root.fontFamily
                                   font.pixelSize: Style.font.bodySmall
                                   font.bold: true
@@ -6064,17 +6352,72 @@ BarWidget {
 
                       Repeater {
                         model: [
-                          { title: "Natural Scrolling", val: "Enabled", desc: "Invert scroll direction so page content tracks finger movement, matching native macOS behavior." },
-                          { title: "3-Finger Workspace Swiping", val: "Enabled", desc: "Swipe horizontally across the trackpad with three fingers to switch workspaces seamlessly." },
-                          { title: "Tap to Click", val: "Enabled", desc: "Tap surface with 1 finger for primary click and 2 fingers for secondary click without physical depression." },
-                          { title: "Secondary Click (Clickfinger)", val: "Two-Finger Click", desc: "Clicking anywhere with two fingers emits a secondary (right) click." },
-                          { title: "Two-Finger Scroll Speed", val: "0.64x multiplier", desc: "Smooth two-finger scrolling multiplier calibrated for Apple Force Touch trackpads." },
-                          { title: "Acceleration Profile", val: "Adaptive", desc: "Dynamic macOS-style cursor acceleration curve based on finger velocity." },
-                          { title: "Pointer Speed (Sensitivity)", val: "Default (50%)", desc: "Balanced cursor tracking speed calibrated for Retina displays." },
-                          { title: "Disable While Typing", val: "Enabled", desc: "Prevents accidental cursor drift or accidental clicks while typing on the keyboard." },
-                          { title: "Tap Button Order", val: "LRM (Mac Default)", desc: "Maps multi-finger tap clicks in Apple order (1-finger Left, 2-finger Right, 3-finger Middle)." },
-                          { title: "Tap and Drag", val: "Enabled", desc: "Double-tap and slide with one finger to drag windows or select text." },
-                          { title: "Three-Finger Drag", val: "Disabled", desc: "Disabled to allow native 3-finger horizontal workspace swiping without gesture collisions." }
+                          {
+                            title: "Natural Scrolling",
+                            val: "Enabled",
+                            desc: "Invert scroll direction so page content tracks finger movement, matching native macOS behavior.",
+                            applied: Boolean(root.status && root.status.trackpad && root.status.trackpad.naturalScroll)
+                          },
+                          {
+                            title: "3-Finger Workspace Swiping",
+                            val: "Enabled",
+                            desc: "Swipe horizontally across the trackpad with three fingers to switch workspaces seamlessly.",
+                            applied: Boolean(root.status && root.status.trackpad && root.status.trackpad.swipeWorkspaces)
+                          },
+                          {
+                            title: "Tap to Click",
+                            val: "Enabled",
+                            desc: "Tap surface with 1 finger for primary click and 2 fingers for secondary click without physical depression.",
+                            applied: Boolean(root.status && root.status.trackpad && root.status.trackpad.tapToClick)
+                          },
+                          {
+                            title: "Secondary Click (Clickfinger)",
+                            val: "Two-Finger Click",
+                            desc: "Clicking anywhere with two fingers emits a secondary (right) click.",
+                            applied: Boolean(root.status && root.status.trackpad && root.status.trackpad.clickfingerBehavior)
+                          },
+                          {
+                            title: "Two-Finger Scroll Speed",
+                            val: "0.64x multiplier",
+                            desc: "Smooth two-finger scrolling multiplier calibrated for Apple Force Touch trackpads.",
+                            applied: Boolean(root.status && root.status.trackpad && Math.abs(Number(root.status.trackpad.scrollFactor) - 0.64) < 0.01)
+                          },
+                          {
+                            title: "Acceleration Profile",
+                            val: "Adaptive",
+                            desc: "Dynamic macOS-style cursor acceleration curve based on finger velocity.",
+                            applied: Boolean(root.status && root.status.trackpad && root.status.trackpad.accelProfile === "adaptive")
+                          },
+                          {
+                            title: "Pointer Speed (Sensitivity)",
+                            val: "Default (50%)",
+                            desc: "Balanced cursor tracking speed calibrated for Retina displays.",
+                            applied: Boolean(root.status && root.status.trackpad && Math.abs(Number(root.status.trackpad.sensitivity) - 0.0) < 0.01)
+                          },
+                          {
+                            title: "Disable While Typing",
+                            val: "Enabled",
+                            desc: "Prevents accidental cursor drift or accidental clicks while typing on the keyboard.",
+                            applied: Boolean(root.status && root.status.trackpad && root.status.trackpad.disableWhileTyping)
+                          },
+                          {
+                            title: "Tap Button Order",
+                            val: "LRM (Mac Default)",
+                            desc: "Maps multi-finger tap clicks in Apple order (1-finger Left, 2-finger Right, 3-finger Middle).",
+                            applied: Boolean(root.status && root.status.trackpad && root.status.trackpad.tapButtonMap === "lrm")
+                          },
+                          {
+                            title: "Tap and Drag",
+                            val: "Enabled",
+                            desc: "Double-tap and slide with one finger to drag windows or select text.",
+                            applied: Boolean(root.status && root.status.trackpad && root.status.trackpad.tapAndDrag)
+                          },
+                          {
+                            title: "Three-Finger Drag",
+                            val: "Disabled",
+                            desc: "Disabled to allow native 3-finger horizontal workspace swiping without gesture collisions.",
+                            applied: Boolean(root.status && root.status.trackpad && root.status.trackpad.drag3fg === 0)
+                          }
                         ]
 
                         delegate: BorderSurface {
@@ -6091,9 +6434,10 @@ BarWidget {
                             spacing: Style.space(8)
 
                             Text {
-                              text: "•"
+                              text: modelData.applied ? "" : "•"
                               color: root.accent
                               font.bold: true
+                              font.family: root.fontFamily
                             }
                             Column {
                               width: parent.width - Style.space(20)
@@ -6108,7 +6452,7 @@ BarWidget {
                                   color: root.foreground
                                 }
                                 Text {
-                                  text: modelData.val
+                                  text: modelData.val + (modelData.applied ? " (Already applied)" : "")
                                   font.family: root.fontFamily
                                   font.pixelSize: Style.font.bodySmall
                                   font.bold: true
@@ -6124,7 +6468,6 @@ BarWidget {
                                 width: parent.width
                               }
                             }
-                          }
                         }
                       }
                     }

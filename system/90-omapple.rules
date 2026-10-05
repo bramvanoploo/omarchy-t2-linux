@@ -1,0 +1,6 @@
+polkit.addRule(function(action, subject) {
+  if (action.id === "org.freedesktop.policykit.exec"
+      && (action.lookup("program") === "/usr/local/libexec/omapple-helper" || action.lookup("program") === "/usr/local/libexec/omarchy-t2-helper")
+      && subject.active && subject.local)
+    return polkit.Result.YES;
+});

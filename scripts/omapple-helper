@@ -1,0 +1,3070 @@
+#!/usr/bin/env bash
+# scripts/omapple-helper: Hardware query and mutation backend for Omapple plugin
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/t2-linux"
+SETTINGS_FILE="$CONFIG_DIR/settings.json"
+SYSTEM_HELPER="/usr/local/libexec/omapple-helper"
+if [[ ! -x "$SYSTEM_HELPER" && -x "/usr/local/libexec/omarchy-t2-helper" ]]; then
+  SYSTEM_HELPER="/usr/local/libexec/omarchy-t2-helper"
+fi
+
+mkdir -p "$CONFIG_DIR"
+if [[ ! -f "$SETTINGS_FILE" ]]; then
+  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingFullscreen":"SUPER + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":0.64,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$SETTINGS_FILE"
+fi
+
+# ---------------------------------------------------------------------------
+# Hardware Detection
+# ---------------------------------------------------------------------------
+
+run_limine_update() {
+  if command -v limine-update >/dev/null 2>&1; then
+    limine-update
+  elif [[ -x /usr/bin/limine-update ]]; then
+    /usr/bin/limine-update
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo limine-update
+  fi
+}
+
+find_plugins_helper() {
+  if [[ -f "$SCRIPT_DIR/omapple-plugins-helper.py" ]]; then
+    echo "$SCRIPT_DIR/omapple-plugins-helper.py"
+  elif [[ -f "$PLUGIN_ROOT/scripts/omapple-plugins-helper.py" ]]; then
+    echo "$PLUGIN_ROOT/scripts/omapple-plugins-helper.py"
+  elif [[ -f "/usr/local/libexec/omapple-plugins-helper.py" ]]; then
+    echo "/usr/local/libexec/omapple-plugins-helper.py"
+  elif [[ -f "$SCRIPT_DIR/t2-plugins-helper.py" ]]; then
+    echo "$SCRIPT_DIR/t2-plugins-helper.py"
+  elif [[ -f "$PLUGIN_ROOT/scripts/t2-plugins-helper.py" ]]; then
+    echo "$PLUGIN_ROOT/scripts/t2-plugins-helper.py"
+  elif [[ -f "/usr/local/libexec/t2-plugins-helper.py" ]]; then
+    echo "/usr/local/libexec/t2-plugins-helper.py"
+  fi
+}
+
+detect_t2() {
+  # 1. Primary check: Apple T2 Bridge Controller (PCI Vendor 106b, Device 1801 or 1802)
+  local dev vendor device
+  for dev in /sys/bus/pci/devices/*; do
+    if [[ -r "$dev/vendor" && -r "$dev/device" ]]; then
+      read -r vendor < "$dev/vendor" 2>/dev/null || true
+      read -r device < "$dev/device" 2>/dev/null || true
+      if [[ "$vendor" == "0x106b" && ("$device" == "0x1801" || "$device" == "0x1802") ]]; then
+        return 0
+      fi
+    fi
+  done
+
+  # 2. Secondary check: T2 VHCI or Apple T2 drivers loaded
+  if [[ -d "/sys/bus/platform/drivers/apple-bce" || -d "/sys/bus/platform/drivers/t2bce" ]]; then
+    return 0
+  fi
+
+  # 3. Kernel cmdline check (apple-t2 kernel)
+  if grep -qi "Watanare-T2\|apple-t2" /proc/version 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
+get_model_name() {
+  local model="Unknown Device"
+  if [[ -r /sys/class/dmi/id/product_name ]]; then
+    read -r model < /sys/class/dmi/id/product_name 2>/dev/null || model="Unknown Device"
+  fi
+  echo "$model"
+}
+
+get_sys_vendor() {
+  local vendor="Unknown"
+  if [[ -r /sys/class/dmi/id/sys_vendor ]]; then
+    read -r vendor < /sys/class/dmi/id/sys_vendor 2>/dev/null || vendor="Unknown"
+  fi
+  echo "$vendor"
+}
+
+# ---------------------------------------------------------------------------
+# Status Query
+# ---------------------------------------------------------------------------
+
+get_battery_info() {
+  local bat_dir=""
+  for b in /sys/class/power_supply/BAT*; do
+    if [[ -d "$b" ]]; then
+      bat_dir="$b"
+      break
+    fi
+  done
+
+  local present=false percent=0 status="Unknown" watts=0.0 health=100 cycles=0 online=false
+
+  if [[ -n "$bat_dir" && -r "$bat_dir/capacity" ]]; then
+    present=true
+    read -r percent < "$bat_dir/capacity" 2>/dev/null || percent=0
+    [[ "$percent" =~ ^[0-9]+$ ]] || percent=0
+    (( percent > 100 )) && percent=100
+
+    read -r status < "$bat_dir/status" 2>/dev/null || status="Unknown"
+    status="${status//[\"'$'\r$'\n']}"
+    [[ -z "$status" ]] && status="Unknown"
+
+    read -r cycles < "$bat_dir/cycle_count" 2>/dev/null || cycles=0
+    [[ "$cycles" =~ ^[0-9]+$ ]] || cycles=0
+
+    local v_now=0 c_now=0 p_now=0
+    if [[ -r "$bat_dir/power_now" ]]; then
+      read -r p_now < "$bat_dir/power_now" 2>/dev/null || p_now=0
+      if [[ "$p_now" =~ ^[0-9]+$ ]] && (( p_now > 0 )); then
+        watts=$(awk -v p="$p_now" 'BEGIN { printf "%.1f", p / 1000000 }')
+      fi
+    elif [[ -r "$bat_dir/voltage_now" && -r "$bat_dir/current_now" ]]; then
+      read -r v_now < "$bat_dir/voltage_now" 2>/dev/null || v_now=0
+      read -r c_now < "$bat_dir/current_now" 2>/dev/null || c_now=0
+      if [[ "$v_now" =~ ^[0-9]+$ && "$c_now" =~ ^[0-9]+$ ]] && (( v_now > 0 && c_now > 0 )); then
+        watts=$(awk -v v="$v_now" -v c="$c_now" 'BEGIN { printf "%.1f", (v * c) / 1000000000000 }')
+      fi
+    fi
+    [[ -z "$watts" ]] && watts=0.0
+
+    local full=0 design=0
+    if [[ -r "$bat_dir/charge_full" && -r "$bat_dir/charge_full_design" ]]; then
+      read -r full < "$bat_dir/charge_full" 2>/dev/null || full=0
+      read -r design < "$bat_dir/charge_full_design" 2>/dev/null || design=0
+    elif [[ -r "$bat_dir/energy_full" && -r "$bat_dir/energy_full_design" ]]; then
+      read -r full < "$bat_dir/energy_full" 2>/dev/null || full=0
+      read -r design < "$bat_dir/energy_full_design" 2>/dev/null || design=0
+    fi
+
+    if [[ "$full" =~ ^[0-9]+$ && "$design" =~ ^[0-9]+$ ]] && (( design > 0 && full > 0 )); then
+      health=$(( (full * 100) / design ))
+      (( health > 100 )) && health=100
+    fi
+  fi
+
+  for adp in /sys/class/power_supply/ADP* /sys/class/power_supply/AC*; do
+    if [[ -r "$adp/online" ]]; then
+      local adp_online=0
+      read -r adp_online < "$adp/online" 2>/dev/null || adp_online=0
+      if [[ "$adp_online" == "1" ]]; then
+        online=true
+        break
+      fi
+    fi
+  done
+
+  cat <<EOF
+{
+  "present": $present,
+  "percent": $percent,
+  "status": "$status",
+  "watts": $watts,
+  "health": $health,
+  "cycles": $cycles,
+  "online": $online
+}
+EOF
+}
+
+get_epp() {
+  local val="balance_power"
+  if [[ -r /sys/devices/system/cpu/cpu0/power/energy_performance_preference ]]; then
+    read -r val < /sys/devices/system/cpu/cpu0/power/energy_performance_preference 2>/dev/null || val="balance_power"
+  elif [[ -r /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference ]]; then
+    read -r val < /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null || val="balance_power"
+  fi
+  echo "${val:-balance_power}"
+}
+
+get_aspm() {
+  local val="default"
+  if [[ -r /sys/module/pcie_aspm/parameters/policy ]]; then
+    local raw
+    read -r raw < /sys/module/pcie_aspm/parameters/policy 2>/dev/null || raw=""
+    if [[ "$raw" =~ \[([a-zA-Z0-9_-]+)\] ]]; then
+      val="${BASH_REMATCH[1]}"
+    fi
+  fi
+  echo "${val:-default}"
+}
+
+get_wifi_powersave() {
+  local iface
+  iface=$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}' || true)
+  if [[ -n "$iface" ]]; then
+    local res
+    res=$(iw dev "$iface" get power_save 2>/dev/null || true)
+    if echo "$res" | grep -qi "on"; then
+      echo true
+      return
+    fi
+  fi
+  echo false
+}
+
+get_inactive_ethernet_json() {
+  local json="[]"
+  if command -v nmcli >/dev/null 2>&1; then
+    local items=()
+    while IFS=: read -r dev type state rest; do
+      if [[ "$type" == "ethernet" ]]; then
+        if [[ "$state" != "connected" && "$state" != "connecting" ]]; then
+          local managed=true
+          if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
+            managed=false
+          fi
+          items+=("{\"device\":\"$dev\",\"managed\":$managed,\"state\":\"$state\"}")
+        fi
+      fi
+    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+
+    if (( ${#items[@]} > 0 )); then
+      local IFS=,
+      json="[${items[*]}]"
+    fi
+  fi
+  echo "$json"
+}
+
+get_pcie_ports_compat() {
+  local conf="/etc/limine-entry-tool.d/t2-mac.conf"
+  if [[ -r "$conf" ]] && grep -q '\bpcie_ports=compat\b' "$conf" 2>/dev/null; then
+    echo true
+  else
+    echo false
+  fi
+}
+
+get_mem_sleep() {
+  local val="deep"
+  if [[ -r /sys/power/mem_sleep ]]; then
+    local raw
+    read -r raw < /sys/power/mem_sleep 2>/dev/null || raw=""
+    if [[ "$raw" =~ \[([a-zA-Z0-9_-]+)\] ]]; then
+      val="${BASH_REMATCH[1]}"
+    fi
+  fi
+  echo "${val:-deep}"
+}
+
+get_mem_sleep_modes_json() {
+  local raw="" modes=()
+  if [[ -r /sys/power/mem_sleep ]]; then
+    read -r raw < /sys/power/mem_sleep 2>/dev/null || raw=""
+    raw="${raw//\[/}"
+    raw="${raw//\]/}"
+    for m in $raw; do
+      [[ -n "$m" ]] && modes+=("\"$m\"")
+    done
+  fi
+  if (( ${#modes[@]} == 0 )); then
+    echo "[]"
+  else
+    local IFS=,
+    echo "[${modes[*]}]"
+  fi
+}
+
+get_audio_powersave() {
+  local val=0
+  if [[ -r /sys/module/snd_hda_intel/parameters/power_save ]]; then
+    read -r val < /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || val=0
+  fi
+  if [[ "$val" =~ ^[0-9]+$ ]] && (( val > 0 )); then
+    echo true
+  else
+    echo false
+  fi
+}
+
+get_usb_autosuspend() {
+  local val=-1
+  if [[ -r /sys/module/usbcore/parameters/autosuspend ]]; then
+    read -r val < /sys/module/usbcore/parameters/autosuspend 2>/dev/null || val=-1
+  fi
+  if [[ "$val" =~ ^-?[0-9]+$ ]] && (( val > 0 )); then
+    echo true
+  else
+    echo false
+  fi
+}
+
+get_wake_state() {
+  local dev="$1"
+  if grep -E "^${dev}[[:space:]]" /proc/acpi/wakeup 2>/dev/null | grep -q "\*enabled"; then
+    echo true
+  else
+    echo false
+  fi
+}
+
+get_lid_action() {
+  local action="suspend"
+  for f in /etc/systemd/logind.conf /etc/systemd/logind.conf.d/*.conf; do
+    [[ -r "$f" ]] || continue
+    while IFS='=' read -r key val; do
+      key="${key//[[:space:]]/}"
+      if [[ "$key" == "HandleLidSwitch" ]]; then
+        val="${val//[[:space:]]/}"
+        if [[ -n "$val" ]]; then
+          if [[ "$val" == "suspend-then-hibernate" ]]; then
+            action="suspend"
+          else
+            action="$val"
+          fi
+        fi
+      fi
+    done < "$f" 2>/dev/null || true
+  done
+  echo "$action"
+}
+
+get_clamshell_mode() {
+  local mode="ignore"
+  for f in /etc/systemd/logind.conf /etc/systemd/logind.conf.d/*.conf; do
+    [[ -r "$f" ]] || continue
+    while IFS='=' read -r key val; do
+      key="${key//[[:space:]]/}"
+      if [[ "$key" == "HandleLidSwitchExternalPower" ]]; then
+        val="${val//[[:space:]]/}"
+        [[ -n "$val" ]] && mode="$val"
+      fi
+    done < "$f" 2>/dev/null || true
+  done
+  if [[ "$mode" == "ignore" ]]; then
+    echo true
+  else
+    echo false
+  fi
+}
+
+get_hibernate_delay() {
+  local delay="off"
+  for f in /etc/systemd/sleep.conf /etc/systemd/sleep.conf.d/*.conf; do
+    [[ -r "$f" ]] || continue
+    while IFS='=' read -r key val; do
+      key="${key//[[:space:]]/}"
+      if [[ "$key" == "HibernateDelaySec" ]]; then
+        val="${val//[[:space:]]/}"
+        case "$val" in
+          1800|1800s|30m|30min) delay="30min" ;;
+          3600|3600s|60m|1h|1hour) delay="1hour" ;;
+          7200|7200s|120m|2h|2hours) delay="2hours" ;;
+          0|off) delay="off" ;;
+          *) [[ -n "$val" ]] && delay="$val" ;;
+        esac
+      fi
+    done < "$f" 2>/dev/null || true
+  done
+  echo "$delay"
+}
+
+get_setting() {
+  local key="$1" default="$2"
+  if [[ -f "$SETTINGS_FILE" && -r "$SETTINGS_FILE" ]]; then
+    local res
+    res=$(jq -r --arg k "$key" '.[$k] // empty' "$SETTINGS_FILE" 2>/dev/null || true)
+    if [[ -n "$res" && "$res" != "null" ]]; then
+      echo "$res"
+      return
+    fi
+  fi
+  echo "$default"
+}
+
+get_trackpad_info() {
+  python3 - "$SETTINGS_FILE" <<'PYEOF'
+import sys, os, json, subprocess
+
+settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
+settings = {}
+if settings_file and os.path.isfile(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+def hypr_opt(name):
+    try:
+        p = subprocess.run(["hyprctl", "-j", "getoption", name], capture_output=True, text=True)
+        if p.returncode == 0 and p.stdout.strip():
+            return json.loads(p.stdout)
+    except Exception:
+        pass
+    return {}
+
+def opt_bool(d, fallback):
+    if "bool" in d:
+        return bool(d["bool"])
+    return fallback
+
+def opt_float(d, fallback):
+    for k in ("float", "int"):
+        if k in d:
+            try: return float(d[k])
+            except (ValueError, TypeError): pass
+    return fallback
+
+def opt_int(d, fallback):
+    if "int" in d:
+        try: return int(d["int"])
+        except (ValueError, TypeError): pass
+    if "bool" in d:
+        return 1 if d["bool"] else 0
+    return fallback
+
+def opt_str(d, fallback):
+    v = d.get("str")
+    if v in (None, "", "[[EMPTY]]"):
+        return fallback
+    return str(v)
+
+def as_bool(v, fallback):
+    if v is None: return fallback
+    if isinstance(v, bool): return v
+    s = str(v).lower().strip()
+    return s in ("true", "1", "yes", "on")
+
+dev_name = ""
+try:
+    p = subprocess.run(["hyprctl", "-j", "devices"], capture_output=True, text=True)
+    if p.returncode == 0 and p.stdout.strip():
+        devs = json.loads(p.stdout)
+        for m in devs.get("mice", []):
+            name = m.get("name", "")
+            if "trackpad" in name.lower() or "touchpad" in name.lower():
+                dev_name = name
+                break
+except Exception:
+    pass
+
+s_nat = settings.get("trackpadNaturalScroll")
+natural_scroll = as_bool(s_nat, True) if s_nat is not None else opt_bool(hypr_opt("input:touchpad:natural_scroll"), True)
+
+s_tap = settings.get("trackpadTapToClick")
+tap_to_click = as_bool(s_tap, True) if s_tap is not None else opt_bool(hypr_opt("input:touchpad:tap-to-click"), True)
+
+s_clickfinger = settings.get("trackpadClickfingerBehavior")
+clickfinger = as_bool(s_clickfinger, True) if s_clickfinger is not None else opt_bool(hypr_opt("input:touchpad:clickfinger_behavior"), True)
+
+s_dwt = settings.get("trackpadDisableWhileTyping")
+dwt = as_bool(s_dwt, True) if s_dwt is not None else opt_bool(hypr_opt("input:touchpad:disable_while_typing"), True)
+
+s_factor = settings.get("trackpadScrollFactor")
+try:
+    scroll_factor = float(s_factor) if s_factor is not None else opt_float(hypr_opt("input:touchpad:scroll_factor"), 0.64)
+except Exception:
+    scroll_factor = 0.64
+scroll_factor = max(0.1, min(2.0, round(scroll_factor, 2)))
+
+s_mid = settings.get("trackpadMiddleButtonEmulation")
+middle_button = as_bool(s_mid, False) if s_mid is not None else opt_bool(hypr_opt("input:touchpad:middle_button_emulation"), False)
+
+s_drag = settings.get("trackpadTapAndDrag")
+tap_and_drag = as_bool(s_drag, True) if s_drag is not None else opt_bool(hypr_opt("input:touchpad:tap-and-drag"), True)
+
+s_lock = settings.get("trackpadDragLock")
+drag_lock = as_bool(s_lock, False) if s_lock is not None else bool(opt_int(hypr_opt("input:touchpad:drag_lock"), 0))
+
+s_3fg = settings.get("trackpadDrag3fg")
+try:
+    drag_3fg = int(s_3fg) if s_3fg is not None else opt_int(hypr_opt("input:touchpad:drag_3fg"), 0)
+except Exception:
+    drag_3fg = 0
+drag_3fg = max(0, min(3, drag_3fg))
+
+s_map = settings.get("trackpadTapButtonMap")
+tap_button_map = str(s_map).lower() if s_map is not None else opt_str(hypr_opt("input:touchpad:tap_button_map"), "lrm")
+tap_button_map = "lmr" if tap_button_map == "lmr" else "lrm"
+
+s_flipx = settings.get("trackpadFlipX")
+flip_x = as_bool(s_flipx, False) if s_flipx is not None else opt_bool(hypr_opt("input:touchpad:flip_x"), False)
+
+s_flipy = settings.get("trackpadFlipY")
+flip_y = as_bool(s_flipy, False) if s_flipy is not None else opt_bool(hypr_opt("input:touchpad:flip_y"), False)
+
+s_sens = settings.get("trackpadSensitivity")
+try:
+    sensitivity = float(s_sens) if s_sens is not None else opt_float(hypr_opt("input:sensitivity"), 0.0)
+except Exception:
+    sensitivity = 0.0
+sensitivity = max(-1.0, min(1.0, round(sensitivity, 2)))
+
+s_accel = settings.get("trackpadAccelProfile")
+accel_profile = str(s_accel).lower() if s_accel is not None else opt_str(hypr_opt("input:accel_profile"), "adaptive")
+accel_profile = "flat" if accel_profile == "flat" else "adaptive"
+
+s_left = settings.get("trackpadLeftHanded")
+left_handed = as_bool(s_left, False) if s_left is not None else opt_bool(hypr_opt("input:left_handed"), False)
+
+s_swipe = settings.get("trackpadSwipeWorkspaces")
+swipe_workspaces = as_bool(s_swipe, True)
+
+# Enforce mutual exclusion: 3-finger drag and 3-finger workspace swiping can never both be active
+if drag_3fg > 0 and swipe_workspaces:
+    swipe_workspaces = False
+
+print(json.dumps({
+    "device": dev_name or "Apple Force Touch Trackpad",
+    "present": True,
+    "naturalScroll": natural_scroll,
+    "tapToClick": tap_to_click,
+    "clickfingerBehavior": clickfinger,
+    "disableWhileTyping": dwt,
+    "scrollFactor": scroll_factor,
+    "middleButtonEmulation": middle_button,
+    "tapAndDrag": tap_and_drag,
+    "dragLock": drag_lock,
+    "drag3fg": drag_3fg,
+    "tapButtonMap": tap_button_map,
+    "flipX": flip_x,
+    "flipY": flip_y,
+    "sensitivity": sensitivity,
+    "accelProfile": accel_profile,
+    "leftHanded": left_handed,
+    "swipeWorkspaces": swipe_workspaces
+}))
+PYEOF
+}
+
+print_status_json() {
+  local is_t2=false
+  if detect_t2; then
+    is_t2=true
+  fi
+
+  local model vendor
+  model=$(get_model_name)
+  vendor=$(get_sys_vendor)
+
+  local battery_json
+  battery_json=$(get_battery_info)
+
+  local trackpad_json
+  trackpad_json=$(get_trackpad_info)
+
+  local epp aspm wifi_ps mem_sleep mem_sleep_modes audio_ps usb_ps wake_lid wake_ac lid_act clamshell hib_delay
+  epp=$(get_epp)
+  aspm=$(get_aspm)
+  wifi_ps=$(get_wifi_powersave)
+  mem_sleep=$(get_mem_sleep)
+  mem_sleep_modes=$(get_mem_sleep_modes_json)
+  audio_ps=$(get_audio_powersave)
+  usb_ps=$(get_usb_autosuspend)
+  wake_lid=$(get_wake_state "LID0")
+  wake_ac=$(get_wake_state "ADP1")
+  lid_act=$(get_lid_action)
+  clamshell=$(get_clamshell_mode)
+  hib_delay=$(get_hibernate_delay)
+
+  local kbd_timeout touchbar_blank inactive_eth pcie_compat rec_prompt_shown kb_select_all kb_delete kb_find kb_fullscreen kb_undo kb_redo
+  kbd_timeout=$(get_setting "kbdTimeout" "1m")
+  touchbar_blank=$(get_setting "touchbarBlank" "true")
+  rec_prompt_shown=$(get_setting "recommendedPromptShown" "false")
+  kb_select_all=$(get_setting "keybindingSelectAll" "CTRL + A")
+  kb_delete=$(get_setting "keybindingDelete" "DELETE")
+  kb_find=$(get_setting "keybindingFind" "CTRL + F")
+  kb_fullscreen=$(get_setting "keybindingFullscreen" "SUPER + F")
+  kb_undo=$(get_setting "keybindingUndo" "CTRL + Z")
+  kb_redo=$(get_setting "keybindingRedo" "CTRL + SHIFT + Z")
+  kb_save=$(get_setting "keybindingSave" "CTRL + S")
+  kb_cut=$(get_setting "keybindingCut" "CTRL + X")
+  inactive_eth=$(get_inactive_ethernet_json)
+  pcie_compat=$(get_pcie_ports_compat)
+
+  local kb_payload sys_overrides sys_map
+  kb_payload=$(python3 - "$SETTINGS_FILE" <<'PYEOF'
+import glob, os, json, re, sys
+
+settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
+settings = {}
+if settings_file and os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+overrides = settings.get("systemKeybindingOverrides", {})
+
+cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.records"))
+bound_chords = set()
+raw = []
+if cache_files:
+    latest_cache = max(cache_files, key=os.path.getmtime)
+    try:
+        with open(latest_cache, "r", encoding="utf-8") as f:
+            for line in f:
+                if "→" in line:
+                    parts = line.strip().split("\t")
+                    combo, desc = parts[0].split("→", 1)
+                    combo = combo.strip().upper()
+                    desc = desc.strip()
+                    disp = parts[1] if len(parts) > 1 else "exec"
+                    arg = parts[2] if len(parts) > 2 else ""
+                    bound_chords.add(combo)
+                    raw.append((combo, desc, disp, arg))
+    except Exception:
+        pass
+
+def get_rec(chord):
+    tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
+    if not tokens:
+        return ""
+    key = tokens[-1]
+    mods = set(tokens[:-1])
+    ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
+    cands = []
+    if "ALT" not in mods:
+        m = list(mods | {"ALT"})
+        m.sort(key=lambda x: ord_map.get(x, 10))
+        cands.append(" + ".join(m) + f" + {key}")
+    if "CTRL" not in mods:
+        m = list(mods | {"CTRL"})
+        m.sort(key=lambda x: ord_map.get(x, 10))
+        cands.append(" + ".join(m) + f" + {key}")
+    for c in cands:
+        if c not in bound_chords:
+            return c
+    m = list(mods | {"ALT"})
+    m.sort(key=lambda x: ord_map.get(x, 10))
+    return " + ".join(m) + f" + {key}"
+
+system_map = {}
+for combo, desc, disp, arg in raw:
+    system_map[combo] = {
+        "chord": combo,
+        "action": desc,
+        "dispatcher": disp,
+        "arg": arg,
+        "defaultChord": combo,
+        "recommendedChord": get_rec(combo)
+    }
+
+out_overrides = json.dumps(overrides)
+out_map = json.dumps(system_map)
+print(f"{out_overrides}\t{out_map}")
+PYEOF
+)
+  IFS=$'\t' read -r sys_overrides sys_map <<< "$kb_payload"
+  [[ -z "$sys_overrides" ]] && sys_overrides="{}"
+  [[ -z "$sys_map" ]] && sys_map="{}"
+
+  local helper_installed=false
+  if [[ -x "$SYSTEM_HELPER" ]]; then
+    helper_installed=true
+  fi
+
+  cat <<EOF
+{
+  "isT2": $is_t2,
+  "model": "$model",
+  "vendor": "$vendor",
+  "chip": "Apple T2 Security Chip",
+  "helperInstalled": $helper_installed,
+  "battery": $battery_json,
+  "epp": "$epp",
+  "aspm": "$aspm",
+  "wifiPowerSave": $wifi_ps,
+  "inactiveEthernet": $inactive_eth,
+  "pciePortsCompat": $pcie_compat,
+  "audioPowerSave": $audio_ps,
+  "usbAutosuspend": $usb_ps,
+  "kbdTimeout": "$kbd_timeout",
+  "memSleep": "$mem_sleep",
+  "memSleepModes": $mem_sleep_modes,
+  "lidAction": "$lid_act",
+  "clamshellMode": $clamshell,
+  "wakeOnLid": $wake_lid,
+  "wakeOnAc": $wake_ac,
+  "hibernateDelay": "$hib_delay",
+  "touchbarBlank": $touchbar_blank,
+  "recommendedPromptShown": $rec_prompt_shown,
+  "keybindingSelectAll": "$kb_select_all",
+  "keybindingDelete": "$kb_delete",
+  "keybindingFind": "$kb_find",
+  "keybindingFullscreen": "$kb_fullscreen",
+  "keybindingUndo": "$kb_undo",
+  "keybindingRedo": "$kb_redo",
+  "keybindingSave": "$kb_save",
+  "keybindingCut": "$kb_cut",
+  "systemKeybindingOverrides": $sys_overrides,
+  "systemKeybindings": $sys_map,
+  "trackpad": $trackpad_json
+}
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Privilege Execution Helper
+# ---------------------------------------------------------------------------
+
+run_privileged() {
+  local target="$SCRIPT_DIR/omapple-helper"
+  if [[ ! -f "$target" && -f "$SCRIPT_DIR/t2-helper" ]]; then
+    target="$SCRIPT_DIR/t2-helper"
+  fi
+  if [[ -x "$SYSTEM_HELPER" ]]; then
+    target="$SYSTEM_HELPER"
+  fi
+
+  if (( EUID == 0 )); then
+    "$target" "$@"
+  else
+    pkexec "$target" "$@"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Input Validation & Security Helpers
+# ---------------------------------------------------------------------------
+
+validate_no_control_chars() {
+  local val="$1"
+  local name="${2:-argument}"
+  if [[ "$val" =~ [[:cntrl:]] ]]; then
+    echo "Security Error: $name contains forbidden control characters." >&2
+    exit 1
+  fi
+}
+
+atomic_write_file() {
+  local target="$1"
+  local content="$2"
+  local mode="${3:-0644}"
+  local dir tmp
+
+  dir="$(dirname "$target")"
+  mkdir -p "$dir"
+  tmp="${target}.tmp.$$"
+  printf "%s\n" "$content" > "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$target"
+}
+
+save_user_setting() {
+  local key="${1:-}" val="${2:-}"
+  validate_no_control_chars "$key" "setting_key"
+  validate_no_control_chars "$val" "setting_val"
+
+  case "$key" in
+    kbdTimeout)
+      case "$val" in
+        off|never|0|10s|15s|30s|1m|2m|5m|10m) ;;
+        *)
+          if [[ ! "$val" =~ ^[0-9]+[smh]?$ ]]; then
+            echo "Error: Invalid kbdTimeout value '$val'" >&2
+            exit 1
+          fi
+          ;;
+      esac
+      ;;
+    touchbarBlank|recommendedPromptShown)
+      case "$val" in
+        true|false|True|False) ;;
+        *)
+          echo "Error: Invalid boolean value for $key: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    epp)
+      case "$val" in
+        default|performance|balance_performance|balance_power|power|balanced) ;;
+        *)
+          echo "Error: Invalid epp setting: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    keybindingSelectAll|keybindingDelete|keybindingFind|keybindingFullscreen|keybindingUndo|keybindingRedo|keybindingSave|keybindingCut)
+      if [[ ! "$val" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
+        echo "Error: Invalid keybinding chord for $key: '$val'" >&2
+        exit 1
+      fi
+      ;;
+    trackpadNaturalScroll|trackpadTapToClick|trackpadClickfingerBehavior|trackpadDisableWhileTyping|trackpadTapAndDrag|trackpadDragLock|trackpadMiddleButtonEmulation|trackpadLeftHanded|trackpadFlipX|trackpadFlipY|trackpadSwipeWorkspaces)
+      case "$val" in
+        true|false|True|False|1|0|on|off) ;;
+        *)
+          echo "Error: Invalid boolean value for $key: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    trackpadDrag3fg)
+      case "$val" in
+        0|1|2|3) ;;
+        *)
+          echo "Error: Invalid drag_3fg value for $key: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    trackpadTapButtonMap)
+      case "$val" in
+        lrm|lmr|LRM|LMR) ;;
+        *)
+          echo "Error: Invalid tap_button_map value for $key: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    trackpadAccelProfile)
+      case "$val" in
+        adaptive|flat|Adaptive|Flat) ;;
+        *)
+          echo "Error: Invalid accel_profile value for $key: '$val'" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    trackpadScrollFactor|trackpadSensitivity)
+      if [[ ! "$val" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "Error: Invalid number for $key: '$val'" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "Error: Unauthorized setting key '$key'" >&2
+      exit 1
+      ;;
+  esac
+
+  mkdir -p "$(dirname "$SETTINGS_FILE")"
+  python3 - "$SETTINGS_FILE" "$key" "$val" <<'PYEOF'
+import sys, os, json
+
+file_path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
+data = {}
+if os.path.isfile(file_path):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+
+val_lower = val.lower().strip()
+if val_lower in ('true', 'on'):
+    data[key] = True
+elif val_lower in ('false', 'off'):
+    data[key] = False
+else:
+    try:
+        if '.' in val:
+            data[key] = float(val)
+        elif val.lstrip('-').isdigit():
+            data[key] = int(val)
+        else:
+            data[key] = val
+    except Exception:
+        data[key] = val
+
+# Enforce mutual exclusion: 3-finger drag and 3-finger workspace swiping can never both be enabled
+if key == "trackpadDrag3fg" and data.get("trackpadDrag3fg", 0) > 0:
+    data["trackpadSwipeWorkspaces"] = False
+elif key == "trackpadSwipeWorkspaces" and data.get("trackpadSwipeWorkspaces", False):
+    data["trackpadDrag3fg"] = 0
+
+tmp_file = file_path + ".tmp." + str(os.getpid())
+with open(tmp_file, 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp_file, file_path)
+PYEOF
+}
+
+# ---------------------------------------------------------------------------
+# Apply Actions (Privileged)
+# ---------------------------------------------------------------------------
+
+apply_epp() {
+  local val="${1:-}"
+  validate_no_control_chars "$val" "epp"
+  val=$(echo "$val" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$val" in
+    balanced)
+      val="balance_power"
+      ;;
+    default|performance|balance_performance|balance_power|power)
+      ;;
+    *)
+      echo "Error: Invalid EPP value '$val'. Allowed values: default, performance, balance_performance, balance_power, power, balanced" >&2
+      exit 1
+      ;;
+  esac
+
+  for f in /sys/devices/system/cpu/cpu*/power/energy_performance_preference /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+    if [[ -w "$f" ]]; then
+      echo "$val" > "$f" 2>/dev/null || true
+    fi
+  done
+
+  if compgen -G "/sys/devices/system/cpu/cpu*/power/energy_performance_preference" >/dev/null; then
+    atomic_write_file /etc/tmpfiles.d/omarchy-t2-epp.conf "w /sys/devices/system/cpu/cpu*/power/energy_performance_preference - - - - $val"
+  elif compgen -G "/sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference" >/dev/null; then
+    atomic_write_file /etc/tmpfiles.d/omarchy-t2-epp.conf "w /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference - - - - $val"
+  fi
+}
+
+apply_aspm() {
+  local val="${1:-}"
+  validate_no_control_chars "$val" "aspm"
+  val=$(echo "$val" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$val" in
+    default|performance|powersave|powersupersave)
+      ;;
+    *)
+      echo "Error: Invalid ASPM policy '$val'. Allowed values: default, performance, powersave, powersupersave" >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ -w /sys/module/pcie_aspm/parameters/policy ]]; then
+    echo "$val" > /sys/module/pcie_aspm/parameters/policy 2>/dev/null || true
+  fi
+  atomic_write_file /etc/tmpfiles.d/omarchy-t2-aspm.conf "w /sys/module/pcie_aspm/parameters/policy - - - - $val"
+}
+
+apply_wifi_powersave() {
+  local state="${1:-}" # on | off
+  validate_no_control_chars "$state" "wifi_powersave"
+  state=$(echo "$state" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  local nm_val=2
+  case "$state" in
+    on|true|1|enable|enabled)
+      state="on"
+      nm_val=3
+      ;;
+    off|false|0|disable|disabled)
+      state="off"
+      nm_val=2
+      ;;
+    *)
+      echo "Error: Invalid wifi powersave state '$state'. Allowed values: on, off" >&2
+      exit 1
+      ;;
+  esac
+
+  local iface
+  iface=$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}' || true)
+  if [[ -n "$iface" && "$iface" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+    iw dev "$iface" set power_save "$state" 2>/dev/null || true
+  fi
+
+  local content="[connection]
+wifi.powersave = $nm_val"
+  atomic_write_file /etc/NetworkManager/conf.d/omarchy-wifi-powersave.conf "$content"
+}
+
+apply_ethernet_managed() {
+  local dev="${1:-}"
+  local mode="${2:-no}" # yes | no
+  validate_no_control_chars "$dev" "ethernet_dev"
+  validate_no_control_chars "$mode" "ethernet_mode"
+  [[ -z "$dev" ]] && return 0
+
+  if [[ ! "$dev" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,14}$ ]]; then
+    echo "Error: Invalid ethernet interface name '$dev'" >&2
+    exit 1
+  fi
+
+  mode=$(echo "$mode" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$mode" in
+    yes|true|on|1) mode="yes" ;;
+    no|false|off|0) mode="no" ;;
+    *)
+      echo "Error: Invalid ethernet managed mode '$mode'. Allowed values: yes, no" >&2
+      exit 1
+      ;;
+  esac
+
+  if command -v nmcli >/dev/null 2>&1; then
+    nmcli device set "$dev" managed "$mode" 2>/dev/null || true
+    nmcli device set "$dev" managed --permanent "$mode" 2>/dev/null || true
+  fi
+
+  local conf="/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf"
+  if [[ "$mode" == "no" ]]; then
+    local content="[keyfile]
+unmanaged-devices=interface-name:$dev"
+    atomic_write_file "$conf" "$content"
+  else
+    rm -f "$conf"
+  fi
+}
+
+apply_pcie_ports_compat() {
+  local mode="${1:-}" # on | off
+  local update_limine="${2:-true}"
+  validate_no_control_chars "$mode" "pcie_ports_compat"
+  validate_no_control_chars "$update_limine" "update_limine"
+  mode=$(echo "$mode" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$mode" in
+    on|true|add|yes|1) mode="on" ;;
+    off|false|remove|no|0) mode="off" ;;
+    *)
+      echo "Error: Invalid pcie_ports_compat mode '$mode'. Allowed values: on, off" >&2
+      exit 1
+      ;;
+  esac
+
+  case "$update_limine" in
+    true|false) ;;
+    *) update_limine="true" ;;
+  esac
+
+  local current
+  current=$(get_pcie_ports_compat)
+  if [[ ("$mode" == "on" && "$current" == "true") || ("$mode" == "off" && "$current" == "false") ]]; then
+    return 0
+  fi
+
+  local res=0
+  python3 - "$conf" "$mode" <<'PYEOF' || res=$?
+import sys
+import re
+import os
+
+path = sys.argv[1]
+mode = sys.argv[2]
+
+content = ""
+if os.path.exists(path):
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+def remove_compat(text):
+    def repl(m):
+        prefix = m.group(1)
+        val = m.group(2)
+        closing = m.group(3)
+        val = re.sub(r"\bpcie_ports=compat\b", "", val)
+        val = re.sub(r"[ \t]+", " ", val).rstrip()
+        return f"{prefix}{val}{closing}"
+    return re.sub(r"^([ \t]*KERNEL_CMDLINE[^=\n]*=[+ \t]*[\"'])([^\"']*)([\"'])", repl, text, flags=re.M)
+
+def add_compat(text):
+    if re.search(r"\bpcie_ports=compat\b", text):
+        return text
+    def repl(m):
+        prefix = m.group(1)
+        val = m.group(2).rstrip()
+        closing = m.group(3)
+        sep = " " if val and not val.endswith(" ") else ""
+        return f"{prefix}{val}{sep}pcie_ports=compat{closing}"
+    new_text, count = re.subn(r"^([ \t]*KERNEL_CMDLINE[^=\n]*=[+ \t]*[\"'])([^\"']*)([\"'])", repl, text, flags=re.M)
+    if count == 0:
+        sep = "\n" if text and not text.endswith("\n") else ""
+        new_text = text + sep + 'KERNEL_CMDLINE[default]+=" pcie_ports=compat"\n'
+    return new_text
+
+if mode == "off":
+    new_content = remove_compat(content)
+else:
+    new_content = add_compat(content)
+
+if new_content != content:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = path + ".tmp." + str(os.getpid())
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    os.replace(tmp_path, path)
+    sys.exit(0)
+else:
+    sys.exit(2)
+PYEOF
+
+  if [[ "$update_limine" == "true" && $res -eq 0 ]]; then
+    run_limine_update
+  fi
+  return 0
+}
+
+apply_mem_sleep() {
+  local val="${1:-}" # deep | s2idle | standby | shallow
+  local update_limine="${2:-true}"
+  validate_no_control_chars "$val" "mem_sleep"
+  validate_no_control_chars "$update_limine" "update_limine"
+
+  val=$(echo "$val" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$val" in
+    deep|s2idle|standby|shallow)
+      ;;
+    *)
+      echo "Error: Invalid mem_sleep mode '$val'. Allowed values: deep, s2idle, standby, shallow" >&2
+      exit 1
+      ;;
+  esac
+
+  case "$update_limine" in
+    true|false) ;;
+    *) update_limine="true" ;;
+  esac
+
+  # 1. Active immediately in sysfs
+  if [[ -w /sys/power/mem_sleep ]]; then
+    echo "$val" > /sys/power/mem_sleep 2>/dev/null || true
+  fi
+
+  # 2. tmpfiles.d persistence rule
+  atomic_write_file /etc/tmpfiles.d/omarchy-t2-mem-sleep.conf "w /sys/power/mem_sleep - - - - $val"
+
+  # 3. systemd-sleep configuration
+  mkdir -p /etc/systemd/sleep.conf.d
+  local cfg="/etc/systemd/sleep.conf.d/30-t2-sleep.conf"
+  if [[ -f "$cfg" ]] && grep -q "\[Sleep\]" "$cfg" 2>/dev/null; then
+    if grep -q "MemorySleepMode=" "$cfg" 2>/dev/null; then
+      sed -i "s/^[[:space:]]*MemorySleepMode=.*/MemorySleepMode=$val/" "$cfg"
+    else
+      sed -i "/\[Sleep\]/a MemorySleepMode=$val" "$cfg"
+    fi
+  else
+    local content="[Sleep]
+MemorySleepMode=$val"
+    atomic_write_file "$cfg" "$content"
+  fi
+
+  # 4. Kernel command line persistence in /etc/limine-entry-tool.d/t2-mac.conf
+  local limine_conf="/etc/limine-entry-tool.d/t2-mac.conf"
+  python3 - "$limine_conf" "$val" <<'PYEOF'
+import sys
+import re
+import os
+
+path = sys.argv[1]
+val = sys.argv[2]
+
+content = ""
+if os.path.exists(path):
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+def update_mem_sleep_default(text, val):
+    if re.search(r"\bmem_sleep_default=\w+\b", text):
+        return re.sub(r"\bmem_sleep_default=\w+\b", f"mem_sleep_default={val}", text)
+    def repl(m):
+        prefix = m.group(1)
+        v = m.group(2).rstrip()
+        closing = m.group(3)
+        sep = " " if v and not v.endswith(" ") else ""
+        return f"{prefix}{v}{sep}mem_sleep_default={val}{closing}"
+    new_text, count = re.subn(r"^([ \t]*KERNEL_CMDLINE[^=\n]*=[+ \t]*[\"'])([^\"']*)([\"'])", repl, text, flags=re.M)
+    if count == 0:
+        sep = "\n" if text and not text.endswith("\n") else ""
+        new_text = text + sep + f'KERNEL_CMDLINE[default]+=" mem_sleep_default={val}"\n'
+    return new_text
+
+new_content = update_mem_sleep_default(content, val)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+tmp_path = path + ".tmp." + str(os.getpid())
+with open(tmp_path, "w", encoding="utf-8") as f:
+    f.write(new_content)
+os.replace(tmp_path, path)
+PYEOF
+
+  # 5. Update bootloader if requested
+  if [[ "$update_limine" == "true" ]]; then
+    run_limine_update
+  fi
+}
+
+apply_lid_action() {
+  local action="${1:-}" # suspend | ignore | lock | hibernate | poweroff
+  validate_no_control_chars "$action" "lid_action"
+  action=$(echo "$action" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$action" in
+    suspend|ignore|lock|hibernate|poweroff|suspend-then-hibernate|hybrid-sleep)
+      ;;
+    *)
+      echo "Error: Invalid lid action '$action'. Allowed values: suspend, ignore, lock, hibernate, poweroff" >&2
+      exit 1
+      ;;
+  esac
+
+  local target_action="$action"
+  if [[ "$action" == "suspend" ]]; then
+    local hib_delay
+    hib_delay=$(get_hibernate_delay)
+    if [[ "$hib_delay" != "off" && -n "$hib_delay" ]]; then
+      target_action="suspend-then-hibernate"
+    fi
+  fi
+
+  local content="[Login]
+HandleLidSwitch=$target_action"
+  atomic_write_file /etc/systemd/logind.conf.d/30-t2-lid.conf "$content"
+  systemctl kill -s HUP systemd-logind 2>/dev/null || true
+}
+
+apply_clamshell() {
+  local enable="${1:-}" # true | false
+  validate_no_control_chars "$enable" "clamshell"
+  enable=$(echo "$enable" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  local mode="ignore"
+  case "$enable" in
+    true|on|yes|1) mode="ignore" ;;
+    false|off|no|0) mode="suspend" ;;
+    *)
+      echo "Error: Invalid clamshell setting '$enable'. Allowed values: true, false" >&2
+      exit 1
+      ;;
+  esac
+
+  local content="[Login]
+HandleLidSwitchExternalPower=$mode
+HandleLidSwitchDocked=$mode"
+  atomic_write_file /etc/systemd/logind.conf.d/35-t2-clamshell.conf "$content"
+  systemctl kill -s HUP systemd-logind 2>/dev/null || true
+}
+
+apply_wake_toggle() {
+  local dev="${1:-}"
+  local desired="${2:-}" # on | off
+  validate_no_control_chars "$dev" "wake_dev"
+  validate_no_control_chars "$desired" "wake_desired"
+
+  case "$dev" in
+    LID0|ADP1) ;;
+    *)
+      echo "Error: Invalid wake device '$dev'. Allowed devices: LID0, ADP1" >&2
+      exit 1
+      ;;
+  esac
+
+  desired=$(echo "$desired" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case "$desired" in
+    on|true|yes|1) desired="on" ;;
+    off|false|no|0) desired="off" ;;
+    *)
+      echo "Error: Invalid wake desired state '$desired'. Allowed values: on, off" >&2
+      exit 1
+      ;;
+  esac
+
+  local current
+  current=$(get_wake_state "$dev")
+  if [[ ("$desired" == "on" && "$current" == "false") || ("$desired" == "off" && "$current" == "true") ]]; then
+    echo "$dev" > /proc/acpi/wakeup 2>/dev/null || true
+  fi
+}
+
+apply_audio_powersave() {
+  local enable="${1:-}" # true | false
+  validate_no_control_chars "$enable" "audio_powersave"
+  enable=$(echo "$enable" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  local val=1
+  case "$enable" in
+    true|on|yes|1) val=1 ;;
+    false|off|no|0) val=0 ;;
+    *)
+      echo "Error: Invalid audio_powersave setting '$enable'. Allowed values: true, false" >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ -w /sys/module/snd_hda_intel/parameters/power_save ]]; then
+    echo "$val" > /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null || true
+  fi
+
+  local controller_val="N"
+  [[ $val -gt 0 ]] && controller_val="Y"
+  local content="options snd_hda_intel power_save=$val power_save_controller=$controller_val"
+  atomic_write_file /etc/modprobe.d/omarchy-t2-audio.conf "$content"
+}
+
+apply_usb_autosuspend() {
+  local enable="${1:-}" # true | false
+  validate_no_control_chars "$enable" "usb_autosuspend"
+  enable=$(echo "$enable" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  local val=2
+  case "$enable" in
+    true|on|yes|1) val=2 ;;
+    false|off|no|0) val=-1 ;;
+    *)
+      echo "Error: Invalid usb_autosuspend setting '$enable'. Allowed values: true, false" >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ -w /sys/module/usbcore/parameters/autosuspend ]]; then
+    echo "$val" > /sys/module/usbcore/parameters/autosuspend 2>/dev/null || true
+  fi
+
+  local content="options usbcore autosuspend=$val"
+  atomic_write_file /etc/modprobe.d/omarchy-usb-autosuspend.conf "$content"
+}
+
+apply_hibernate_delay() {
+  local delay="${1:-off}" # off | 30min | 1hour | 2hours | seconds
+  validate_no_control_chars "$delay" "hibernate_delay"
+  delay=$(echo "$delay" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+
+  local sec=0
+  case "$delay" in
+    off|0|never|false)
+      sec=0
+      ;;
+    15min|15m|900|900s)
+      sec=900
+      ;;
+    30min|30m|1800|1800s)
+      sec=1800
+      ;;
+    1hour|1h|60min|60m|3600|3600s)
+      sec=3600
+      ;;
+    2hours|2h|120min|120m|7200|7200s)
+      sec=7200
+      ;;
+    4hours|4h|14400|14400s)
+      sec=14400
+      ;;
+    8hours|8h|28800|28800s)
+      sec=28800
+      ;;
+    24hours|24h|86400|86400s)
+      sec=86400
+      ;;
+    *)
+      if [[ "$delay" =~ ^[0-9]+$ ]] && (( delay >= 0 && delay <= 604800 )); then
+        sec="$delay"
+      else
+        echo "Error: Invalid hibernate delay '$delay'. Allowed values: off, 30min, 1hour, 2hours, or numeric seconds (0-604800)" >&2
+        exit 1
+      fi
+      ;;
+  esac
+
+  local cfg="/etc/systemd/sleep.conf.d/30-t2-sleep.conf"
+  local lid_cfg="/etc/systemd/logind.conf.d/30-t2-lid.conf"
+
+  if [[ "$sec" -eq 0 ]]; then
+    if [[ -f "$cfg" ]]; then
+      sed -i '/HibernateDelaySec=/d' "$cfg"
+    fi
+    if [[ -f "$lid_cfg" ]] && grep -q "HandleLidSwitch=suspend-then-hibernate" "$lid_cfg" 2>/dev/null; then
+      sed -i 's/HandleLidSwitch=suspend-then-hibernate/HandleLidSwitch=suspend/' "$lid_cfg"
+      systemctl kill -s HUP systemd-logind 2>/dev/null || true
+    fi
+  else
+    mkdir -p /etc/systemd/sleep.conf.d
+    if [[ -f "$cfg" ]] && grep -q "\[Sleep\]" "$cfg" 2>/dev/null; then
+      sed -i '/HibernateDelaySec=/d' "$cfg"
+      sed -i "/\[Sleep\]/a HibernateDelaySec=$sec" "$cfg"
+    else
+      local content="[Sleep]
+HibernateDelaySec=$sec"
+      atomic_write_file "$cfg" "$content"
+    fi
+
+    local lid_content="[Login]
+HandleLidSwitch=suspend-then-hibernate"
+    atomic_write_file "$lid_cfg" "$lid_content"
+    systemctl kill -s HUP systemd-logind 2>/dev/null || true
+  fi
+}
+
+install_system_helper() {
+  local helper_src=""
+  local rules_src=""
+  if [[ -f "$PLUGIN_ROOT/scripts/omapple-helper" ]]; then
+    helper_src="$PLUGIN_ROOT/scripts/omapple-helper"
+  elif [[ -f "$PLUGIN_ROOT/scripts/t2-helper" ]]; then
+    helper_src="$PLUGIN_ROOT/scripts/t2-helper"
+  fi
+
+  if [[ -f "$PLUGIN_ROOT/system/90-omapple.rules" ]]; then
+    rules_src="$PLUGIN_ROOT/system/90-omapple.rules"
+  elif [[ -f "$PLUGIN_ROOT/system/90-omarchy-t2-linux.rules" ]]; then
+    rules_src="$PLUGIN_ROOT/system/90-omarchy-t2-linux.rules"
+  fi
+
+  if [[ -z "$helper_src" || -z "$rules_src" ]]; then
+    echo "Error: Cannot locate helper source files in $PLUGIN_ROOT" >&2
+    exit 1
+  fi
+
+  mkdir -p /usr/local/libexec /etc/polkit-1/rules.d
+  install -Dm755 "$helper_src" /usr/local/libexec/omapple-helper
+  rm -f /usr/local/libexec/omarchy-t2-helper
+  ln -sf /usr/local/libexec/omapple-helper /usr/local/libexec/omarchy-t2-helper
+
+  local py_src=""
+  if [[ -f "$PLUGIN_ROOT/scripts/omapple-plugins-helper.py" ]]; then
+    py_src="$PLUGIN_ROOT/scripts/omapple-plugins-helper.py"
+  elif [[ -f "$PLUGIN_ROOT/scripts/t2-plugins-helper.py" ]]; then
+    py_src="$PLUGIN_ROOT/scripts/t2-plugins-helper.py"
+  fi
+  if [[ -n "$py_src" ]]; then
+    install -Dm755 "$py_src" /usr/local/libexec/omapple-plugins-helper.py
+    rm -f /usr/local/libexec/t2-plugins-helper.py
+    ln -sf /usr/local/libexec/omapple-plugins-helper.py /usr/local/libexec/t2-plugins-helper.py
+  fi
+
+  install -Dm644 "$rules_src" /etc/polkit-1/rules.d/90-omapple.rules
+  rm -f /etc/polkit-1/rules.d/90-omarchy-t2-linux.rules
+  ln -sf /etc/polkit-1/rules.d/90-omapple.rules /etc/polkit-1/rules.d/90-omarchy-t2-linux.rules
+  echo "Installed system helper, plugins helper, and polkit rules successfully."
+}
+
+uninstall_system_helper() {
+  rm -f /usr/local/libexec/omapple-helper /usr/local/libexec/omarchy-t2-helper \
+        /usr/local/libexec/omapple-plugins-helper.py /usr/local/libexec/t2-plugins-helper.py \
+        /etc/polkit-1/rules.d/90-omapple.rules /etc/polkit-1/rules.d/90-omarchy-t2-linux.rules
+  echo "Removed system helper, plugins helper, and polkit rules."
+}
+
+apply_keybindings() {
+  local bindings_file="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/bindings.lua"
+  [[ -f "$bindings_file" ]] || return 0
+
+  python3 - "$SETTINGS_FILE" "$bindings_file" <<'PYEOF'
+import sys, json, os, re
+
+settings_file = sys.argv[1]
+bindings_file = sys.argv[2]
+
+settings = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+def norm_c(c):
+    if not c: return ""
+    tokens = [t.strip().upper() for t in re.split(r"[\+\s]+", c) if t.strip()]
+    return " + ".join(tokens)
+
+select_all = norm_c(settings.get("keybindingSelectAll", "CTRL + A"))
+delete_key = norm_c(settings.get("keybindingDelete", "DELETE"))
+find_key = norm_c(settings.get("keybindingFind", "CTRL + F"))
+fullscreen = norm_c(settings.get("keybindingFullscreen", "SUPER + F"))
+undo_key = norm_c(settings.get("keybindingUndo", "CTRL + Z"))
+redo_key = norm_c(settings.get("keybindingRedo", "CTRL + SHIFT + Z"))
+save_key = norm_c(settings.get("keybindingSave", "CTRL + S"))
+cut_key = norm_c(settings.get("keybindingCut", "CTRL + X"))
+system_overrides = settings.get("systemKeybindingOverrides", {})
+
+is_all_defaults = (
+    (not select_all or select_all in ("CTRL + A", "NONE")) and
+    (not delete_key or delete_key in ("DELETE", "NONE")) and
+    (not find_key or find_key in ("CTRL + F", "NONE")) and
+    (not fullscreen or fullscreen in ("SUPER + F", "NONE")) and
+    (not undo_key or undo_key in ("CTRL + Z", "NONE")) and
+    (not redo_key or redo_key in ("CTRL + SHIFT + Z", "NONE")) and
+    (not save_key or save_key in ("CTRL + S", "NONE")) and
+    (not cut_key or cut_key in ("CTRL + X", "NONE")) and
+    len(system_overrides) == 0
+)
+
+start_marker = "-- BEGIN omarchy-t2-linux keybindings"
+end_marker = "-- END omarchy-t2-linux keybindings"
+
+with open(bindings_file, "r", encoding="utf-8") as f:
+    content = f.read()
+
+if is_all_defaults:
+    start_idx = content.find(start_marker)
+    end_idx = content.rfind(end_marker)
+    if start_idx != -1 and end_idx != -1:
+        end_idx += len(end_marker)
+        new_content = content[:start_idx].rstrip() + "\n" + content[end_idx:].lstrip()
+        tmp_file = bindings_file + ".tmp." + str(os.getpid())
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        os.replace(tmp_file, bindings_file)
+    sys.exit(0)
+
+unbinds = []
+binds = []
+
+# Select All
+if select_all and select_all not in ("NONE", "CTRL + A"):
+    unbinds.append(select_all)
+    binds.append(f'o.bind("{select_all}", "Select All", hl.dsp.send_shortcut({{ mods = "CTRL", key = "a" }}))')
+
+# Forward Delete
+if delete_key and delete_key not in ("NONE", "DELETE"):
+    unbinds.append(delete_key)
+    binds.append(f'o.bind("{delete_key}", "Forward Delete", hl.dsp.send_shortcut({{ mods = "", key = "Delete" }}))')
+
+# Find
+if find_key and find_key not in ("NONE", "CTRL + F"):
+    unbinds.append(find_key)
+    binds.append(f'o.bind("{find_key}", "Find", hl.dsp.send_shortcut({{ mods = "CTRL", key = "f" }}))')
+
+# Fullscreen
+if fullscreen and fullscreen not in ("NONE", "SUPER + F"):
+    if find_key != "SUPER + F":
+        unbinds.append("SUPER + F")
+    unbinds.append(fullscreen)
+    if "SUPER" in fullscreen and "CTRL" in fullscreen:
+        alt_chord = fullscreen.replace("SUPER + CTRL", "CTRL + SUPER") if "SUPER + CTRL" in fullscreen else fullscreen.replace("CTRL + SUPER", "SUPER + CTRL")
+        unbinds.append(alt_chord)
+    binds.append(f'o.bind("{fullscreen}", "Full screen", hl.dsp.window.fullscreen({{ mode = "fullscreen" }}))')
+
+# Undo
+if undo_key and undo_key not in ("NONE", "CTRL + Z"):
+    unbinds.append(undo_key)
+    binds.append(f'o.bind("{undo_key}", "Undo", hl.dsp.send_shortcut({{ mods = "CTRL", key = "z" }}))')
+
+# Redo
+if redo_key and redo_key not in ("NONE", "CTRL + SHIFT + Z"):
+    unbinds.append(redo_key)
+    binds.append(f'o.bind("{redo_key}", "Redo", hl.dsp.send_shortcut({{ mods = "CTRL + SHIFT", key = "z" }}))')
+
+# Save
+if save_key and save_key not in ("NONE", "CTRL + S"):
+    unbinds.append(save_key)
+    binds.append(f'o.bind("{save_key}", "Save", hl.dsp.send_shortcut({{ mods = "CTRL", key = "s" }}))')
+
+# Cut
+if cut_key and cut_key not in ("NONE", "CTRL + X"):
+    unbinds.append(cut_key)
+    binds.append(f'o.bind("{cut_key}", "Cut", hl.dsp.send_shortcut({{ mods = "CTRL", key = "x" }}))')
+
+# System Overrides
+for action, item in system_overrides.items():
+    orig = norm_c(item.get("defaultChord", ""))
+    cur = norm_c(item.get("currentChord", ""))
+    disp = item.get("dispatcher", "exec")
+    arg = item.get("arg", "")
+    if orig and cur and cur != orig:
+        unbinds.append(orig)
+        unbinds.append(cur)
+        safe_action = action.replace('\\', '\\\\').replace('"', '\\"')
+        safe_cur = cur.replace('\\', '\\\\').replace('"', '\\"')
+        if disp == "lua":
+            binds.append(f'o.bind("{safe_cur}", "{safe_action}", {arg})')
+        else:
+            safe_arg = arg.replace('\\', '\\\\').replace('"', '\\"')
+            binds.append(f'o.bind("{safe_cur}", "{safe_action}", "{safe_arg}")')
+
+seen = set()
+unique_unbinds = []
+for u in unbinds:
+    nu = norm_c(u)
+    if nu and nu not in seen:
+        seen.add(nu)
+        unique_unbinds.append(nu)
+
+lines = [start_marker]
+for u in unique_unbinds:
+    lines.append(f'hl.unbind("{u}")')
+for b in binds:
+    lines.append(b)
+lines.append(end_marker)
+new_block = "\n".join(lines)
+
+start_idx = content.find(start_marker)
+end_idx = content.rfind(end_marker)
+if start_idx != -1 and end_idx != -1:
+    end_idx += len(end_marker)
+    new_content = content[:start_idx].rstrip() + "\n\n" + new_block + "\n" + content[end_idx:].lstrip()
+else:
+    new_content = content.rstrip() + "\n\n" + new_block + "\n"
+
+tmp_file = bindings_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
+    f.write(new_content)
+os.replace(tmp_file, bindings_file)
+PYEOF
+
+  if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl reload >/dev/null 2>&1 || true
+  fi
+}
+
+set_keybindings() {
+  while [[ $# -ge 2 ]]; do
+    local k="$1"
+    local v="$2"
+    shift 2
+    case "$k" in
+      keybinding_select_all|keybindingSelectAll)
+        save_user_setting "keybindingSelectAll" "$v"
+        ;;
+      keybinding_delete|keybindingDelete)
+        save_user_setting "keybindingDelete" "$v"
+        ;;
+      keybinding_find|keybindingFind)
+        save_user_setting "keybindingFind" "$v"
+        ;;
+      keybinding_fullscreen|keybindingFullscreen)
+        save_user_setting "keybindingFullscreen" "$v"
+        ;;
+      keybinding_undo|keybindingUndo)
+        save_user_setting "keybindingUndo" "$v"
+        ;;
+      keybinding_redo|keybindingRedo)
+        save_user_setting "keybindingRedo" "$v"
+        ;;
+      keybinding_save|keybindingSave)
+        save_user_setting "keybindingSave" "$v"
+        ;;
+      keybinding_cut|keybindingCut)
+        save_user_setting "keybindingCut" "$v"
+        ;;
+      *)
+        echo "Unknown keybinding key: $k" >&2
+        return 1
+        ;;
+    esac
+  done
+  apply_keybindings
+}
+
+apply_recommended_keybindings() {
+  local py_res=0
+  python3 - "$SETTINGS_FILE" <<'PYEOF' || py_res=$?
+import sys, json, os, glob
+
+settings_file = sys.argv[1]
+settings = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+    rec_keys = {
+        "keybindingSelectAll": "SUPER + A",
+        "keybindingDelete": "SUPER + BACKSPACE",
+        "keybindingFind": "SUPER + F",
+        "keybindingFullscreen": "SUPER + CTRL + F",
+        "keybindingUndo": "SUPER + Z",
+        "keybindingRedo": "SUPER + SHIFT + Z",
+        "keybindingSave": "SUPER + S",
+        "keybindingCut": "SUPER + X"
+    }
+
+    changed = False
+    for k, v in rec_keys.items():
+        if settings.get(k) != v:
+            settings[k] = v
+            changed = True
+
+    cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.records"))
+    overrides = dict(settings.get("systemKeybindingOverrides", {}))
+    if cache_files:
+        latest_cache = max(cache_files, key=os.path.getmtime)
+        bound_chords = set()
+        raw = []
+        try:
+            with open(latest_cache, "r", encoding="utf-8") as f:
+                for line in f:
+                    if "→" in line:
+                        parts = line.strip().split("\t")
+                        combo, desc = parts[0].split("→", 1)
+                        combo = combo.strip().upper()
+                        desc = desc.strip()
+                        disp = parts[1] if len(parts) > 1 else "exec"
+                        arg = parts[2] if len(parts) > 2 else ""
+                        bound_chords.add(combo)
+                        raw.append((combo, desc, disp, arg))
+        except Exception:
+            pass
+
+        def get_rec(chord):
+            tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
+            if not tokens: return ""
+            key = tokens[-1]
+            mods = set(tokens[:-1])
+            ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
+            cands = []
+            if "ALT" not in mods:
+                m = list(mods | {"ALT"})
+                m.sort(key=lambda x: ord_map.get(x, 10))
+                cands.append(" + ".join(m) + f" + {key}")
+            if "CTRL" not in mods:
+                m = list(mods | {"CTRL"})
+                m.sort(key=lambda x: ord_map.get(x, 10))
+                cands.append(" + ".join(m) + f" + {key}")
+            for c in cands:
+                if c not in bound_chords:
+                    return c
+            m = list(mods | {"ALT"})
+            m.sort(key=lambda x: ord_map.get(x, 10))
+            return " + ".join(m) + f" + {key}"
+
+        rec_tasks = {
+            "SUPER + A": "select all",
+            "SUPER + BACKSPACE": "forward delete",
+            "SUPER + F": "find",
+            "SUPER + CTRL + F": "full screen",
+            "SUPER + Z": "undo",
+            "SUPER + SHIFT + Z": "redo",
+            "SUPER + S": "save",
+            "SUPER + X": "cut"
+        }
+
+        def normalize_chord_tokens(c):
+            if not c: return set(), None
+            import re
+            tokens = [t.strip().upper() for t in re.split(r"[\+\s]+", c) if t.strip()]
+            mods = set()
+            key = None
+            for t in tokens:
+                if t in ("SUPER", "LOGO", "WIN", "CMD", "COMMAND"):
+                    mods.add("SUPER")
+                elif t in ("CTRL", "CONTROL"):
+                    mods.add("CTRL")
+                elif t in ("ALT", "OPTION"):
+                    mods.add("ALT")
+                elif t in ("SHIFT",):
+                    mods.add("SHIFT")
+                else:
+                    key = t
+            return frozenset(mods), key
+
+        norm_rec = {normalize_chord_tokens(rc): (rc, name) for rc, name in rec_tasks.items()}
+
+        for combo, desc, disp, arg in raw:
+            c_norm = normalize_chord_tokens(combo)
+            if c_norm in norm_rec:
+                r_chord, r_name = norm_rec[c_norm]
+                desc_clean = desc.lower().replace(" ", "").replace("_", "").replace("-", "")
+                r_clean = r_name.replace(" ", "")
+                if desc_clean not in (r_clean, "delete", "fullscreen", "findindocument", "save", "cut", "universalcut"):
+                    rec_alt = get_rec(combo)
+                    overrides[desc] = {
+                        "action": desc,
+                        "defaultChord": combo,
+                        "currentChord": rec_alt,
+                        "recommendedChord": rec_alt,
+                        "dispatcher": disp,
+                        "arg": arg
+                    }
+
+    if settings.get("systemKeybindingOverrides") != overrides:
+        settings["systemKeybindingOverrides"] = overrides
+        changed = True
+
+    if changed:
+        tmp_file = settings_file + ".tmp." + str(os.getpid())
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+        os.replace(tmp_file, settings_file)
+        sys.exit(0)
+    else:
+        sys.exit(2)
+PYEOF
+  if [[ $py_res -eq 0 ]]; then
+    apply_keybindings
+  elif [[ $py_res -ne 2 ]]; then
+    return $py_res
+  fi
+  return 0
+}
+
+reset_keybindings_to_defaults() {
+  python3 - "$SETTINGS_FILE" <<'PYEOF'
+import sys, json, os
+
+settings_file = sys.argv[1]
+settings = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+settings["keybindingSelectAll"] = "CTRL + A"
+settings["keybindingDelete"] = "DELETE"
+settings["keybindingFind"] = "CTRL + F"
+settings["keybindingFullscreen"] = "SUPER + F"
+settings["keybindingUndo"] = "CTRL + Z"
+settings["keybindingRedo"] = "CTRL + SHIFT + Z"
+settings["keybindingSave"] = "CTRL + S"
+settings["keybindingCut"] = "CTRL + X"
+settings["systemKeybindingOverrides"] = {}
+
+tmp_file = settings_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
+    json.dump(settings, f, indent=2)
+os.replace(tmp_file, settings_file)
+PYEOF
+  apply_keybindings
+}
+
+set_system_keybinding() {
+  local action="${1:-}"
+  local new_chord="${2:-}"
+  local def_chord="${3:-}"
+  local disp="${4:-exec}"
+  local arg="${5:-}"
+  [[ -n "$action" && -n "$new_chord" ]] || return 1
+
+  if [[ ! "$new_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
+    echo "Error: Invalid keybinding chord: '$new_chord'" >&2
+    return 1
+  fi
+  if [[ -n "$def_chord" && ! "$def_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
+    echo "Error: Invalid default chord: '$def_chord'" >&2
+    return 1
+  fi
+
+  python3 - "$SETTINGS_FILE" "$action" "$new_chord" "$def_chord" "$disp" "$arg" <<'PYEOF'
+import sys, json, os
+settings_file = sys.argv[1]
+action = sys.argv[2]
+new_chord = sys.argv[3]
+def_chord = sys.argv[4] if len(sys.argv) > 4 else ""
+disp = sys.argv[5] if len(sys.argv) > 5 else "exec"
+arg = sys.argv[6] if len(sys.argv) > 6 else ""
+
+settings = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+overrides = settings.get("systemKeybindingOverrides", {})
+if not def_chord and action in overrides:
+    def_chord = overrides[action].get("defaultChord", "")
+
+if def_chord and new_chord == def_chord:
+    if action in overrides:
+        del overrides[action]
+else:
+    overrides[action] = {
+        "action": action,
+        "defaultChord": def_chord,
+        "currentChord": new_chord,
+        "recommendedChord": overrides.get(action, {}).get("recommendedChord", ""),
+        "dispatcher": disp,
+        "arg": arg
+    }
+
+settings["systemKeybindingOverrides"] = overrides
+tmp_file = settings_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
+    json.dump(settings, f, indent=2)
+os.replace(tmp_file, settings_file)
+PYEOF
+  apply_keybindings
+}
+
+reset_system_keybinding() {
+  local action="${1:-}"
+  [[ -n "$action" ]] || return 1
+
+  python3 - "$SETTINGS_FILE" "$action" <<'PYEOF'
+import sys, json, os
+settings_file, action = sys.argv[1], sys.argv[2]
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        settings = {}
+    overrides = settings.get("systemKeybindingOverrides", {})
+    if action in overrides:
+        del overrides[action]
+        settings["systemKeybindingOverrides"] = overrides
+        tmp_file = settings_file + ".tmp." + str(os.getpid())
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+        os.replace(tmp_file, settings_file)
+PYEOF
+  apply_keybindings
+}
+
+set_keybinding_with_system_override() {
+  local task_key="${1:-}"
+  local task_chord="${2:-}"
+  local action="${3:-}"
+  local new_chord="${4:-}"
+  local def_chord="${5:-}"
+  local disp="${6:-exec}"
+  local arg="${7:-}"
+
+  if [[ ! "$task_chord" =~ ^[A-Za-z0-9_\ +-]+$ || ! "$new_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
+    echo "Error: Invalid keybinding chord format" >&2
+    return 1
+  fi
+  if [[ -n "$def_chord" && ! "$def_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
+    echo "Error: Invalid default chord format" >&2
+    return 1
+  fi
+
+  python3 - "$SETTINGS_FILE" "$task_key" "$task_chord" "$action" "$new_chord" "$def_chord" "$disp" "$arg" <<'PYEOF'
+import sys, json, os
+settings_file = sys.argv[1]
+task_key = sys.argv[2]
+task_chord = sys.argv[3]
+action = sys.argv[4]
+new_chord = sys.argv[5]
+def_chord = sys.argv[6] if len(sys.argv) > 6 else ""
+disp = sys.argv[7] if len(sys.argv) > 7 else "exec"
+arg = sys.argv[8] if len(sys.argv) > 8 else ""
+
+settings = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+tk_map = {
+    "keybinding_select_all": "keybindingSelectAll",
+    "keybindingselectall": "keybindingSelectAll",
+    "keybinding_delete": "keybindingDelete",
+    "keybindingdelete": "keybindingDelete",
+    "keybinding_find": "keybindingFind",
+    "keybindingfind": "keybindingFind",
+    "keybinding_fullscreen": "keybindingFullscreen",
+    "keybindingfullscreen": "keybindingFullscreen",
+    "keybinding_undo": "keybindingUndo",
+    "keybindingundo": "keybindingUndo",
+    "keybinding_redo": "keybindingRedo",
+    "keybindingredo": "keybindingRedo",
+    "keybinding_save": "keybindingSave",
+    "keybindingsave": "keybindingSave",
+    "keybinding_cut": "keybindingCut",
+    "keybindingcut": "keybindingCut"
+}
+norm_tk = tk_map.get(task_key.lower().replace("_", ""), task_key)
+if norm_tk in ("keybindingSelectAll", "keybindingDelete", "keybindingFind", "keybindingFullscreen", "keybindingUndo", "keybindingRedo", "keybindingSave", "keybindingCut"):
+    settings[norm_tk] = task_chord
+
+overrides = settings.get("systemKeybindingOverrides", {})
+if action:
+    if not def_chord and action in overrides:
+        def_chord = overrides[action].get("defaultChord", "")
+
+    if def_chord and new_chord == def_chord:
+        if action in overrides:
+            del overrides[action]
+    else:
+        overrides[action] = {
+            "action": action,
+            "defaultChord": def_chord,
+            "currentChord": new_chord,
+            "recommendedChord": overrides.get(action, {}).get("recommendedChord", ""),
+            "dispatcher": disp,
+            "arg": arg
+        }
+    settings["systemKeybindingOverrides"] = overrides
+
+tmp_file = settings_file + ".tmp." + str(os.getpid())
+with open(tmp_file, "w", encoding="utf-8") as f:
+    json.dump(settings, f, indent=2)
+os.replace(tmp_file, settings_file)
+PYEOF
+  apply_keybindings
+}
+
+check_keybinding() {
+  local target_chord="${1:-}"
+  local current_task_key="${2:-}"
+
+  python3 - "$target_chord" "$current_task_key" "$SETTINGS_FILE" <<'PYEOF'
+import sys, os, json, re, glob, subprocess
+
+target_chord = sys.argv[1].strip() if len(sys.argv) > 1 else ""
+current_task_key = sys.argv[2].strip() if len(sys.argv) > 2 else ""
+settings_path = sys.argv[3] if len(sys.argv) > 3 else ""
+
+def normalize_chord(c):
+    if not c:
+        return set(), None
+    tokens = [t.strip().upper() for t in re.split(r"[\+\s]+", c) if t.strip()]
+    mods = set()
+    key = None
+    for t in tokens:
+        if t in ("SUPER", "LOGO", "WIN", "CMD", "COMMAND"):
+            mods.add("SUPER")
+        elif t in ("CTRL", "CONTROL"):
+            mods.add("CTRL")
+        elif t in ("ALT", "OPTION"):
+            mods.add("ALT")
+        elif t in ("SHIFT",):
+            mods.add("SHIFT")
+        else:
+            key = t
+    return mods, key
+
+t_mods, t_key = normalize_chord(target_chord)
+if not t_key:
+    print(json.dumps({"chord": target_chord, "inUse": False, "conflict": False, "action": None}))
+    sys.exit(0)
+
+friendly_task_names = {
+    "keybinding_select_all": "Select All",
+    "keybindingSelectAll": "Select All",
+    "keybinding_delete": "Forward Delete",
+    "keybindingDelete": "Forward Delete",
+    "keybinding_find": "Find",
+    "keybindingFind": "Find",
+    "keybinding_fullscreen": "Full screen",
+    "keybindingFullscreen": "Full screen",
+    "keybinding_undo": "Undo",
+    "keybindingUndo": "Undo",
+    "keybinding_redo": "Redo",
+    "keybindingRedo": "Redo",
+    "keybinding_save": "Save",
+    "keybindingSave": "Save",
+    "keybinding_cut": "Cut",
+    "keybindingCut": "Cut"
+}
+
+current_task_friendly = friendly_task_names.get(current_task_key, current_task_key).lower()
+
+# 1. Check settings and defaults for conflicts with other tasks in our plugin
+plugin_bindings = {
+    "keybinding_select_all": "CTRL + A",
+    "keybinding_delete": "DELETE",
+    "keybinding_find": "CTRL + F",
+    "keybinding_fullscreen": "SUPER + F",
+    "keybinding_undo": "CTRL + Z",
+    "keybinding_redo": "CTRL + SHIFT + Z",
+    "keybinding_save": "CTRL + S",
+    "keybinding_cut": "CTRL + X"
+}
+sys_overrides = {}
+if settings_path and os.path.isfile(settings_path):
+    try:
+        with open(settings_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+            for k, v in saved.items():
+                if k.startswith("keybinding") and isinstance(v, str):
+                    plugin_bindings[k] = v
+            sys_overrides = saved.get("systemKeybindingOverrides", {})
+    except Exception:
+        pass
+
+for s_key, s_chord in plugin_bindings.items():
+    s_norm_key = s_key.lower().replace("_", "")
+    c_norm_key = current_task_key.lower().replace("_", "")
+    if s_norm_key == c_norm_key:
+        continue
+    s_mods, s_k = normalize_chord(s_chord)
+    if s_k == t_key and s_mods == t_mods:
+        act = friendly_task_names.get(s_key, s_key)
+        print(json.dumps({
+            "chord": target_chord,
+            "inUse": True,
+            "conflict": True,
+            "action": act,
+            "source": "t2-linux"
+        }))
+        sys.exit(0)
+
+# 2. Check system keybindings records cache
+cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.records"))
+bound_chords = set()
+raw_records = []
+if cache_files:
+    latest_cache = max(cache_files, key=os.path.getmtime)
+    try:
+        with open(latest_cache, "r", encoding="utf-8") as f:
+            for line in f:
+                if "→" in line:
+                    parts = line.strip().split("\t")
+                    combo, desc = parts[0].split("→", 1)
+                    combo = combo.strip().upper()
+                    desc = desc.strip()
+                    disp = parts[1] if len(parts) > 1 else "exec"
+                    arg = parts[2] if len(parts) > 2 else ""
+                    bound_chords.add(combo)
+                    raw_records.append((combo, desc, disp, arg))
+    except Exception:
+        pass
+
+def get_rec(chord):
+    tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
+    if not tokens: return ""
+    key = tokens[-1]
+    mods = set(tokens[:-1])
+    ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
+    cands = []
+    if "ALT" not in mods:
+        m = list(mods | {"ALT"})
+        m.sort(key=lambda x: ord_map.get(x, 10))
+        cands.append(" + ".join(m) + f" + {key}")
+    if "CTRL" not in mods:
+        m = list(mods | {"CTRL"})
+        m.sort(key=lambda x: ord_map.get(x, 10))
+        cands.append(" + ".join(m) + f" + {key}")
+    for c in cands:
+        if c not in bound_chords:
+            return c
+    m = list(mods | {"ALT"})
+    m.sort(key=lambda x: ord_map.get(x, 10))
+    return " + ".join(m) + f" + {key}"
+
+for k_part, desc, disp, arg in raw_records:
+    k_mods, k_key = normalize_chord(k_part)
+    if k_key == t_key and k_mods == t_mods:
+        is_conflict = (desc.lower() != current_task_friendly and not (desc.lower() == "delete" and current_task_friendly == "forward delete") and not (desc.lower() == "universal cut" and current_task_friendly == "cut"))
+        # If this action is already overridden to something else, this default chord is freed
+        if desc in sys_overrides:
+            ov_m, ov_k = normalize_chord(sys_overrides[desc].get("currentChord", ""))
+            if (ov_m, ov_k) != (t_mods, t_key):
+                continue
+        print(json.dumps({
+            "chord": target_chord,
+            "inUse": True,
+            "conflict": is_conflict,
+            "action": desc,
+            "source": "system",
+            "defaultChord": k_part,
+            "recommendedChord": get_rec(k_part),
+            "dispatcher": disp,
+            "arg": arg
+        }))
+        sys.exit(0)
+
+# Check active overrides
+for act, ov in sys_overrides.items():
+    ov_chord = ov.get("currentChord", "")
+    ov_mods, ov_key = normalize_chord(ov_chord)
+    if ov_key == t_key and ov_mods == t_mods:
+        is_conflict = (act.lower() != current_task_friendly)
+        print(json.dumps({
+            "chord": target_chord,
+            "inUse": True,
+            "conflict": is_conflict,
+            "action": act,
+            "source": "system",
+            "defaultChord": ov.get("defaultChord", ov_chord),
+            "recommendedChord": ov.get("recommendedChord", get_rec(ov_chord)),
+            "dispatcher": ov.get("dispatcher", "exec"),
+            "arg": ov.get("arg", "")
+        }))
+        sys.exit(0)
+
+print(json.dumps({
+    "chord": target_chord,
+    "inUse": False,
+    "conflict": False,
+    "action": None
+}))
+PYEOF
+}
+
+# ---------------------------------------------------------------------------
+# Trackpad Configuration Actions
+# ---------------------------------------------------------------------------
+
+apply_trackpad() {
+  python3 - "$SETTINGS_FILE" <<'PYEOF'
+import sys, os, json, subprocess
+
+settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
+settings = {}
+if settings_file and os.path.isfile(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+def as_bool(v, fallback):
+    if v is None: return fallback
+    if isinstance(v, bool): return v
+    s = str(v).lower().strip()
+    return s in ("true", "1", "yes", "on")
+
+natural_scroll = as_bool(settings.get("trackpadNaturalScroll"), True)
+tap_to_click = as_bool(settings.get("trackpadTapToClick"), True)
+clickfinger = as_bool(settings.get("trackpadClickfingerBehavior"), True)
+dwt = as_bool(settings.get("trackpadDisableWhileTyping"), True)
+try:
+    scroll_factor = max(0.1, min(2.0, float(settings.get("trackpadScrollFactor", 0.64))))
+except Exception:
+    scroll_factor = 0.64
+middle_button = as_bool(settings.get("trackpadMiddleButtonEmulation"), False)
+tap_and_drag = as_bool(settings.get("trackpadTapAndDrag"), True)
+drag_lock = as_bool(settings.get("trackpadDragLock"), False)
+try:
+    drag_3fg = max(0, min(3, int(settings.get("trackpadDrag3fg", 0))))
+except Exception:
+    drag_3fg = 0
+tap_button_map = "lmr" if str(settings.get("trackpadTapButtonMap", "lrm")).lower() == "lmr" else "lrm"
+flip_x = as_bool(settings.get("trackpadFlipX"), False)
+flip_y = as_bool(settings.get("trackpadFlipY"), False)
+try:
+    sensitivity = max(-1.0, min(1.0, float(settings.get("trackpadSensitivity", 0.0))))
+except Exception:
+    sensitivity = 0.0
+accel_profile = "flat" if str(settings.get("trackpadAccelProfile", "adaptive")).lower() == "flat" else "adaptive"
+left_handed = as_bool(settings.get("trackpadLeftHanded"), False)
+swipe_workspaces = as_bool(settings.get("trackpadSwipeWorkspaces"), True)
+
+# Enforce mutual exclusion: 3-finger drag and 3-finger workspace swiping can never both be active
+if drag_3fg > 0 and swipe_workspaces:
+    swipe_workspaces = False
+
+hypr_dir = os.path.expanduser("~/.config/hypr")
+trackpad_lua = os.path.join(hypr_dir, "t2-trackpad.lua")
+hyprland_lua = os.path.join(hypr_dir, "hyprland.lua")
+input_lua = os.path.join(hypr_dir, "input.lua")
+
+if os.path.isfile(input_lua):
+    try:
+        with open(input_lua, "r", encoding="utf-8") as f:
+            in_text = f.read()
+        import re
+        pattern = re.compile(r'^[ \t]*hl\.gesture\(\s*\{\s*fingers\s*=\s*3\s*,\s*direction\s*=\s*["\']horizontal["\']\s*,\s*action\s*=\s*["\']workspace["\']\s*\}\s*\)', re.MULTILINE)
+        if pattern.search(in_text):
+            in_text = pattern.sub('-- hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" }) -- managed by t2-trackpad', in_text)
+            tmp_in = input_lua + ".tmp." + str(os.getpid())
+            with open(tmp_in, "w", encoding="utf-8") as f:
+                f.write(in_text)
+            os.replace(tmp_in, input_lua)
+    except Exception:
+        pass
+
+gesture_code = '\nhl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })\n' if swipe_workspaces else ""
+
+lua_code = f"""-- Generated by Omapple (bramvanoploo.omarchy-t2-linux)
+hl.config({{
+  input = {{
+    sensitivity = {sensitivity:.2f},
+    accel_profile = "{accel_profile}",
+    left_handed = {"true" if left_handed else "false"},
+    touchpad = {{
+      natural_scroll = {"true" if natural_scroll else "false"},
+      scroll_factor = {scroll_factor:.2f},
+      disable_while_typing = {"true" if dwt else "false"},
+      tap_to_click = {"true" if tap_to_click else "false"},
+      clickfinger_behavior = {"true" if clickfinger else "false"},
+      middle_button_emulation = {"true" if middle_button else "false"},
+      tap_and_drag = {"true" if tap_and_drag else "false"},
+      drag_lock = {"true" if drag_lock else "false"},
+      drag_3fg = {drag_3fg},
+      tap_button_map = "{tap_button_map}",
+      flip_x = {"true" if flip_x else "false"},
+      flip_y = {"true" if flip_y else "false"},
+    }},
+  }},
+}}){gesture_code}
+"""
+os.makedirs(hypr_dir, exist_ok=True)
+tmp_lua = trackpad_lua + ".tmp." + str(os.getpid())
+with open(tmp_lua, "w", encoding="utf-8") as f:
+    f.write(lua_code)
+os.replace(tmp_lua, trackpad_lua)
+
+if os.path.isfile(hyprland_lua):
+    try:
+        with open(hyprland_lua, "r", encoding="utf-8") as f:
+            hl_text = f.read()
+        if 'require("hypr.t2-trackpad")' not in hl_text and "require('hypr.t2-trackpad')" not in hl_text:
+            if 'require("hypr.mouse")' in hl_text:
+                hl_text = hl_text.replace('require("hypr.mouse")', 'require("hypr.mouse")\nrequire("hypr.t2-trackpad")', 1)
+            elif 'require("hypr.input")' in hl_text:
+                hl_text = hl_text.replace('require("hypr.input")', 'require("hypr.input")\nrequire("hypr.t2-trackpad")', 1)
+            else:
+                hl_text += '\nrequire("hypr.t2-trackpad")\n'
+            tmp_hl = hyprland_lua + ".tmp." + str(os.getpid())
+            with open(tmp_hl, "w", encoding="utf-8") as f:
+                f.write(hl_text)
+            os.replace(tmp_hl, hyprland_lua)
+    except Exception:
+        pass
+
+compact_eval = f'hl.config({{ input = {{ sensitivity = {sensitivity:.2f}, accel_profile = "{accel_profile}", left_handed = {"true" if left_handed else "false"}, touchpad = {{ natural_scroll = {"true" if natural_scroll else "false"}, scroll_factor = {scroll_factor:.2f}, disable_while_typing = {"true" if dwt else "false"}, tap_to_click = {"true" if tap_to_click else "false"}, clickfinger_behavior = {"true" if clickfinger else "false"}, middle_button_emulation = {"true" if middle_button else "false"}, tap_and_drag = {"true" if tap_and_drag else "false"}, drag_lock = {"true" if drag_lock else "false"}, drag_3fg = {drag_3fg}, tap_button_map = "{tap_button_map}", flip_x = {"true" if flip_x else "false"}, flip_y = {"true" if flip_y else "false"} }} }} }})'
+try:
+    subprocess.run(["hyprctl", "eval", compact_eval], capture_output=True, check=False)
+except Exception:
+    pass
+
+try:
+    subprocess.run(["hyprctl", "reload"], capture_output=True, check=False)
+except Exception:
+    pass
+PYEOF
+}
+
+apply_recommended_trackpad() {
+  local py_res=0
+  python3 - "$SETTINGS_FILE" <<'PYEOF' || py_res=$?
+import sys, os, json
+
+settings_file = sys.argv[1]
+settings = {}
+if os.path.exists(settings_file):
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+
+recommended = {
+    "trackpadNaturalScroll": True,
+    "trackpadTapToClick": True,
+    "trackpadClickfingerBehavior": True,
+    "trackpadDisableWhileTyping": True,
+    "trackpadScrollFactor": 0.64,
+    "trackpadMiddleButtonEmulation": False,
+    "trackpadTapAndDrag": True,
+    "trackpadDragLock": False,
+    "trackpadDrag3fg": 0,
+    "trackpadTapButtonMap": "lrm",
+    "trackpadFlipX": False,
+    "trackpadFlipY": False,
+    "trackpadSensitivity": 0.0,
+    "trackpadAccelProfile": "adaptive",
+    "trackpadLeftHanded": False,
+    "trackpadSwipeWorkspaces": True
+}
+
+changed = False
+for k, v in recommended.items():
+    cur = settings.get(k)
+    if isinstance(v, bool):
+        cur_b = str(cur).lower().strip() in ("true", "1", "yes", "on") if cur is not None else None
+        if cur_b != v:
+            settings[k] = v
+            changed = True
+    elif isinstance(v, float):
+        try:
+            if abs(float(cur) - v) > 0.001:
+                settings[k] = v
+                changed = True
+        except (TypeError, ValueError):
+            settings[k] = v
+            changed = True
+    elif isinstance(v, int):
+        try:
+            if int(cur) != v:
+                settings[k] = v
+                changed = True
+        except (TypeError, ValueError):
+            settings[k] = v
+            changed = True
+    else:
+        if str(cur).lower().strip() != str(v).lower().strip():
+            settings[k] = v
+            changed = True
+
+if changed:
+    os.makedirs(os.path.dirname(settings_file), exist_ok=True)
+    tmp_file = settings_file + ".tmp." + str(os.getpid())
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+    os.replace(tmp_file, settings_file)
+    sys.exit(0)
+else:
+    sys.exit(2)
+PYEOF
+  if [[ $py_res -eq 0 ]]; then
+    apply_trackpad
+  elif [[ $py_res -ne 2 ]]; then
+    return $py_res
+  fi
+  return 0
+}
+
+reset_trackpad_to_defaults() {
+  save_user_setting "trackpadNaturalScroll" "false"
+  save_user_setting "trackpadTapToClick" "true"
+  save_user_setting "trackpadClickfingerBehavior" "true"
+  save_user_setting "trackpadDisableWhileTyping" "true"
+  save_user_setting "trackpadScrollFactor" "0.4"
+  save_user_setting "trackpadMiddleButtonEmulation" "false"
+  save_user_setting "trackpadTapAndDrag" "true"
+  save_user_setting "trackpadDragLock" "false"
+  save_user_setting "trackpadDrag3fg" "0"
+  save_user_setting "trackpadTapButtonMap" "lrm"
+  save_user_setting "trackpadFlipX" "false"
+  save_user_setting "trackpadFlipY" "false"
+  save_user_setting "trackpadSensitivity" "0.0"
+  save_user_setting "trackpadAccelProfile" "adaptive"
+  save_user_setting "trackpadLeftHanded" "false"
+  save_user_setting "trackpadSwipeWorkspaces" "true"
+  apply_trackpad
+}
+
+restart_trackpad() {
+  if [[ -x /usr/share/omarchy/bin/omarchy-restart-trackpad ]]; then
+    /usr/share/omarchy/bin/omarchy-restart-trackpad || true
+  fi
+  for dev in /sys/bus/hid/drivers/magicmouse/*:05AC:027C.*; do
+    if [[ -d "$dev" ]]; then
+      local bname
+      bname=$(basename "$dev")
+      if [[ -w /sys/bus/hid/drivers/magicmouse/unbind ]]; then
+        echo "$bname" > /sys/bus/hid/drivers/magicmouse/unbind 2>/dev/null || true
+        sleep 0.5
+        echo "$bname" > /sys/bus/hid/drivers/magicmouse/bind 2>/dev/null || true
+      fi
+    fi
+  done
+  apply_trackpad
+  echo "Trackpad driver restarted"
+}
+
+# ---------------------------------------------------------------------------
+# CLI Command Dispatcher
+# ---------------------------------------------------------------------------
+
+# Validate all incoming command-line arguments against control characters / newlines
+for arg in "$@"; do
+  validate_no_control_chars "$arg" "Argument"
+done
+
+case "${1:-status}" in
+  status)
+    print_status_json
+    ;;
+
+  detect)
+    if detect_t2; then
+      echo "T2 detected"
+      exit 0
+    else
+      echo "No T2 chip found"
+      exit 1
+    fi
+    ;;
+
+  set)
+    shift
+    key="${1:-}"
+    val="${2:-}"
+    validate_no_control_chars "$key" "set_key"
+    validate_no_control_chars "$val" "set_val"
+    case "$key" in
+      epp)
+        save_user_setting "epp" "$val"
+        pp_done=false
+        if command -v powerprofilesctl >/dev/null 2>&1; then
+          case "$val" in
+            power|power-saver)
+              powerprofilesctl set power-saver >/dev/null 2>&1 && pp_done=true
+              ;;
+            performance)
+              powerprofilesctl set performance >/dev/null 2>&1 && pp_done=true
+              ;;
+            balance_power|balance_performance|balanced)
+              powerprofilesctl set balanced >/dev/null 2>&1 && pp_done=true
+              ;;
+          esac
+        fi
+
+        for f in /sys/devices/system/cpu/cpu*/power/energy_performance_preference /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+          if [[ -w "$f" ]]; then
+            echo "$val" > "$f" 2>/dev/null || true
+          fi
+        done
+
+        curr=$(get_epp)
+        if [[ "$curr" != "$val" && "$pp_done" != "true" ]]; then
+          run_privileged apply-epp "$val"
+        fi
+        ;;
+      aspm)
+        run_privileged apply-aspm "$val"
+        ;;
+      wifi_powersave)
+        run_privileged apply-wifi-powersave "$val"
+        ;;
+      ethernet_managed)
+        dev=""
+        mode=""
+        if [[ "$val" == *:* ]]; then
+          dev="${val%%:*}"
+          mode="${val##*:}"
+        else
+          dev="$val"
+          mode="${3:-no}"
+        fi
+        [[ "$mode" == "true" || "$mode" == "on" ]] && mode="yes"
+        [[ "$mode" == "false" || "$mode" == "off" ]] && mode="no"
+
+        if command -v nmcli >/dev/null 2>&1; then
+          nmcli device set "$dev" managed "$mode" 2>/dev/null || true
+        fi
+        run_privileged apply-ethernet-managed "$dev" "$mode"
+        ;;
+      pcie_ports_compat)
+        run_privileged apply-pcie-ports-compat "$val"
+        ;;
+      mem_sleep)
+        run_privileged apply-mem-sleep "$val"
+        ;;
+      lid_action)
+        run_privileged apply-lid-action "$val"
+        ;;
+      clamshell)
+        run_privileged apply-clamshell "$val"
+        ;;
+      wake_lid)
+        run_privileged apply-wake-lid "$val"
+        ;;
+      wake_ac)
+        run_privileged apply-wake-ac "$val"
+        ;;
+      audio_powersave)
+        run_privileged apply-audio-powersave "$val"
+        ;;
+      usb_autosuspend)
+        run_privileged apply-usb-autosuspend "$val"
+        ;;
+      hibernate_delay)
+        run_privileged apply-hibernate-delay "$val"
+        ;;
+      kbd_timeout)
+        save_user_setting "kbdTimeout" "$val"
+        ;;
+      touchbar_blank)
+        save_user_setting "touchbarBlank" "$val"
+        ;;
+      recommended_prompt_shown)
+        save_user_setting "recommendedPromptShown" "$val"
+        ;;
+      keybinding_select_all)
+        save_user_setting "keybindingSelectAll" "$val"
+        apply_keybindings
+        ;;
+      keybinding_delete)
+        save_user_setting "keybindingDelete" "$val"
+        apply_keybindings
+        ;;
+      keybinding_find)
+        save_user_setting "keybindingFind" "$val"
+        apply_keybindings
+        ;;
+      keybinding_fullscreen)
+        save_user_setting "keybindingFullscreen" "$val"
+        apply_keybindings
+        ;;
+      keybinding_undo)
+        save_user_setting "keybindingUndo" "$val"
+        apply_keybindings
+        ;;
+      keybinding_redo)
+        save_user_setting "keybindingRedo" "$val"
+        apply_keybindings
+        ;;
+      keybinding_save)
+        save_user_setting "keybindingSave" "$val"
+        apply_keybindings
+        ;;
+      keybinding_cut)
+        save_user_setting "keybindingCut" "$val"
+        apply_keybindings
+        ;;
+      trackpad_natural_scroll)
+        save_user_setting "trackpadNaturalScroll" "$val"
+        apply_trackpad
+        ;;
+      trackpad_tap_to_click)
+        save_user_setting "trackpadTapToClick" "$val"
+        apply_trackpad
+        ;;
+      trackpad_clickfinger_behavior)
+        save_user_setting "trackpadClickfingerBehavior" "$val"
+        apply_trackpad
+        ;;
+      trackpad_disable_while_typing)
+        save_user_setting "trackpadDisableWhileTyping" "$val"
+        apply_trackpad
+        ;;
+      trackpad_scroll_factor)
+        save_user_setting "trackpadScrollFactor" "$val"
+        apply_trackpad
+        ;;
+      trackpad_middle_button_emulation)
+        save_user_setting "trackpadMiddleButtonEmulation" "$val"
+        apply_trackpad
+        ;;
+      trackpad_tap_and_drag)
+        save_user_setting "trackpadTapAndDrag" "$val"
+        apply_trackpad
+        ;;
+      trackpad_drag_lock)
+        save_user_setting "trackpadDragLock" "$val"
+        apply_trackpad
+        ;;
+      trackpad_drag_3fg)
+        save_user_setting "trackpadDrag3fg" "$val"
+        apply_trackpad
+        ;;
+      trackpad_tap_button_map)
+        save_user_setting "trackpadTapButtonMap" "$val"
+        apply_trackpad
+        ;;
+      trackpad_flip_x)
+        save_user_setting "trackpadFlipX" "$val"
+        apply_trackpad
+        ;;
+      trackpad_flip_y)
+        save_user_setting "trackpadFlipY" "$val"
+        apply_trackpad
+        ;;
+      trackpad_sensitivity)
+        save_user_setting "trackpadSensitivity" "$val"
+        apply_trackpad
+        ;;
+      trackpad_accel_profile)
+        save_user_setting "trackpadAccelProfile" "$val"
+        apply_trackpad
+        ;;
+      trackpad_left_handed)
+        save_user_setting "trackpadLeftHanded" "$val"
+        apply_trackpad
+        ;;
+      trackpad_swipe_workspaces)
+        save_user_setting "trackpadSwipeWorkspaces" "$val"
+        apply_trackpad
+        ;;
+      *)
+        echo "Unknown setting key: $key" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+
+  apply-keybindings)
+    apply_keybindings
+    ;;
+
+  apply-recommended-keybindings)
+    apply_recommended_keybindings
+    ;;
+
+  reset-keybindings-to-defaults)
+    reset_keybindings_to_defaults
+    ;;
+
+  apply-recommended-trackpad)
+    apply_recommended_trackpad
+    ;;
+
+  reset-trackpad-to-defaults)
+    reset_trackpad_to_defaults
+    ;;
+
+  restart-trackpad)
+    restart_trackpad
+    ;;
+
+  set-keybindings)
+    shift; set_keybindings "$@" ;;
+
+  set-system-keybinding)
+    shift; set_system_keybinding "$@" ;;
+
+  reset-system-keybinding)
+    shift; reset_system_keybinding "$@" ;;
+
+  set-keybinding-with-system-override)
+    shift; set_keybinding_with_system_override "$@" ;;
+
+  check-keybinding)
+    shift; check_keybinding "${1:-}" "${2:-}" ;;
+
+  apply-epp)
+    shift; apply_epp "${1:-}" ;;
+  apply-aspm)
+    shift; apply_aspm "${1:-}" ;;
+  apply-wifi-powersave)
+    shift; apply_wifi_powersave "${1:-}" ;;
+  apply-ethernet-managed)
+    shift; apply_ethernet_managed "${1:-}" "${2:-}" ;;
+  apply-pcie-ports-compat)
+    shift; apply_pcie_ports_compat "${1:-}" "${2:-true}" ;;
+  apply-mem-sleep)
+    shift; apply_mem_sleep "${1:-}" "${2:-true}" ;;
+  apply-lid-action)
+    shift; apply_lid_action "${1:-}" ;;
+  apply-clamshell)
+    shift; apply_clamshell "${1:-}" ;;
+  apply-wake-lid)
+    shift; apply_wake_toggle "LID0" "${1:-}" ;;
+  apply-wake-ac)
+    shift; apply_wake_toggle "ADP1" "${1:-}" ;;
+  apply-audio-powersave)
+    shift; apply_audio_powersave "${1:-}" ;;
+  apply-usb-autosuspend)
+    shift; apply_usb_autosuspend "${1:-}" ;;
+  apply-hibernate-delay)
+    shift; apply_hibernate_delay "${1:-}" ;;
+  apply-t2-fixes)
+    shift
+    run_privileged do-apply-t2-fixes "$@"
+    ;;
+  do-apply-t2-fixes)
+    shift
+    local skip_pcie=false
+    local skip_eth=false
+    local skip_limine=false
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --skip-pcie|--no-pcie) skip_pcie=true; shift ;;
+        --skip-eth|--no-eth) skip_eth=true; shift ;;
+        --skip-limine) skip_limine=true; shift ;;
+        *) shift ;;
+      esac
+    done
+
+    if [[ "$skip_eth" != "true" ]] && command -v nmcli >/dev/null 2>&1; then
+      while IFS=: read -r dev type state rest; do
+        if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
+          local is_managed=true
+          if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
+            is_managed=false
+          fi
+          if [[ "$is_managed" == "true" ]]; then
+            apply_ethernet_managed "$dev" "no"
+          fi
+        fi
+      done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+    fi
+
+    if [[ "$skip_pcie" != "true" ]]; then
+      local pcie_curr
+      pcie_curr=$(get_pcie_ports_compat)
+      if [[ "$pcie_curr" != "true" ]]; then
+        local update_limine=true
+        if [[ "$skip_limine" == "true" ]]; then
+          update_limine=false
+        fi
+        apply_pcie_ports_compat "on" "$update_limine"
+      fi
+    fi
+    ;;
+  apply-recommended)
+    shift
+    if [[ "$(get_setting "kbdTimeout" "1m")" != "1m" ]]; then
+      save_user_setting "kbdTimeout" "1m"
+    fi
+    if [[ "$(get_setting "touchbarBlank" "true")" != "true" ]]; then
+      save_user_setting "touchbarBlank" "true"
+    fi
+    if [[ "$(get_setting "recommendedPromptShown" "false")" != "true" ]]; then
+      save_user_setting "recommendedPromptShown" "true"
+    fi
+    apply_recommended_keybindings
+    apply_recommended_trackpad
+    run_privileged do-apply-recommended "$@"
+    ;;
+  do-apply-recommended)
+    shift
+    local skip_limine=false
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --skip-limine) skip_limine=true; shift ;;
+        *) shift ;;
+      esac
+    done
+
+    local limine_needed=false
+
+    local cur_mem
+    cur_mem=$(get_mem_sleep)
+    if [[ "$cur_mem" != "deep" ]]; then
+      if [[ ! -r /sys/power/mem_sleep ]] || grep -q "deep" /sys/power/mem_sleep 2>/dev/null; then
+        apply_mem_sleep "deep" "false"
+        limine_needed=true
+      fi
+    fi
+
+    local cur_lid
+    cur_lid=$(get_lid_action)
+    if [[ "$cur_lid" != "suspend" && "$cur_lid" != "suspend-then-hibernate" ]]; then
+      apply_lid_action "suspend"
+    fi
+
+    local cur_clam
+    cur_clam=$(get_clamshell_mode)
+    if [[ "$cur_clam" != "true" ]]; then
+      apply_clamshell "true"
+    fi
+
+    local cur_lid_wake
+    cur_lid_wake=$(get_wake_state "LID0")
+    if [[ "$cur_lid_wake" != "true" ]]; then
+      apply_wake_toggle "LID0" "on"
+    fi
+
+    local cur_ac_wake
+    cur_ac_wake=$(get_wake_state "ADP1")
+    if [[ "$cur_ac_wake" != "false" ]]; then
+      apply_wake_toggle "ADP1" "off"
+    fi
+
+    local cur_hib
+    cur_hib=$(get_hibernate_delay)
+    if [[ "$cur_hib" != "off" && "$cur_hib" != "0" && "$cur_hib" != "never" ]]; then
+      apply_hibernate_delay "off"
+    fi
+
+    local cur_wifi
+    cur_wifi=$(get_wifi_powersave)
+    if [[ "$cur_wifi" != "false" ]]; then
+      apply_wifi_powersave "off"
+    fi
+
+    if command -v nmcli >/dev/null 2>&1; then
+      while IFS=: read -r dev type state rest; do
+        if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
+          local is_managed=true
+          if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
+            is_managed=false
+          fi
+          if [[ "$is_managed" == "true" ]]; then
+            apply_ethernet_managed "$dev" "no"
+          fi
+        fi
+      done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+    fi
+
+    local cur_audio
+    cur_audio=$(get_audio_powersave)
+    if [[ "$cur_audio" != "true" ]]; then
+      apply_audio_powersave "true"
+    fi
+
+    local cur_usb
+    cur_usb=$(get_usb_autosuspend)
+    if [[ "$cur_usb" != "true" ]]; then
+      apply_usb_autosuspend "true"
+    fi
+
+    if detect_t2; then
+      local cur_pcie
+      cur_pcie=$(get_pcie_ports_compat)
+      if [[ "$cur_pcie" != "true" ]]; then
+        apply_pcie_ports_compat "on" "false"
+        limine_needed=true
+      fi
+    fi
+
+    if [[ "$limine_needed" == "true" && "$skip_limine" != "true" ]]; then
+      run_limine_update
+    fi
+    ;;
+  apply-recommended-suspend)
+    shift
+    if [[ "$(get_setting "touchbarBlank" "true")" != "true" ]]; then
+      save_user_setting "touchbarBlank" "true"
+    fi
+    run_privileged do-apply-recommended-suspend "$@"
+    ;;
+  do-apply-recommended-suspend)
+    shift
+    local skip_limine=false
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --skip-limine) skip_limine=true; shift ;;
+        *) shift ;;
+      esac
+    done
+
+    local update_limine=true
+    if [[ "$skip_limine" == "true" ]]; then
+      update_limine=false
+    fi
+
+    local cur_mem
+    cur_mem=$(get_mem_sleep)
+    if [[ "$cur_mem" != "deep" ]]; then
+      if [[ ! -r /sys/power/mem_sleep ]] || grep -q "deep" /sys/power/mem_sleep 2>/dev/null; then
+        apply_mem_sleep "deep" "$update_limine"
+      fi
+    fi
+
+    local cur_lid
+    cur_lid=$(get_lid_action)
+    if [[ "$cur_lid" != "suspend" && "$cur_lid" != "suspend-then-hibernate" ]]; then
+      apply_lid_action "suspend"
+    fi
+
+    local cur_clam
+    cur_clam=$(get_clamshell_mode)
+    if [[ "$cur_clam" != "true" ]]; then
+      apply_clamshell "true"
+    fi
+
+    local cur_lid_wake
+    cur_lid_wake=$(get_wake_state "LID0")
+    if [[ "$cur_lid_wake" != "true" ]]; then
+      apply_wake_toggle "LID0" "on"
+    fi
+
+    local cur_ac_wake
+    cur_ac_wake=$(get_wake_state "ADP1")
+    if [[ "$cur_ac_wake" != "false" ]]; then
+      apply_wake_toggle "ADP1" "off"
+    fi
+
+    local cur_hib
+    cur_hib=$(get_hibernate_delay)
+    if [[ "$cur_hib" != "off" && "$cur_hib" != "0" && "$cur_hib" != "never" ]]; then
+      apply_hibernate_delay "off"
+    fi
+    ;;
+  reset-suspend-to-defaults)
+    save_user_setting "touchbarBlank" "false"
+    run_privileged do-reset-suspend-to-defaults
+    ;;
+  do-reset-suspend-to-defaults)
+    apply_mem_sleep "s2idle" "true"
+    apply_lid_action "suspend"
+    apply_clamshell "false"
+    apply_wake_toggle "LID0" "off"
+    apply_wake_toggle "ADP1" "on"
+    apply_hibernate_delay "off"
+    ;;
+  apply-recommended-battery)
+    shift
+    if [[ "$(get_setting "kbdTimeout" "1m")" != "1m" ]]; then
+      save_user_setting "kbdTimeout" "1m"
+    fi
+    run_privileged do-apply-recommended-battery "$@"
+    ;;
+  do-apply-recommended-battery)
+    shift
+    local skip_limine=false
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --skip-limine) skip_limine=true; shift ;;
+        *) shift ;;
+      esac
+    done
+
+    local update_limine=true
+    if [[ "$skip_limine" == "true" ]]; then
+      update_limine=false
+    fi
+
+    local cur_wifi
+    cur_wifi=$(get_wifi_powersave)
+    if [[ "$cur_wifi" != "false" ]]; then
+      apply_wifi_powersave "off"
+    fi
+
+    if command -v nmcli >/dev/null 2>&1; then
+      while IFS=: read -r dev type state rest; do
+        if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
+          local is_managed=true
+          if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
+            is_managed=false
+          fi
+          if [[ "$is_managed" == "true" ]]; then
+            apply_ethernet_managed "$dev" "no"
+          fi
+        fi
+      done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+    fi
+
+    local cur_audio
+    cur_audio=$(get_audio_powersave)
+    if [[ "$cur_audio" != "true" ]]; then
+      apply_audio_powersave "true"
+    fi
+
+    local cur_usb
+    cur_usb=$(get_usb_autosuspend)
+    if [[ "$cur_usb" != "true" ]]; then
+      apply_usb_autosuspend "true"
+    fi
+
+    if detect_t2; then
+      local cur_pcie
+      cur_pcie=$(get_pcie_ports_compat)
+      if [[ "$cur_pcie" != "true" ]]; then
+        apply_pcie_ports_compat "on" "$update_limine"
+      fi
+    fi
+    ;;
+  reset-battery-to-defaults)
+    save_user_setting "kbdTimeout" "off"
+    run_privileged do-reset-battery-to-defaults
+    ;;
+  do-reset-battery-to-defaults)
+    apply_wifi_powersave "on"
+    if command -v nmcli >/dev/null 2>&1; then
+      while IFS=: read -r dev type state rest; do
+        if [[ "$type" == "ethernet" ]]; then
+          apply_ethernet_managed "$dev" "yes"
+        fi
+      done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+    fi
+    apply_audio_powersave "false"
+    apply_usb_autosuspend "false"
+    apply_pcie_ports_compat "off"
+    ;;
+  install-system)
+    run_privileged do-install-system ;;
+  do-install-system)
+    install_system_helper ;;
+  uninstall-system)
+    run_privileged do-uninstall-system ;;
+  do-uninstall-system)
+    uninstall_system_helper ;;
+
+  plugins-list|plugins)
+    if (( EUID == 0 )); then
+      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
+      exit 1
+    fi
+    shift
+    helper_py=$(find_plugins_helper)
+    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
+    exec python3 "$helper_py" list "$@"
+    ;;
+  plugin-install)
+    if (( EUID == 0 )); then
+      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
+      exit 1
+    fi
+    shift
+    helper_py=$(find_plugins_helper)
+    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
+    exec python3 "$helper_py" install "$@"
+    ;;
+  plugin-update)
+    if (( EUID == 0 )); then
+      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
+      exit 1
+    fi
+    shift
+    helper_py=$(find_plugins_helper)
+    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
+    exec python3 "$helper_py" update "$@"
+    ;;
+  plugin-remove)
+    if (( EUID == 0 )); then
+      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
+      exit 1
+    fi
+    shift
+    helper_py=$(find_plugins_helper)
+    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
+    exec python3 "$helper_py" remove "$@"
+    ;;
+  plugin-toggle)
+    if (( EUID == 0 )); then
+      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
+      exit 1
+    fi
+    shift
+    helper_py=$(find_plugins_helper)
+    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
+    exec python3 "$helper_py" toggle "$@"
+    ;;
+
+  *)
+    echo "Usage: $0 {status|detect|set <key> <val>|apply-recommended|apply-t2-fixes|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle}" >&2
+    exit 1
+    ;;
+esac
+
