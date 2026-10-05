@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "bramvanoploo.omarchy-t2-linux",
   "name": "Omapple",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Bram van Oploo",
   "license": "MIT",
   "description": "Optimize Omarchy Linux on Apple MacBooks: battery life, suspend behavior, trackpad gestures, macOS keybindings, and Apple community plugins with Apple T2 support.",
