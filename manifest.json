@@ -5,7 +5,7 @@
   "version": "1.0.2",
   "author": "Bram van Oploo",
   "license": "MIT",
-  "description": "Optimize Omarchy Linux on Apple MacBooks: battery life, suspend behavior, trackpad gestures, macOS keybindings, and Apple community plugins with Apple T2 support.",
+  "description": "Let's keep the Apple hard ware alive. Simple or fine graned applying configuration options for aging Apple devices. Including T2 specific fixes.Let's keep the Apple hard ware alive.  Simple or fine-grained configuration options for aging Apple devices. Including T2 specific improvements.",
   "kinds": [
     "bar-widget"
   ],
