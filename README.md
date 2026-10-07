@@ -36,21 +36,21 @@ The panel organizes all hardware tunables and configurations into dedicated vert
 - **Task: Select All**: Change default Linux `CTRL + A` to `SUPER + A` (Command + A) for Mac muscle memory, or assign custom chords.
 - **Task: Forward Delete**: Assign `SUPER + BACKSPACE` (Command + Backspace) as forward delete for Mac keyboards that lack a dedicated Delete key.
 - **Task: Find**: Map `CTRL + F` search to `SUPER + F` (Command + F) or custom chords.
-- **Task: Toggle Fullscreen**: Reassign the active window fullscreen action from `SUPER + F` to `SUPER + CTRL + F` (standard macOS Command + Control + F) or custom chords.
 - **Task: Undo**: Map application undo from default `CTRL + Z` to `SUPER + Z` (Command + Z) or custom chords.
 - **Task: Redo**: Map application redo from default `CTRL + SHIFT + Z` to `SUPER + SHIFT + Z` (Command + Shift + Z) or custom chords.
 - **Task: Save**: Map document save from default `CTRL + S` to `SUPER + S` (Command + S) or custom chords.
 - **Task: Cut**: Map clipboard cut from default `CTRL + X` to `SUPER + X` (Command + X) or custom chords.
-- **Intra-Plugin Keybinding Conflict Resolution**: Only prompts when two plugin options actually conflict (e.g. assigning Find in Document to `CMD + F` while Toggle Fullscreen is also assigned to `CMD + F`). Directly offers the recommended alternative preset or recording a custom shortcut without broken in-between states.
+- **Task: Reload**: Map active tab or document reload from default `CTRL + R` to `SUPER + R` (Command + R) or custom chords.
+- **Task: Select Address**: Map address bar focus from default `CTRL + L` to `SUPER + L` (Command + L) or custom chords.
+- **Conflict Detection & Dynamic System Shortcut Relocation**: Automatically checks whether a chosen shortcut is already registered in Omarchy Hyprland or within the plugin. If a conflict occurs with an existing system binding (such as `SUPER + F` for Omarchy's native `Full screen`), it safely relocates the system shortcut to an alternative chord (e.g. `SUPER + ALT + F`) under `Changed System Shortcuts`.
 - **Interactive Key Combination Recorder**: Dedicated dialog that captures keystrokes in real time directly from the keyboard without manual typing.
-- **Conflict Detection & Safe Override**: Automatically checks whether a chosen shortcut is already registered in Omarchy Hyprland or within the plugin, alerting the user to existing assignments before applying changes with confirmation to override.
 - **Shortcut Reference**: Built-in guide for standard window manager and system shortcuts on Apple T2 keyboards.
 
 ### 4. Trackpad
 - **Force Touch Trackpad Hardware**: Automatic detection and control of the internal Apple Magic Trackpad 2 engine with driver reset capabilities.
 - **Pointer Speed (Sensitivity)**: Granular tracking speed adjustment from 0% to 100% (default: 50% / 0.0).
 - **Acceleration Profile**: Toggle between `Adaptive` (macOS default dynamic acceleration) and `Flat` (linear 1:1 speed).
-- **Two-Finger Scroll Speed**: Fine-tune scroll factor multiplier from 0.10x to 2.00x (default: 0.64x).
+- **Two-Finger Scroll Speed**: Fine-tune scroll factor multiplier from 0.10x to 2.00x (default: 1.00x).
 - **Natural Scrolling**: Invert scroll direction so document content tracks finger motion (macOS style).
 - **Tap to Click**: Tap surface with 1 finger for left-click or 2 fingers for right-click without clicking down physically.
 - **Two-Finger Secondary Click**: Click anywhere on the trackpad surface with two fingers for right-click instead of corner buttons.

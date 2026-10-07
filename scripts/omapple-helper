@@ -14,7 +14,7 @@ fi
 
 mkdir -p "$CONFIG_DIR"
 if [[ ! -f "$SETTINGS_FILE" ]]; then
-  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingFullscreen":"SUPER + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","keybindingReload":"CTRL + R","keybindingSelectAddress":"CTRL + L","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":0.64,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$SETTINGS_FILE"
+  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","keybindingReload":"CTRL + R","keybindingSelectAddress":"CTRL + L","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":1.0,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$SETTINGS_FILE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -476,9 +476,9 @@ dwt = as_bool(s_dwt, True) if s_dwt is not None else opt_bool(hypr_opt("input:to
 
 s_factor = settings.get("trackpadScrollFactor")
 try:
-    scroll_factor = float(s_factor) if s_factor is not None else opt_float(hypr_opt("input:touchpad:scroll_factor"), 0.64)
+    scroll_factor = float(s_factor) if s_factor is not None else opt_float(hypr_opt("input:touchpad:scroll_factor"), 1.0)
 except Exception:
-    scroll_factor = 0.64
+    scroll_factor = 1.0
 scroll_factor = max(0.1, min(2.0, round(scroll_factor, 2)))
 
 s_mid = settings.get("trackpadMiddleButtonEmulation")
@@ -581,14 +581,13 @@ print_status_json() {
   clamshell=$(get_clamshell_mode)
   hib_delay=$(get_hibernate_delay)
 
-  local kbd_timeout touchbar_blank inactive_eth pcie_compat rec_prompt_shown kb_select_all kb_delete kb_find kb_fullscreen kb_undo kb_redo
+  local kbd_timeout touchbar_blank inactive_eth pcie_compat rec_prompt_shown kb_select_all kb_delete kb_find kb_undo kb_redo
   kbd_timeout=$(get_setting "kbdTimeout" "1m")
   touchbar_blank=$(get_setting "touchbarBlank" "true")
   rec_prompt_shown=$(get_setting "recommendedPromptShown" "false")
   kb_select_all=$(get_setting "keybindingSelectAll" "CTRL + A")
   kb_delete=$(get_setting "keybindingDelete" "DELETE")
   kb_find=$(get_setting "keybindingFind" "CTRL + F")
-  kb_fullscreen=$(get_setting "keybindingFullscreen" "SUPER + F")
   kb_undo=$(get_setting "keybindingUndo" "CTRL + Z")
   kb_redo=$(get_setting "keybindingRedo" "CTRL + SHIFT + Z")
   kb_save=$(get_setting "keybindingSave" "CTRL + S")
@@ -666,6 +665,10 @@ for combo, desc, disp, arg in raw:
         "recommendedChord": get_rec(combo)
     }
 
+for act, item in overrides.items():
+    if not item.get("recommendedChord"):
+        item["recommendedChord"] = get_rec(item.get("defaultChord") or item.get("currentChord"))
+
 out_overrides = json.dumps(overrides)
 out_map = json.dumps(system_map)
 print(f"{out_overrides}\t{out_map}")
@@ -702,8 +705,14 @@ PYEOF
     chip_label="$vendor ($sys_arch)"
   fi
 
+  local plugin_ver="1.0.3"
+  if [[ -f "$PLUGIN_ROOT/manifest.json" ]]; then
+    plugin_ver=$(jq -r '.version // "1.0.3"' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || echo "1.0.3")
+  fi
+
   cat <<EOF
 {
+  "version": "$plugin_ver",
   "isT2": $is_t2,
   "isApple": $is_apple,
   "model": "$model",
@@ -734,7 +743,6 @@ PYEOF
   "keybindingSelectAll": "$kb_select_all",
   "keybindingDelete": "$kb_delete",
   "keybindingFind": "$kb_find",
-  "keybindingFullscreen": "$kb_fullscreen",
   "keybindingUndo": "$kb_undo",
   "keybindingRedo": "$kb_redo",
   "keybindingSave": "$kb_save",
@@ -830,7 +838,7 @@ save_user_setting() {
           ;;
       esac
       ;;
-    keybindingSelectAll|keybindingDelete|keybindingFind|keybindingFullscreen|keybindingUndo|keybindingRedo|keybindingSave|keybindingCut|keybindingReload|keybindingSelectAddress)
+    keybindingSelectAll|keybindingDelete|keybindingFind|keybindingUndo|keybindingRedo|keybindingSave|keybindingCut|keybindingReload|keybindingSelectAddress)
       if [[ ! "$val" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
         echo "Error: Invalid keybinding chord for $key: '$val'" >&2
         exit 1
@@ -1493,7 +1501,6 @@ def norm_c(c):
 select_all = norm_c(settings.get("keybindingSelectAll", "CTRL + A"))
 delete_key = norm_c(settings.get("keybindingDelete", "DELETE"))
 find_key = norm_c(settings.get("keybindingFind", "CTRL + F"))
-fullscreen = norm_c(settings.get("keybindingFullscreen", "SUPER + F"))
 undo_key = norm_c(settings.get("keybindingUndo", "CTRL + Z"))
 redo_key = norm_c(settings.get("keybindingRedo", "CTRL + SHIFT + Z"))
 save_key = norm_c(settings.get("keybindingSave", "CTRL + S"))
@@ -1506,7 +1513,6 @@ is_all_defaults = (
     (not select_all or select_all in ("CTRL + A", "NONE")) and
     (not delete_key or delete_key in ("DELETE", "NONE")) and
     (not find_key or find_key in ("CTRL + F", "NONE")) and
-    (not fullscreen or fullscreen in ("SUPER + F", "NONE")) and
     (not undo_key or undo_key in ("CTRL + Z", "NONE")) and
     (not redo_key or redo_key in ("CTRL + SHIFT + Z", "NONE")) and
     (not save_key or save_key in ("CTRL + S", "NONE")) and
@@ -1551,16 +1557,6 @@ if delete_key and delete_key not in ("NONE", "DELETE"):
 if find_key and find_key not in ("NONE", "CTRL + F"):
     unbinds.append(find_key)
     binds.append(f'o.bind("{find_key}", "Find", hl.dsp.send_shortcut({{ mods = "CTRL", key = "f" }}))')
-
-# Fullscreen
-if fullscreen and fullscreen not in ("NONE", "SUPER + F"):
-    if find_key != "SUPER + F":
-        unbinds.append("SUPER + F")
-    unbinds.append(fullscreen)
-    if "SUPER" in fullscreen and "CTRL" in fullscreen:
-        alt_chord = fullscreen.replace("SUPER + CTRL", "CTRL + SUPER") if "SUPER + CTRL" in fullscreen else fullscreen.replace("CTRL + SUPER", "SUPER + CTRL")
-        unbinds.append(alt_chord)
-    binds.append(f'o.bind("{fullscreen}", "Full screen", hl.dsp.window.fullscreen({{ mode = "fullscreen" }}))')
 
 # Undo
 if undo_key and undo_key not in ("NONE", "CTRL + Z"):
@@ -1659,9 +1655,6 @@ set_keybindings() {
       keybinding_find|keybindingFind)
         save_user_setting "keybindingFind" "$v"
         ;;
-      keybinding_fullscreen|keybindingFullscreen)
-        save_user_setting "keybindingFullscreen" "$v"
-        ;;
       keybinding_undo|keybindingUndo)
         save_user_setting "keybindingUndo" "$v"
         ;;
@@ -1707,7 +1700,6 @@ if os.path.exists(settings_file):
         "keybindingSelectAll": "SUPER + A",
         "keybindingDelete": "SUPER + BACKSPACE",
         "keybindingFind": "SUPER + F",
-        "keybindingFullscreen": "SUPER + CTRL + F",
         "keybindingUndo": "SUPER + Z",
         "keybindingRedo": "SUPER + SHIFT + Z",
         "keybindingSave": "SUPER + S",
@@ -1717,6 +1709,9 @@ if os.path.exists(settings_file):
     }
 
     changed = False
+    if "keybindingFullscreen" in settings:
+        del settings["keybindingFullscreen"]
+        changed = True
     for k, v in rec_keys.items():
         if settings.get(k) != v:
             settings[k] = v
@@ -1769,7 +1764,6 @@ if os.path.exists(settings_file):
             "SUPER + A": "select all",
             "SUPER + BACKSPACE": "forward delete",
             "SUPER + F": "find",
-            "SUPER + CTRL + F": "full screen",
             "SUPER + Z": "undo",
             "SUPER + SHIFT + Z": "redo",
             "SUPER + S": "save",
@@ -1805,7 +1799,7 @@ if os.path.exists(settings_file):
                 r_chord, r_name = norm_rec[c_norm]
                 desc_clean = desc.lower().replace(" ", "").replace("_", "").replace("-", "")
                 r_clean = r_name.replace(" ", "")
-                if desc_clean not in (r_clean, "delete", "fullscreen", "findindocument", "save", "cut", "universalcut", "reload", "selectaddress", "selectaddressbar", "focusaddressbar"):
+                if desc_clean not in (r_clean, "delete", "findindocument", "save", "cut", "universalcut", "reload", "selectaddress", "selectaddressbar", "focusaddressbar"):
                     rec_alt = get_rec(combo)
                     overrides[desc] = {
                         "action": desc,
@@ -1853,7 +1847,7 @@ if os.path.exists(settings_file):
 settings["keybindingSelectAll"] = "CTRL + A"
 settings["keybindingDelete"] = "DELETE"
 settings["keybindingFind"] = "CTRL + F"
-settings["keybindingFullscreen"] = "SUPER + F"
+settings.pop("keybindingFullscreen", None)
 settings["keybindingUndo"] = "CTRL + Z"
 settings["keybindingRedo"] = "CTRL + SHIFT + Z"
 settings["keybindingSave"] = "CTRL + S"
@@ -1876,6 +1870,7 @@ set_system_keybinding() {
   local def_chord="${3:-}"
   local disp="${4:-exec}"
   local arg="${5:-}"
+  local rec_chord="${6:-}"
   [[ -n "$action" && -n "$new_chord" ]] || return 1
 
   if [[ ! "$new_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
@@ -1887,7 +1882,7 @@ set_system_keybinding() {
     return 1
   fi
 
-  python3 - "$SETTINGS_FILE" "$action" "$new_chord" "$def_chord" "$disp" "$arg" <<'PYEOF'
+  python3 - "$SETTINGS_FILE" "$action" "$new_chord" "$def_chord" "$disp" "$arg" "$rec_chord" <<'PYEOF'
 import sys, json, os
 settings_file = sys.argv[1]
 action = sys.argv[2]
@@ -1895,6 +1890,20 @@ new_chord = sys.argv[3]
 def_chord = sys.argv[4] if len(sys.argv) > 4 else ""
 disp = sys.argv[5] if len(sys.argv) > 5 else "exec"
 arg = sys.argv[6] if len(sys.argv) > 6 else ""
+rec_chord = sys.argv[7] if len(sys.argv) > 7 else ""
+
+def get_rec(chord):
+    if not chord: return ""
+    tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
+    if not tokens: return ""
+    key = tokens[-1]
+    mods = set(tokens[:-1])
+    ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
+    if "ALT" not in mods:
+        m = list(mods | {"ALT"})
+        m.sort(key=lambda x: ord_map.get(x, 10))
+        return " + ".join(m) + f" + {key}"
+    return "SUPER + ALT + " + key
 
 settings = {}
 if os.path.exists(settings_file):
@@ -1911,11 +1920,16 @@ if def_chord and new_chord == def_chord:
     if action in overrides:
         del overrides[action]
 else:
+    rec = rec_chord.strip() if rec_chord else overrides.get(action, {}).get("recommendedChord", "").strip()
+    if not rec:
+        rec = get_rec(def_chord) if def_chord else get_rec(new_chord)
+    if not rec:
+        rec = new_chord
     overrides[action] = {
         "action": action,
         "defaultChord": def_chord,
         "currentChord": new_chord,
-        "recommendedChord": overrides.get(action, {}).get("recommendedChord", ""),
+        "recommendedChord": rec,
         "dispatcher": disp,
         "arg": arg
     }
@@ -1962,6 +1976,7 @@ set_keybinding_with_system_override() {
   local def_chord="${5:-}"
   local disp="${6:-exec}"
   local arg="${7:-}"
+  local rec_chord="${8:-}"
 
   if [[ ! "$task_chord" =~ ^[A-Za-z0-9_\ +-]+$ || ! "$new_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
     echo "Error: Invalid keybinding chord format" >&2
@@ -1972,7 +1987,7 @@ set_keybinding_with_system_override() {
     return 1
   fi
 
-  python3 - "$SETTINGS_FILE" "$task_key" "$task_chord" "$action" "$new_chord" "$def_chord" "$disp" "$arg" <<'PYEOF'
+  python3 - "$SETTINGS_FILE" "$task_key" "$task_chord" "$action" "$new_chord" "$def_chord" "$disp" "$arg" "$rec_chord" <<'PYEOF'
 import sys, json, os
 settings_file = sys.argv[1]
 task_key = sys.argv[2]
@@ -1982,6 +1997,20 @@ new_chord = sys.argv[5]
 def_chord = sys.argv[6] if len(sys.argv) > 6 else ""
 disp = sys.argv[7] if len(sys.argv) > 7 else "exec"
 arg = sys.argv[8] if len(sys.argv) > 8 else ""
+rec_chord = sys.argv[9] if len(sys.argv) > 9 else ""
+
+def get_rec(chord):
+    if not chord: return ""
+    tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
+    if not tokens: return ""
+    key = tokens[-1]
+    mods = set(tokens[:-1])
+    ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
+    if "ALT" not in mods:
+        m = list(mods | {"ALT"})
+        m.sort(key=lambda x: ord_map.get(x, 10))
+        return " + ".join(m) + f" + {key}"
+    return "SUPER + ALT + " + key
 
 settings = {}
 if os.path.exists(settings_file):
@@ -1998,8 +2027,6 @@ tk_map = {
     "keybindingdelete": "keybindingDelete",
     "keybinding_find": "keybindingFind",
     "keybindingfind": "keybindingFind",
-    "keybinding_fullscreen": "keybindingFullscreen",
-    "keybindingfullscreen": "keybindingFullscreen",
     "keybinding_undo": "keybindingUndo",
     "keybindingundo": "keybindingUndo",
     "keybinding_redo": "keybindingRedo",
@@ -2014,7 +2041,7 @@ tk_map = {
     "keybindingselectaddress": "keybindingSelectAddress"
 }
 norm_tk = tk_map.get(task_key.lower().replace("_", ""), task_key)
-if norm_tk in ("keybindingSelectAll", "keybindingDelete", "keybindingFind", "keybindingFullscreen", "keybindingUndo", "keybindingRedo", "keybindingSave", "keybindingCut", "keybindingReload", "keybindingSelectAddress"):
+if norm_tk in ("keybindingSelectAll", "keybindingDelete", "keybindingFind", "keybindingUndo", "keybindingRedo", "keybindingSave", "keybindingCut", "keybindingReload", "keybindingSelectAddress"):
     settings[norm_tk] = task_chord
 
 overrides = settings.get("systemKeybindingOverrides", {})
@@ -2026,11 +2053,16 @@ if action:
         if action in overrides:
             del overrides[action]
     else:
+        rec = rec_chord.strip() if rec_chord else overrides.get(action, {}).get("recommendedChord", "").strip()
+        if not rec:
+            rec = get_rec(def_chord) if def_chord else get_rec(new_chord)
+        if not rec:
+            rec = new_chord
         overrides[action] = {
             "action": action,
             "defaultChord": def_chord,
             "currentChord": new_chord,
-            "recommendedChord": overrides.get(action, {}).get("recommendedChord", ""),
+            "recommendedChord": rec,
             "dispatcher": disp,
             "arg": arg
         }
@@ -2086,8 +2118,6 @@ friendly_task_names = {
     "keybindingDelete": "Forward Delete",
     "keybinding_find": "Find",
     "keybindingFind": "Find",
-    "keybinding_fullscreen": "Full screen",
-    "keybindingFullscreen": "Full screen",
     "keybinding_undo": "Undo",
     "keybindingUndo": "Undo",
     "keybinding_redo": "Redo",
@@ -2109,7 +2139,6 @@ plugin_bindings = {
     "keybinding_select_all": "CTRL + A",
     "keybinding_delete": "DELETE",
     "keybinding_find": "CTRL + F",
-    "keybinding_fullscreen": "SUPER + F",
     "keybinding_undo": "CTRL + Z",
     "keybinding_redo": "CTRL + SHIFT + Z",
     "keybinding_save": "CTRL + S",
@@ -2128,23 +2157,6 @@ if settings_path and os.path.isfile(settings_path):
             sys_overrides = saved.get("systemKeybindingOverrides", {})
     except Exception:
         pass
-
-for s_key, s_chord in plugin_bindings.items():
-    s_norm_key = s_key.lower().replace("_", "")
-    c_norm_key = current_task_key.lower().replace("_", "")
-    if s_norm_key == c_norm_key:
-        continue
-    s_mods, s_k = normalize_chord(s_chord)
-    if s_k == t_key and s_mods == t_mods:
-        act = friendly_task_names.get(s_key, s_key)
-        print(json.dumps({
-            "chord": target_chord,
-            "inUse": True,
-            "conflict": True,
-            "action": act,
-            "source": "t2-linux"
-        }))
-        sys.exit(0)
 
 # 2. Check system keybindings records cache
 cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.records"))
@@ -2188,6 +2200,25 @@ def get_rec(chord):
     m = list(mods | {"ALT"})
     m.sort(key=lambda x: ord_map.get(x, 10))
     return " + ".join(m) + f" + {key}"
+
+# 1. Check plugin tasks
+for s_key, s_chord in plugin_bindings.items():
+    s_norm_key = s_key.lower().replace("_", "")
+    c_norm_key = current_task_key.lower().replace("_", "")
+    if s_norm_key == c_norm_key:
+        continue
+    s_mods, s_k = normalize_chord(s_chord)
+    if s_k == t_key and s_mods == t_mods:
+        act = friendly_task_names.get(s_key, s_key)
+        print(json.dumps({
+            "chord": target_chord,
+            "inUse": True,
+            "conflict": True,
+            "action": act,
+            "source": "t2-linux",
+            "recommendedChord": get_rec(target_chord)
+        }))
+        sys.exit(0)
 
 for k_part, desc, disp, arg in raw_records:
     k_mods, k_key = normalize_chord(k_part)
@@ -2267,9 +2298,9 @@ tap_to_click = as_bool(settings.get("trackpadTapToClick"), True)
 clickfinger = as_bool(settings.get("trackpadClickfingerBehavior"), True)
 dwt = as_bool(settings.get("trackpadDisableWhileTyping"), True)
 try:
-    scroll_factor = max(0.1, min(2.0, float(settings.get("trackpadScrollFactor", 0.64))))
+    scroll_factor = max(0.1, min(2.0, float(settings.get("trackpadScrollFactor", 1.0))))
 except Exception:
-    scroll_factor = 0.64
+    scroll_factor = 1.0
 middle_button = as_bool(settings.get("trackpadMiddleButtonEmulation"), False)
 tap_and_drag = as_bool(settings.get("trackpadTapAndDrag"), True)
 drag_lock = as_bool(settings.get("trackpadDragLock"), False)
@@ -2393,7 +2424,7 @@ recommended = {
     "trackpadTapToClick": True,
     "trackpadClickfingerBehavior": True,
     "trackpadDisableWhileTyping": True,
-    "trackpadScrollFactor": 0.64,
+    "trackpadScrollFactor": 1.0,
     "trackpadMiddleButtonEmulation": False,
     "trackpadTapAndDrag": True,
     "trackpadDragLock": False,
@@ -2624,10 +2655,6 @@ case "${1:-status}" in
         save_user_setting "keybindingFind" "$val"
         apply_keybindings
         ;;
-      keybinding_fullscreen)
-        save_user_setting "keybindingFullscreen" "$val"
-        apply_keybindings
-        ;;
       keybinding_undo)
         save_user_setting "keybindingUndo" "$val"
         apply_keybindings
@@ -2761,6 +2788,14 @@ case "${1:-status}" in
 
   check-keybinding)
     shift; check_keybinding "${1:-}" "${2:-}" ;;
+
+  start-key-record)
+    echo 'hl.dispatch(hl.dsp.submap("omapple_record"))' | hyprctl repl >/dev/null 2>&1 || true
+    ;;
+
+  stop-key-record)
+    echo 'hl.dispatch(hl.dsp.submap("reset"))' | hyprctl repl >/dev/null 2>&1 || true
+    ;;
 
   apply-epp)
     shift; apply_epp "${1:-}" ;;

@@ -2,6 +2,7 @@
 
 function emptyStatus() {
   return {
+    version: "1.0.3",
     isT2: true,
     isApple: true,
     model: "Detecting…",
@@ -40,7 +41,6 @@ function emptyStatus() {
     keybindingSelectAll: "CTRL + A",
     keybindingDelete: "DELETE",
     keybindingFind: "CTRL + F",
-    keybindingFullscreen: "SUPER + F",
     keybindingUndo: "CTRL + Z",
     keybindingRedo: "CTRL + SHIFT + Z",
     keybindingSave: "CTRL + S",
@@ -54,7 +54,7 @@ function emptyStatus() {
       tapToClick: true,
       clickfingerBehavior: true,
       disableWhileTyping: true,
-      scrollFactor: 0.64,
+      scrollFactor: 1.0,
       middleButtonEmulation: false,
       tapAndDrag: true,
       dragLock: false,
@@ -75,6 +75,7 @@ function parseStatus(raw) {
   try {
     var data = JSON.parse(raw);
     if (data && typeof data === "object") {
+      data.version = data.version || "1.0.3";
       data.isT2 = Boolean(data.isT2);
       data.helperInstalled = Boolean(data.helperInstalled);
 
@@ -128,7 +129,6 @@ function parseStatus(raw) {
       data.keybindingSelectAll = data.keybindingSelectAll ? String(data.keybindingSelectAll).trim() : "CTRL + A";
       data.keybindingDelete = data.keybindingDelete ? String(data.keybindingDelete).trim() : "DELETE";
       data.keybindingFind = data.keybindingFind ? String(data.keybindingFind).trim() : "CTRL + F";
-      data.keybindingFullscreen = data.keybindingFullscreen ? String(data.keybindingFullscreen).trim() : "SUPER + F";
       data.keybindingUndo = data.keybindingUndo ? String(data.keybindingUndo).trim() : "CTRL + Z";
       data.keybindingRedo = data.keybindingRedo ? String(data.keybindingRedo).trim() : "CTRL + SHIFT + Z";
       data.keybindingSave = data.keybindingSave ? String(data.keybindingSave).trim() : "CTRL + S";
@@ -168,7 +168,7 @@ function parseStatus(raw) {
         if (typeof data.trackpad.scrollFactor === "number" && !isNaN(data.trackpad.scrollFactor)) {
           data.trackpad.scrollFactor = Math.max(0.1, Math.min(2.0, Math.round(data.trackpad.scrollFactor * 100) / 100));
         } else {
-          data.trackpad.scrollFactor = 0.64;
+          data.trackpad.scrollFactor = 1.0;
         }
 
         if (typeof data.trackpad.sensitivity === "number" && !isNaN(data.trackpad.sensitivity)) {
@@ -300,8 +300,8 @@ function keyEventToChord(event) {
   var hasAlt = (modifiers & Qt.AltModifier) !== 0 || key === Qt.Key_Alt || key === Qt.Key_AltGr;
   var hasShift = (modifiers & Qt.ShiftModifier) !== 0 || key === Qt.Key_Shift;
 
-  if (hasCtrl) parts.push("CTRL");
   if (hasSuper) parts.push("SUPER");
+  if (hasCtrl) parts.push("CTRL");
   if (hasAlt) parts.push("ALT");
   if (hasShift) parts.push("SHIFT");
 
@@ -403,17 +403,22 @@ function normalizeChord(chord) {
       key = t;
     }
   }
-  mods.sort();
+  var ord = { "SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3 };
+  mods.sort(function(a, b) {
+    return (ord[a] !== undefined ? ord[a] : 10) - (ord[b] !== undefined ? ord[b] : 10);
+  });
   if (key) mods.push(key);
   return mods.join(" + ");
 }
 
 function getTaskFriendlyName(taskKey) {
+  if (taskKey && taskKey.indexOf("system_override:") === 0) {
+    taskKey = taskKey.substring("system_override:".length);
+  }
   var key = String(taskKey || "").toLowerCase().replace(/_/g, "");
   if (key === "keybindingselectall") return "Select All";
   if (key === "keybindingdelete") return "Forward Delete";
   if (key === "keybindingfind") return "Find in Document";
-  if (key === "keybindingfullscreen") return "Toggle Fullscreen";
   if (key === "keybindingundo") return "Undo";
   if (key === "keybindingredo") return "Redo";
   if (key === "keybindingsave") return "Save";
@@ -425,10 +430,10 @@ function getTaskFriendlyName(taskKey) {
 
 function getRecommendedAlternative(taskKey, conflictingChord) {
   var norm = normalizeChord(conflictingChord);
-  var key = String(taskKey || "").toLowerCase().replace(/_/g, "");
-  if (key === "keybindingfullscreen") {
-    return (norm === normalizeChord("SUPER + F")) ? "SUPER + CTRL + F" : "SUPER + F";
+  if (taskKey && taskKey.indexOf("system_override:") === 0) {
+    return getRecommendedSystemChord(conflictingChord);
   }
+  var key = String(taskKey || "").toLowerCase().replace(/_/g, "");
   if (key === "keybindingfind") {
     return (norm === normalizeChord("SUPER + F")) ? "CTRL + F" : "SUPER + F";
   }
@@ -456,7 +461,7 @@ function getRecommendedAlternative(taskKey, conflictingChord) {
   if (key === "keybindingselectaddress") {
     return (norm === normalizeChord("SUPER + L")) ? "CTRL + L" : "SUPER + L";
   }
-  return "";
+  return getRecommendedSystemChord(conflictingChord);
 }
 
 function findPluginConflict(targetTaskKey, newChord, currentStatus) {
@@ -464,7 +469,6 @@ function findPluginConflict(targetTaskKey, newChord, currentStatus) {
     { key: "keybinding_select_all", name: "Select All", chord: (currentStatus && currentStatus.keybindingSelectAll) ? currentStatus.keybindingSelectAll : "CTRL + A" },
     { key: "keybinding_delete", name: "Forward Delete", chord: (currentStatus && currentStatus.keybindingDelete) ? currentStatus.keybindingDelete : "DELETE" },
     { key: "keybinding_find", name: "Find in Document", chord: (currentStatus && currentStatus.keybindingFind) ? currentStatus.keybindingFind : "CTRL + F" },
-    { key: "keybinding_fullscreen", name: "Toggle Fullscreen", chord: (currentStatus && currentStatus.keybindingFullscreen) ? currentStatus.keybindingFullscreen : "SUPER + F" },
     { key: "keybinding_undo", name: "Undo", chord: (currentStatus && currentStatus.keybindingUndo) ? currentStatus.keybindingUndo : "CTRL + Z" },
     { key: "keybinding_redo", name: "Redo", chord: (currentStatus && currentStatus.keybindingRedo) ? currentStatus.keybindingRedo : "CTRL + SHIFT + Z" },
     { key: "keybinding_save", name: "Save", chord: (currentStatus && currentStatus.keybindingSave) ? currentStatus.keybindingSave : "CTRL + S" },
@@ -534,7 +538,7 @@ function findSystemConflict(targetTaskKey, newChord, currentStatus) {
         continue;
       }
       // If this is the plugin task's own counterpart, ignore
-      if (actNorm2 === friendly || (actNorm2 === "fullscreen" && friendly === "togglefullscreen") || (actNorm2 === "find" && friendly === "findindocument") || (actNorm2 === "selectall" && friendly === "selectall") || (actNorm2 === "undo" && friendly === "undo") || (actNorm2 === "redo" && friendly === "redo") || (actNorm2 === "save" && friendly === "save") || (actNorm2 === "delete" && friendly === "forwarddelete") || (actNorm2 === "universalcut" && friendly === "cut") || (actNorm2 === "reload" && friendly === "reload") || (actNorm2 === "selectaddress" && friendly === "selectaddress") || (actNorm2 === "focusaddressbar" && friendly === "selectaddress") || (actNorm2 === "selectaddressbar" && friendly === "selectaddress")) {
+      if (actNorm2 === friendly || (actNorm2 === "find" && friendly === "findindocument") || (actNorm2 === "selectall" && friendly === "selectall") || (actNorm2 === "undo" && friendly === "undo") || (actNorm2 === "redo" && friendly === "redo") || (actNorm2 === "save" && friendly === "save") || (actNorm2 === "delete" && friendly === "forwarddelete") || (actNorm2 === "universalcut" && friendly === "cut") || (actNorm2 === "reload" && friendly === "reload") || (actNorm2 === "selectaddress" && friendly === "selectaddress") || (actNorm2 === "focusaddressbar" && friendly === "selectaddress") || (actNorm2 === "selectaddressbar" && friendly === "selectaddress")) {
         continue;
       }
       return {
@@ -552,6 +556,23 @@ function findSystemConflict(targetTaskKey, newChord, currentStatus) {
   return null;
 }
 
+function getRecommendedSystemChord(chord) {
+  if (!chord) return "";
+  var norm = normalizeChord(chord);
+  if (!norm) return "";
+  var parts = norm.split("+").map(function(p) { return p.trim(); });
+  var key = parts[parts.length - 1];
+  var mods = parts.slice(0, parts.length - 1);
+  if (mods.indexOf("ALT") === -1) {
+    var ord = { "SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3 };
+    var newMods = mods.concat(["ALT"]).sort(function(a, b) {
+      return (ord[a] !== undefined ? ord[a] : 10) - (ord[b] !== undefined ? ord[b] : 10);
+    });
+    return newMods.join(" + ") + " + " + key;
+  }
+  return "SUPER + ALT + " + key;
+}
+
 function getSystemOverridesList(status) {
   if (!status || !status.systemKeybindingOverrides) return [];
   var res = [];
@@ -559,7 +580,11 @@ function getSystemOverridesList(status) {
   for (var i = 0; i < keys.length; i++) {
     var item = status.systemKeybindingOverrides[keys[i]];
     if (item && item.action) {
-      res.push(item);
+      var copy = Object.assign({}, item);
+      if (!copy.recommendedChord || !copy.recommendedChord.trim()) {
+        copy.recommendedChord = getRecommendedSystemChord(copy.defaultChord || copy.currentChord);
+      }
+      res.push(copy);
     }
   }
   return res;
@@ -574,7 +599,6 @@ function getActiveConflicts(status) {
     { key: "keybinding_select_all", prop: "keybindingSelectAll", name: "Select All", chord: (status && status.keybindingSelectAll) ? status.keybindingSelectAll : "CTRL + A" },
     { key: "keybinding_delete", prop: "keybindingDelete", name: "Forward Delete", chord: (status && status.keybindingDelete) ? status.keybindingDelete : "DELETE" },
     { key: "keybinding_find", prop: "keybindingFind", name: "Find in Document", chord: (status && status.keybindingFind) ? status.keybindingFind : "CTRL + F" },
-    { key: "keybinding_fullscreen", prop: "keybindingFullscreen", name: "Toggle Fullscreen", chord: (status && status.keybindingFullscreen) ? status.keybindingFullscreen : "SUPER + F" },
     { key: "keybinding_undo", prop: "keybindingUndo", name: "Undo", chord: (status && status.keybindingUndo) ? status.keybindingUndo : "CTRL + Z" },
     { key: "keybinding_redo", prop: "keybindingRedo", name: "Redo", chord: (status && status.keybindingRedo) ? status.keybindingRedo : "CTRL + SHIFT + Z" },
     { key: "keybinding_save", prop: "keybindingSave", name: "Save", chord: (status && status.keybindingSave) ? status.keybindingSave : "CTRL + S" },
@@ -614,7 +638,7 @@ function getActiveConflicts(status) {
   // 2. Check plugin tasks vs system keybindings
   var overrides = status.systemKeybindingOverrides || {};
   var systemMap = status.systemKeybindings || {};
-  var pluginActionNorms = ["togglefullscreen", "fullscreen", "findindocument", "find", "selectall", "undo", "redo", "save", "forwarddelete", "delete", "cut", "universalcut", "reload", "selectaddress", "focusaddressbar", "selectaddressbar"];
+  var pluginActionNorms = ["findindocument", "find", "selectall", "undo", "redo", "save", "forwarddelete", "delete", "cut", "universalcut", "reload", "selectaddress", "focusaddressbar", "selectaddressbar"];
 
   for (var k = 0; k < tasks.length; k++) {
     var task = tasks[k];
@@ -646,7 +670,7 @@ function getActiveConflicts(status) {
             taskKey2: sAct,
             chord2: sChord,
             defaultChord: sItem.defaultChord || sChord,
-            recommendedChord: sItem.recommendedChord || ("SUPER + ALT + " + normT.split("+").pop().trim()),
+            recommendedChord: (sItem.recommendedChord && sItem.recommendedChord.trim()) ? sItem.recommendedChord : getRecommendedSystemChord(sItem.defaultChord || sChord || normT),
             dispatcher: sItem.dispatcher || "exec",
             arg: sItem.arg || ""
           });
@@ -676,7 +700,7 @@ function getActiveConflicts(status) {
             taskKey2: oAct,
             chord2: oItem.currentChord,
             defaultChord: oItem.defaultChord || oItem.currentChord,
-            recommendedChord: oItem.recommendedChord || ("SUPER + ALT + " + normT.split("+").pop().trim()),
+            recommendedChord: (oItem.recommendedChord && oItem.recommendedChord.trim()) ? oItem.recommendedChord : getRecommendedSystemChord(oItem.defaultChord || oItem.currentChord || normT),
             dispatcher: oItem.dispatcher || "exec",
             arg: oItem.arg || ""
           });
@@ -693,7 +717,6 @@ function areAllMacShortcutsApplied(status) {
   var sel = normalizeChord(status.keybindingSelectAll);
   var del = normalizeChord(status.keybindingDelete);
   var find = normalizeChord(status.keybindingFind);
-  var full = normalizeChord(status.keybindingFullscreen);
   var undo = normalizeChord(status.keybindingUndo);
   var redo = normalizeChord(status.keybindingRedo);
   var save = normalizeChord(status.keybindingSave);
@@ -705,7 +728,6 @@ function areAllMacShortcutsApplied(status) {
     sel === normalizeChord("SUPER + A") &&
     del === normalizeChord("SUPER + BACKSPACE") &&
     find === normalizeChord("SUPER + F") &&
-    full === normalizeChord("SUPER + CTRL + F") &&
     undo === normalizeChord("SUPER + Z") &&
     redo === normalizeChord("SUPER + SHIFT + Z") &&
     save === normalizeChord("SUPER + S") &&
@@ -800,7 +822,7 @@ function areAllTrackpadRecommendedApplied(status) {
     tp.tapToClick &&
     tp.clickfingerBehavior &&
     tp.disableWhileTyping &&
-    Math.abs(Number(tp.scrollFactor) - 0.64) < 0.01 &&
+    Math.abs(Number(tp.scrollFactor) - 1.0) < 0.01 &&
     tp.drag3fg === 0 &&
     tp.tapAndDrag &&
     !tp.dragLock &&
@@ -830,7 +852,7 @@ function sensitivityFromSpeedPercent(percent) {
 
 function scrollPercentFromFactor(factor) {
   var f = Number(factor);
-  if (!isFinite(f)) f = 0.64;
+  if (!isFinite(f)) f = 1.0;
   var clamped = Math.max(0.1, Math.min(2.0, f));
   return Math.round(((clamped - 0.1) / 1.9) * 100);
 }

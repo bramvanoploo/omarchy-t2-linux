@@ -28,9 +28,9 @@ BarWidget {
   property string keyRecorderRecordedChord: ""
   property string keyRecorderDisplayChord: ""
   property bool keyRecorderComplete: false
-  property bool keyRecorderChecking: false
   property bool keyRecorderConflict: false
   property string keyRecorderConflictAction: ""
+  property string keyRecorderRecommendedChord: ""
   property bool conflictDialogOpen: false
   property string conflictTargetTaskKey: ""
   property string conflictTargetTaskName: ""
@@ -52,6 +52,7 @@ BarWidget {
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string helper: pluginDir + "/scripts/omapple-helper"
+  readonly property string pluginVersion: (root.status && root.status.version) ? String(root.status.version) : "1.0.3"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color accent: Color.accent
@@ -268,7 +269,7 @@ BarWidget {
       s.keybindingSelectAll = "SUPER + A"
       s.keybindingDelete = "SUPER + BACKSPACE"
       s.keybindingFind = "SUPER + F"
-      s.keybindingFullscreen = "SUPER + CTRL + F"
+      delete s.keybindingFullscreen
       s.keybindingUndo = "SUPER + Z"
       s.keybindingRedo = "SUPER + SHIFT + Z"
       s.keybindingSave = "SUPER + S"
@@ -281,7 +282,7 @@ BarWidget {
       tp.tapToClick = true
       tp.clickfingerBehavior = true
       tp.disableWhileTyping = true
-      tp.scrollFactor = 0.64
+      tp.scrollFactor = 1.0
       tp.middleButtonEmulation = false
       tp.tapAndDrag = true
       tp.dragLock = false
@@ -296,8 +297,8 @@ BarWidget {
       s.trackpad = tp
 
       var ov = Object.assign({}, s.systemKeybindingOverrides || {})
-      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S", "SUPER + X", "SUPER + R", "SUPER + L"]
-      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save", "cut", "universalcut", "reload", "selectaddress", "focusaddressbar", "selectaddressbar"]
+      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S", "SUPER + X", "SUPER + R", "SUPER + L"]
+      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "undo", "redo", "save", "cut", "universalcut", "reload", "selectaddress", "focusaddressbar", "selectaddressbar"]
       if (s.systemKeybindings) {
         for (var rc = 0; rc < recChords.length; rc++) {
           var rNorm = Model.normalizeChord(recChords[rc])
@@ -498,7 +499,7 @@ BarWidget {
       tp.tapToClick = true
       tp.clickfingerBehavior = true
       tp.disableWhileTyping = true
-      tp.scrollFactor = 0.64
+      tp.scrollFactor = 1.0
       tp.middleButtonEmulation = false
       tp.tapAndDrag = true
       tp.dragLock = false
@@ -627,8 +628,6 @@ BarWidget {
         s.keybindingDelete = val
       } else if (key === "keybinding_find") {
         s.keybindingFind = val
-      } else if (key === "keybinding_fullscreen") {
-        s.keybindingFullscreen = val
       } else if (key === "keybinding_undo") {
         s.keybindingUndo = val
       } else if (key === "keybinding_redo") {
@@ -656,7 +655,7 @@ BarWidget {
           if (tp.drag3fg > 0) tp.swipeWorkspaces = false
         }
         else if (tpKey === "tap_button_map") tp.tapButtonMap = String(val)
-        else if (tpKey === "scroll_factor") tp.scrollFactor = Number(val) || 0.64
+        else if (tpKey === "scroll_factor") tp.scrollFactor = Number(val) || 1.0
         else if (tpKey === "sensitivity") tp.sensitivity = Number(val) || 0.0
         else if (tpKey === "accel_profile") tp.accelProfile = String(val)
         else if (tpKey === "left_handed") tp.leftHanded = (val === "true" || val === "1" || val === "on")
@@ -770,9 +769,9 @@ BarWidget {
     root.keyRecorderRecordedChord = ""
     root.keyRecorderDisplayChord = ""
     root.keyRecorderComplete = false
-    root.keyRecorderChecking = false
     root.keyRecorderConflict = false
     root.keyRecorderConflictAction = ""
+    root.keyRecorderRecommendedChord = ""
     root.keyRecorderOpen = true
     Qt.callLater(function() {
       if (typeof keyRecorderCatcher !== "undefined" && keyRecorderCatcher) {
@@ -785,6 +784,56 @@ BarWidget {
     if (!root.keyRecorderComplete || !root.keyRecorderRecordedChord) return
     var chord = root.keyRecorderRecordedChord
     var task = root.keyRecorderTaskKey
+
+    // 0. Check for conflicts before committing!
+    var conflictFound = false
+    var conflictAction = ""
+    var conflictRec = ""
+
+    // Check if conflicting with pending target task chord
+    if (root.pendingConflictTargetChord && Model.normalizeChord(chord) === Model.normalizeChord(root.pendingConflictTargetChord)) {
+      conflictFound = true
+      conflictAction = Model.getTaskFriendlyName(root.pendingConflictTargetTaskKey)
+      if (root.pendingConflictSystemDefaultChord) {
+        conflictRec = Model.getRecommendedSystemChord(root.pendingConflictSystemDefaultChord)
+      } else {
+        conflictRec = Model.getRecommendedSystemChord(chord)
+      }
+    }
+
+    if (!conflictFound) {
+      var pConflict = Model.findPluginConflict(task, chord, root.status)
+      if (pConflict) {
+        conflictFound = true
+        conflictAction = pConflict.name
+        conflictRec = Model.getRecommendedAlternative(task, chord)
+      }
+    }
+
+    if (!conflictFound) {
+      var sConflict = Model.findSystemConflict(task, chord, root.status)
+      if (sConflict) {
+        conflictFound = true
+        conflictAction = sConflict.action
+        conflictRec = sConflict.recommendedChord || Model.getRecommendedAlternative(task, chord)
+      }
+    }
+
+    if (conflictFound) {
+      if (task.indexOf("system_override:") === 0) {
+        var actName = task.substring("system_override:".length)
+        if (root.status && root.status.systemKeybindingOverrides && root.status.systemKeybindingOverrides[actName] && root.status.systemKeybindingOverrides[actName].recommendedChord) {
+          conflictRec = root.status.systemKeybindingOverrides[actName].recommendedChord
+        }
+      }
+      if (!conflictRec || !conflictRec.trim()) {
+        conflictRec = Model.getRecommendedSystemChord(chord)
+      }
+      root.keyRecorderConflict = true
+      root.keyRecorderConflictAction = conflictAction
+      root.keyRecorderRecommendedChord = conflictRec
+      return
+    }
 
     // 1. If recording for a system override
     if (task.indexOf("system_override:") === 0) {
@@ -811,7 +860,6 @@ BarWidget {
           if (tKey === "keybinding_select_all") s.keybindingSelectAll = tChord
           else if (tKey === "keybinding_delete") s.keybindingDelete = tChord
           else if (tKey === "keybinding_find") s.keybindingFind = tChord
-          else if (tKey === "keybinding_fullscreen") s.keybindingFullscreen = tChord
           else if (tKey === "keybinding_undo") s.keybindingUndo = tChord
           else if (tKey === "keybinding_redo") s.keybindingRedo = tChord
           else if (tKey === "keybinding_save") s.keybindingSave = tChord
@@ -820,11 +868,12 @@ BarWidget {
           else if (tKey === "keybinding_select_address") s.keybindingSelectAddress = tChord
 
           var ov = Object.assign({}, s.systemKeybindingOverrides || {})
+          var recChord = (ov[action] && ov[action].recommendedChord) ? ov[action].recommendedChord : Model.getRecommendedSystemChord(sDef || chord);
           ov[action] = {
             action: action,
             defaultChord: sDef,
             currentChord: chord,
-            recommendedChord: ov[action] ? ov[action].recommendedChord : chord,
+            recommendedChord: recChord,
             dispatcher: sDisp,
             arg: sArg
           }
@@ -835,7 +884,7 @@ BarWidget {
         root.lastNotice = "Assigned " + Model.getTaskFriendlyName(tKey) + " (" + Model.formatChordForDisplay(tChord) + ") and set " + action + " to " + Model.formatChordForDisplay(chord)
         noticeTimer.restart()
 
-        actionProc.command = ["bash", helper, "set-keybinding-with-system-override", tKey, tChord, action, chord, sDef, sDisp, sArg]
+        actionProc.command = ["bash", helper, "set-keybinding-with-system-override", tKey, tChord, action, chord, sDef, sDisp, sArg, recChord]
         actionProc.running = true
         return
       }
@@ -861,7 +910,6 @@ BarWidget {
         if (task === "keybinding_select_all") s2.keybindingSelectAll = chord
         else if (task === "keybinding_delete") s2.keybindingDelete = chord
         else if (task === "keybinding_find") s2.keybindingFind = chord
-        else if (task === "keybinding_fullscreen") s2.keybindingFullscreen = chord
         else if (task === "keybinding_undo") s2.keybindingUndo = chord
         else if (task === "keybinding_redo") s2.keybindingRedo = chord
         else if (task === "keybinding_save") s2.keybindingSave = chord
@@ -872,7 +920,6 @@ BarWidget {
         if (tKey2 === "keybinding_select_all") s2.keybindingSelectAll = tChord2
         else if (tKey2 === "keybinding_delete") s2.keybindingDelete = tChord2
         else if (tKey2 === "keybinding_find") s2.keybindingFind = tChord2
-        else if (tKey2 === "keybinding_fullscreen") s2.keybindingFullscreen = tChord2
         else if (tKey2 === "keybinding_undo") s2.keybindingUndo = tChord2
         else if (tKey2 === "keybinding_redo") s2.keybindingRedo = tChord2
         else if (tKey2 === "keybinding_save") s2.keybindingSave = tChord2
@@ -892,10 +939,124 @@ BarWidget {
     }
 
     // 3. Normal plugin key recording
-    root.keyRecorderChecking = true
+    root.keyRecorderOpen = false
+    root.setOption(task, chord)
+    root.lastNotice = "Keybinding for " + Model.getTaskFriendlyName(task) + " set to " + Model.formatChordForDisplay(chord)
+    noticeTimer.restart()
+  }
+
+  function applyKeyRecorderRecommended() {
+    var recChord = root.keyRecorderRecommendedChord
+    var task = root.keyRecorderTaskKey
     root.keyRecorderConflict = false
-    checkKeyProc.command = ["bash", root.helper, "check-keybinding", root.keyRecorderRecordedChord, root.keyRecorderTaskKey]
-    checkKeyProc.running = true
+    root.keyRecorderOpen = false
+
+    if (!recChord || !task) return
+
+    // 1. If recording for a system override
+    if (task.indexOf("system_override:") === 0) {
+      var action = task.substring("system_override:".length)
+
+      // If resolving a conflict from a pending target task
+      if (root.pendingConflictTargetTaskKey && root.pendingConflictTargetChord) {
+        var tKey = root.pendingConflictTargetTaskKey
+        var tChord = root.pendingConflictTargetChord
+        var sDef = root.pendingConflictSystemDefaultChord || root.keyRecorderRecordedChord
+        var sDisp = root.pendingConflictSystemDispatcher || "exec"
+        var sArg = root.pendingConflictSystemArg || ""
+
+        root.pendingConflictTargetTaskKey = ""
+        root.pendingConflictTargetChord = ""
+        root.pendingConflictSystemAction = ""
+
+        if (actionProc.running) actionProc.running = false
+        root.applying = true
+
+        if (root.status) {
+          var s = Object.assign({}, root.status)
+          if (tKey === "keybinding_select_all") s.keybindingSelectAll = tChord
+          else if (tKey === "keybinding_delete") s.keybindingDelete = tChord
+          else if (tKey === "keybinding_find") s.keybindingFind = tChord
+          else if (tKey === "keybinding_undo") s.keybindingUndo = tChord
+          else if (tKey === "keybinding_redo") s.keybindingRedo = tChord
+          else if (tKey === "keybinding_save") s.keybindingSave = tChord
+          else if (tKey === "keybinding_cut") s.keybindingCut = tChord
+          else if (tKey === "keybinding_reload") s.keybindingReload = tChord
+          else if (tKey === "keybinding_select_address") s.keybindingSelectAddress = tChord
+
+          var ov = Object.assign({}, s.systemKeybindingOverrides || {})
+          ov[action] = {
+            action: action,
+            defaultChord: sDef,
+            currentChord: recChord,
+            recommendedChord: recChord,
+            dispatcher: sDisp,
+            arg: sArg
+          }
+          s.systemKeybindingOverrides = ov
+          root.status = s
+        }
+
+        root.lastNotice = "Assigned " + Model.getTaskFriendlyName(tKey) + " (" + Model.formatChordForDisplay(tChord) + ") and set " + action + " to " + Model.formatChordForDisplay(recChord)
+        noticeTimer.restart()
+
+        actionProc.command = ["bash", helper, "set-keybinding-with-system-override", tKey, tChord, action, recChord, sDef, sDisp, sArg, recChord]
+        actionProc.running = true
+        return
+      }
+
+      // Standalone system override recording from changed system shortcuts list
+      root.setSystemKeybinding(action, recChord, root.pendingConflictSystemDefaultChord, root.pendingConflictSystemDispatcher, root.pendingConflictSystemArg, recChord)
+      return
+    }
+
+    // 2. If resolving a pending intra-plugin conflict
+    if (root.pendingConflictTargetTaskKey && root.pendingConflictTargetChord) {
+      var tKey2 = root.pendingConflictTargetTaskKey
+      var tChord2 = root.pendingConflictTargetChord
+      root.pendingConflictTargetTaskKey = ""
+      root.pendingConflictTargetChord = ""
+
+      if (actionProc.running) actionProc.running = false
+      root.applying = true
+
+      if (root.status) {
+        var s2 = Object.assign({}, root.status)
+        if (task === "keybinding_select_all") s2.keybindingSelectAll = recChord
+        else if (task === "keybinding_delete") s2.keybindingDelete = recChord
+        else if (task === "keybinding_find") s2.keybindingFind = recChord
+        else if (task === "keybinding_undo") s2.keybindingUndo = recChord
+        else if (task === "keybinding_redo") s2.keybindingRedo = recChord
+        else if (task === "keybinding_save") s2.keybindingSave = recChord
+        else if (task === "keybinding_cut") s2.keybindingCut = recChord
+        else if (task === "keybinding_reload") s2.keybindingReload = recChord
+        else if (task === "keybinding_select_address") s2.keybindingSelectAddress = recChord
+
+        if (tKey2 === "keybinding_select_all") s2.keybindingSelectAll = tChord2
+        else if (tKey2 === "keybinding_delete") s2.keybindingDelete = tChord2
+        else if (tKey2 === "keybinding_find") s2.keybindingFind = tChord2
+        else if (tKey2 === "keybinding_undo") s2.keybindingUndo = tChord2
+        else if (tKey2 === "keybinding_redo") s2.keybindingRedo = tChord2
+        else if (tKey2 === "keybinding_save") s2.keybindingSave = tChord2
+        else if (tKey2 === "keybinding_cut") s2.keybindingCut = tChord2
+        else if (tKey2 === "keybinding_reload") s2.keybindingReload = tChord2
+        else if (tKey2 === "keybinding_select_address") s2.keybindingSelectAddress = tChord2
+
+        root.status = s2
+      }
+
+      root.lastNotice = "Updated " + Model.getTaskFriendlyName(tKey2) + " (" + Model.formatChordForDisplay(tChord2) + ") and " + Model.getTaskFriendlyName(task) + " (" + Model.formatChordForDisplay(recChord) + ")"
+      noticeTimer.restart()
+
+      actionProc.command = ["bash", helper, "set-keybindings", task, recChord, tKey2, tChord2]
+      actionProc.running = true
+      return
+    }
+
+    // 3. Normal plugin key recording
+    root.setOption(task, recChord)
+    root.lastNotice = "Keybinding for " + Model.getTaskFriendlyName(task) + " set to " + Model.formatChordForDisplay(recChord)
+    noticeTimer.restart()
   }
 
   function checkAndApplyKeybinding(taskKey, newChord) {
@@ -973,7 +1134,6 @@ BarWidget {
         if (targetKey === "keybinding_select_all") s.keybindingSelectAll = targetChord
         else if (targetKey === "keybinding_delete") s.keybindingDelete = targetChord
         else if (targetKey === "keybinding_find") s.keybindingFind = targetChord
-        else if (targetKey === "keybinding_fullscreen") s.keybindingFullscreen = targetChord
         else if (targetKey === "keybinding_undo") s.keybindingUndo = targetChord
         else if (targetKey === "keybinding_redo") s.keybindingRedo = targetChord
         else if (targetKey === "keybinding_save") s.keybindingSave = targetChord
@@ -981,12 +1141,13 @@ BarWidget {
         else if (targetKey === "keybinding_reload") s.keybindingReload = targetChord
         else if (targetKey === "keybinding_select_address") s.keybindingSelectAddress = targetChord
 
+        var recChord = (displacedChord && displacedChord.trim()) ? displacedChord : Model.getRecommendedSystemChord(sysDef || targetChord);
         var overrides = Object.assign({}, s.systemKeybindingOverrides || {})
         overrides[sysAction] = {
           action: sysAction,
           defaultChord: sysDef,
           currentChord: displacedChord,
-          recommendedChord: displacedChord,
+          recommendedChord: recChord,
           dispatcher: sysDisp,
           arg: sysArg
         }
@@ -997,7 +1158,7 @@ BarWidget {
       root.lastNotice = "Assigned " + root.conflictTargetTaskName + " (" + Model.formatChordForDisplay(targetChord) + ") and moved " + sysAction + " to " + Model.formatChordForDisplay(displacedChord)
       noticeTimer.restart()
 
-      actionProc.command = ["bash", helper, "set-keybinding-with-system-override", targetKey, targetChord, sysAction, displacedChord, sysDef, sysDisp, sysArg]
+      actionProc.command = ["bash", helper, "set-keybinding-with-system-override", targetKey, targetChord, sysAction, displacedChord, sysDef, sysDisp, sysArg, recChord]
       actionProc.running = true
     } else {
       if (root.status) {
@@ -1005,7 +1166,6 @@ BarWidget {
         if (displacedKey === "keybinding_select_all") s2.keybindingSelectAll = displacedChord
         else if (displacedKey === "keybinding_delete") s2.keybindingDelete = displacedChord
         else if (displacedKey === "keybinding_find") s2.keybindingFind = displacedChord
-        else if (displacedKey === "keybinding_fullscreen") s2.keybindingFullscreen = displacedChord
         else if (displacedKey === "keybinding_undo") s2.keybindingUndo = displacedChord
         else if (displacedKey === "keybinding_redo") s2.keybindingRedo = displacedChord
         else if (displacedKey === "keybinding_save") s2.keybindingSave = displacedChord
@@ -1016,7 +1176,6 @@ BarWidget {
         if (targetKey === "keybinding_select_all") s2.keybindingSelectAll = targetChord
         else if (targetKey === "keybinding_delete") s2.keybindingDelete = targetChord
         else if (targetKey === "keybinding_find") s2.keybindingFind = targetChord
-        else if (targetKey === "keybinding_fullscreen") s2.keybindingFullscreen = targetChord
         else if (targetKey === "keybinding_undo") s2.keybindingUndo = targetChord
         else if (targetKey === "keybinding_redo") s2.keybindingRedo = targetChord
         else if (targetKey === "keybinding_save") s2.keybindingSave = targetChord
@@ -1088,19 +1247,22 @@ BarWidget {
     actionProc.running = true
   }
 
-  function setSystemKeybinding(action, newChord, defaultChord, dispatcher, arg) {
+  function setSystemKeybinding(action, newChord, defaultChord, dispatcher, arg, recommendedChord) {
     if (!action || !newChord) return
     if (actionProc.running) actionProc.running = false
     root.applying = true
+
+    var effectiveDef = defaultChord || ((root.status && root.status.systemKeybindingOverrides && root.status.systemKeybindingOverrides[action]) ? root.status.systemKeybindingOverrides[action].defaultChord : newChord)
+    var recChord = (recommendedChord && recommendedChord.trim()) ? recommendedChord : (((root.status && root.status.systemKeybindingOverrides && root.status.systemKeybindingOverrides[action] && root.status.systemKeybindingOverrides[action].recommendedChord) ? root.status.systemKeybindingOverrides[action].recommendedChord : "") || Model.getRecommendedSystemChord(effectiveDef || newChord))
 
     if (root.status) {
       var s = Object.assign({}, root.status)
       var ov = Object.assign({}, s.systemKeybindingOverrides || {})
       ov[action] = {
         action: action,
-        defaultChord: defaultChord || (ov[action] ? ov[action].defaultChord : newChord),
+        defaultChord: effectiveDef,
         currentChord: newChord,
-        recommendedChord: ov[action] ? ov[action].recommendedChord : newChord,
+        recommendedChord: recChord,
         dispatcher: dispatcher || "exec",
         arg: arg || ""
       }
@@ -1111,7 +1273,7 @@ BarWidget {
     root.lastNotice = "Updated " + action + " to " + Model.formatChordForDisplay(newChord)
     noticeTimer.restart()
 
-    actionProc.command = ["bash", helper, "set-system-keybinding", action, newChord, defaultChord || "", dispatcher || "exec", arg || ""]
+    actionProc.command = ["bash", helper, "set-system-keybinding", action, newChord, effectiveDef || "", dispatcher || "exec", arg || "", recChord || ""]
     actionProc.running = true
   }
 
@@ -1166,7 +1328,7 @@ BarWidget {
       s.keybindingSelectAll = "SUPER + A"
       s.keybindingDelete = "SUPER + BACKSPACE"
       s.keybindingFind = "SUPER + F"
-      s.keybindingFullscreen = "SUPER + CTRL + F"
+      delete s.keybindingFullscreen
       s.keybindingUndo = "SUPER + Z"
       s.keybindingRedo = "SUPER + SHIFT + Z"
       s.keybindingSave = "SUPER + S"
@@ -1175,8 +1337,8 @@ BarWidget {
       s.keybindingSelectAddress = "SUPER + L"
 
       var ov = Object.assign({}, s.systemKeybindingOverrides || {})
-      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + CTRL + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S", "SUPER + X", "SUPER + R", "SUPER + L"]
-      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "fullscreen", "togglefullscreen", "undo", "redo", "save", "cut", "universalcut", "reload", "selectaddress", "focusaddressbar", "selectaddressbar"]
+      var recChords = ["SUPER + A", "SUPER + BACKSPACE", "SUPER + F", "SUPER + Z", "SUPER + SHIFT + Z", "SUPER + S", "SUPER + X", "SUPER + R", "SUPER + L"]
+      var recTaskNames = ["selectall", "forwarddelete", "delete", "find", "findindocument", "undo", "redo", "save", "cut", "universalcut", "reload", "selectaddress", "focusaddressbar", "selectaddressbar"]
       if (s.systemKeybindings) {
         for (var rc = 0; rc < recChords.length; rc++) {
           var rNorm = Model.normalizeChord(recChords[rc])
@@ -1223,7 +1385,7 @@ BarWidget {
       s.keybindingSelectAll = "CTRL + A"
       s.keybindingDelete = "DELETE"
       s.keybindingFind = "CTRL + F"
-      s.keybindingFullscreen = "SUPER + F"
+      delete s.keybindingFullscreen
       s.keybindingUndo = "CTRL + Z"
       s.keybindingRedo = "CTRL + SHIFT + Z"
       s.keybindingSave = "CTRL + S"
@@ -1241,13 +1403,6 @@ BarWidget {
     actionProc.running = true
   }
 
-  function applyKeyOverride() {
-    var task = root.keyRecorderTaskKey
-    var chord = root.keyRecorderRecordedChord
-    root.keyRecorderOpen = false
-    root.keyRecorderConflict = false
-    root.checkAndApplyKeybinding(task, chord)
-  }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -1274,6 +1429,8 @@ BarWidget {
     } else {
       root.openedViaBarButton = false
       root.t2FixesConfirmOpen = false
+      root.keyRecorderOpen = false
+      root.conflictDialogOpen = false
       root.lastNotice = ""
       noticeTimer.stop()
     }
@@ -1282,6 +1439,12 @@ BarWidget {
   Component.onCompleted: {
     refresh()
     fetchPlugins()
+  }
+
+  Component.onDestruction: {
+    if (root.keyRecorderOpen) {
+      root.exitRecordSubmap()
+    }
   }
 
   // Process to fetch JSON status
@@ -1404,34 +1567,29 @@ BarWidget {
     }
   }
 
-  // Process to check if a keybinding chord is in use
+
+  // Process to manage key recording compositor submap
   Process {
-    id: checkKeyProc
-    stdout: StdioCollector {
-      id: checkKeyStdout
-      waitForEnd: true
-      onStreamFinished: {
-        root.keyRecorderChecking = false
-        var out = checkKeyStdout.text ? checkKeyStdout.text.trim() : ""
-        var task = root.keyRecorderTaskKey
-        var chord = root.keyRecorderRecordedChord
-        if (!out) {
-          root.keyRecorderOpen = false
-          root.checkAndApplyKeybinding(task, chord)
-          return
-        }
-        try {
-          var res = JSON.parse(out)
-          root.keyRecorderOpen = false
-          root.checkAndApplyKeybinding(task, chord)
-        } catch(e) {
-          root.keyRecorderOpen = false
-          root.checkAndApplyKeybinding(task, chord)
-        }
-      }
-    }
-    onExited: function(code) {
-      root.keyRecorderChecking = false
+    id: submapProc
+  }
+
+  function enterRecordSubmap() {
+    if (submapProc.running) submapProc.running = false
+    submapProc.command = ["bash", helper, "start-key-record"]
+    submapProc.running = true
+  }
+
+  function exitRecordSubmap() {
+    if (submapProc.running) submapProc.running = false
+    submapProc.command = ["bash", helper, "stop-key-record"]
+    submapProc.running = true
+  }
+
+  onKeyRecorderOpenChanged: {
+    if (root.keyRecorderOpen) {
+      root.enterRecordSubmap()
+    } else {
+      root.exitRecordSubmap()
     }
   }
 
@@ -1613,12 +1771,26 @@ BarWidget {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: Style.space(2)
 
-                    Text {
-                      text: "Omapple"
-                      color: root.foreground
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.title
-                      font.bold: true
+                    Row {
+                      spacing: Style.space(6)
+
+                      Text {
+                        id: omappleTitle
+                        text: "Omapple"
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.title
+                        font.bold: true
+                      }
+
+                      Text {
+                        text: "v" + (root.pluginVersion.startsWith("v") ? root.pluginVersion.slice(1) : root.pluginVersion)
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                        anchors.baseline: omappleTitle.baseline
+                      }
                     }
 
                     Text {
@@ -3451,7 +3623,7 @@ BarWidget {
                             foreground: root.foreground
                           }
 
-                          // 4. Task: Toggle Fullscreen
+                          // 4. Task: Undo
                           Column {
                             width: parent.width
                             spacing: Style.space(8)
@@ -3462,105 +3634,6 @@ BarWidget {
 
                               Text {
                                 id: t4Icon
-                                text: "󰊓"
-                                color: root.accent
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.bodySmall
-                                anchors.verticalCenter: parent.verticalCenter
-                              }
-
-                              Text {
-                                id: t4Title
-                                text: "Toggle Fullscreen"
-                                color: root.foreground
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.bodySmall
-                                font.bold: true
-                                anchors.verticalCenter: parent.verticalCenter
-                              }
-
-                              Text {
-                                text: "Toggle active window fullscreen mode"
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                                anchors.verticalCenter: parent.verticalCenter
-                                elide: Text.ElideRight
-                                width: Math.max(0, parent.width - t4Icon.implicitWidth - t4Title.implicitWidth - Style.space(16))
-                              }
-                            }
-
-                            Row {
-                              id: t4Btns
-                              width: parent.width
-                              spacing: Style.space(6)
-                              readonly property real btnWidth: (width - spacing * 2) / 3
-
-                              readonly property string cur: root.status && root.status.keybindingFullscreen ? root.status.keybindingFullscreen : "SUPER + F"
-                              readonly property bool isMac: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + CTRL + F")
-                              readonly property bool isLinux: Model.normalizeChord(cur) === Model.normalizeChord("SUPER + F")
-                              readonly property bool isCustom: !isMac && !isLinux
-
-                              Button {
-                                width: parent.btnWidth
-                                iconText: ""
-                                text: "CMD + CTRL + F"
-                                tooltipText: "Mac preset (Cmd + Ctrl + F)"
-                                bordered: true
-                                fontSize: Style.font.caption
-                                iconSize: Style.font.bodySmall
-                                height: Style.space(30)
-                                selected: parent.isMac
-                                accent: root.accent
-                                onClicked: root.checkAndApplyKeybinding("keybinding_fullscreen", "SUPER + CTRL + F")
-                              }
-
-                              Button {
-                                width: parent.btnWidth
-                                iconText: ""
-                                text: "CMD + F"
-                                tooltipText: "Standard Omarchy preset (Cmd + F)"
-                                bordered: true
-                                fontSize: Style.font.caption
-                                iconSize: Style.font.bodySmall
-                                height: Style.space(30)
-                                selected: parent.isLinux
-                                accent: root.accent
-                                onClicked: root.checkAndApplyKeybinding("keybinding_fullscreen", "SUPER + F")
-                              }
-
-                              Button {
-                                width: parent.btnWidth
-                                iconText: "󰌌"
-                                text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
-                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
-                                bordered: true
-                                fontSize: Style.font.caption
-                                iconSize: Style.font.bodySmall
-                                height: Style.space(30)
-                                selected: parent.isCustom
-                                accent: root.accent
-                                onClicked: root.openKeyRecorder("keybinding_fullscreen", "Toggle Fullscreen")
-                              }
-                            }
-                          }
-
-                          PanelSeparator {
-                            width: parent.width
-                            foreground: root.foreground
-                          }
-
-                          // 5. Task: Undo
-                          Column {
-                            width: parent.width
-                            spacing: Style.space(8)
-
-                            Row {
-                              width: parent.width
-                              spacing: Style.space(8)
-
-                              Text {
-                                id: t5Icon
                                 text: "󰕌"
                                 color: root.accent
                                 font.family: root.fontFamily
@@ -3569,7 +3642,7 @@ BarWidget {
                               }
 
                               Text {
-                                id: t5Title
+                                id: t4Title
                                 text: "Undo"
                                 color: root.foreground
                                 font.family: root.fontFamily
@@ -3585,12 +3658,12 @@ BarWidget {
                                 font.pixelSize: Style.font.caption
                                 anchors.verticalCenter: parent.verticalCenter
                                 elide: Text.ElideRight
-                                width: Math.max(0, parent.width - t5Icon.implicitWidth - t5Title.implicitWidth - Style.space(16))
+                                width: Math.max(0, parent.width - t4Icon.implicitWidth - t4Title.implicitWidth - Style.space(16))
                               }
                             }
 
                             Row {
-                              id: t5Btns
+                              id: t4Btns
                               width: parent.width
                               spacing: Style.space(6)
                               readonly property real btnWidth: (width - spacing * 2) / 3
@@ -3649,7 +3722,7 @@ BarWidget {
                             foreground: root.foreground
                           }
 
-                          // 6. Task: Redo
+                          // 5. Task: Redo
                           Column {
                             width: parent.width
                             spacing: Style.space(8)
@@ -3659,7 +3732,7 @@ BarWidget {
                               spacing: Style.space(8)
 
                               Text {
-                                id: t6Icon
+                                id: t5Icon
                                 text: "󰑎"
                                 color: root.accent
                                 font.family: root.fontFamily
@@ -3668,7 +3741,7 @@ BarWidget {
                               }
 
                               Text {
-                                id: t6Title
+                                id: t5Title
                                 text: "Redo"
                                 color: root.foreground
                                 font.family: root.fontFamily
@@ -3684,12 +3757,12 @@ BarWidget {
                                 font.pixelSize: Style.font.caption
                                 anchors.verticalCenter: parent.verticalCenter
                                 elide: Text.ElideRight
-                                width: Math.max(0, parent.width - t6Icon.implicitWidth - t6Title.implicitWidth - Style.space(16))
+                                width: Math.max(0, parent.width - t5Icon.implicitWidth - t5Title.implicitWidth - Style.space(16))
                               }
                             }
 
                             Row {
-                              id: t6Btns
+                              id: t5Btns
                               width: parent.width
                               spacing: Style.space(6)
                               readonly property real btnWidth: (width - spacing * 2) / 3
@@ -3748,7 +3821,7 @@ BarWidget {
                             foreground: root.foreground
                           }
 
-                          // 7. Task: Save
+                          // 6. Task: Save
                           Column {
                             width: parent.width
                             spacing: Style.space(8)
@@ -3758,7 +3831,7 @@ BarWidget {
                               spacing: Style.space(8)
 
                               Text {
-                                id: t7Icon
+                                id: t6Icon
                                 text: "󰆓"
                                 color: root.accent
                                 font.family: root.fontFamily
@@ -3767,7 +3840,7 @@ BarWidget {
                               }
 
                               Text {
-                                id: t7Title
+                                id: t6Title
                                 text: "Save"
                                 color: root.foreground
                                 font.family: root.fontFamily
@@ -3783,12 +3856,12 @@ BarWidget {
                                 font.pixelSize: Style.font.caption
                                 anchors.verticalCenter: parent.verticalCenter
                                 elide: Text.ElideRight
-                                width: Math.max(0, parent.width - t7Icon.implicitWidth - t7Title.implicitWidth - Style.space(16))
+                                width: Math.max(0, parent.width - t6Icon.implicitWidth - t6Title.implicitWidth - Style.space(16))
                               }
                             }
 
                             Row {
-                              id: t7Btns
+                              id: t6Btns
                               width: parent.width
                               spacing: Style.space(6)
                               readonly property real btnWidth: (width - spacing * 2) / 3
@@ -3847,7 +3920,7 @@ BarWidget {
                             foreground: root.foreground
                           }
 
-                          // 8. Task: Cut
+                          // 7. Task: Cut
                           Column {
                             width: parent.width
                             spacing: Style.space(8)
@@ -3857,7 +3930,7 @@ BarWidget {
                               spacing: Style.space(8)
 
                               Text {
-                                id: t8Icon
+                                id: t7Icon
                                 text: "󰆐"
                                 color: root.accent
                                 font.family: root.fontFamily
@@ -3866,7 +3939,7 @@ BarWidget {
                               }
 
                               Text {
-                                id: t8Title
+                                id: t7Title
                                 text: "Cut"
                                 color: root.foreground
                                 font.family: root.fontFamily
@@ -3882,12 +3955,12 @@ BarWidget {
                                 font.pixelSize: Style.font.caption
                                 anchors.verticalCenter: parent.verticalCenter
                                 elide: Text.ElideRight
-                                width: Math.max(0, parent.width - t8Icon.implicitWidth - t8Title.implicitWidth - Style.space(16))
+                                width: Math.max(0, parent.width - t7Icon.implicitWidth - t7Title.implicitWidth - Style.space(16))
                               }
                             }
 
                             Row {
-                              id: t8Btns
+                              id: t7Btns
                               width: parent.width
                               spacing: Style.space(6)
                               readonly property real btnWidth: (width - spacing * 2) / 3
@@ -3946,7 +4019,7 @@ BarWidget {
                             foreground: root.foreground
                           }
 
-                          // 9. Task: Reload
+                          // 8. Task: Reload
                           Column {
                             width: parent.width
                             spacing: Style.space(8)
@@ -3956,7 +4029,7 @@ BarWidget {
                               spacing: Style.space(8)
 
                               Text {
-                                id: t9Icon
+                                id: t8Icon
                                 text: "󰑐"
                                 color: root.accent
                                 font.family: root.fontFamily
@@ -3965,7 +4038,7 @@ BarWidget {
                               }
 
                               Text {
-                                id: t9Title
+                                id: t8Title
                                 text: "Reload"
                                 color: root.foreground
                                 font.family: root.fontFamily
@@ -3981,12 +4054,12 @@ BarWidget {
                                 font.pixelSize: Style.font.caption
                                 anchors.verticalCenter: parent.verticalCenter
                                 elide: Text.ElideRight
-                                width: Math.max(0, parent.width - t9Icon.implicitWidth - t9Title.implicitWidth - Style.space(16))
+                                width: Math.max(0, parent.width - t8Icon.implicitWidth - t8Title.implicitWidth - Style.space(16))
                               }
                             }
 
                             Row {
-                              id: t9Btns
+                              id: t8Btns
                               width: parent.width
                               spacing: Style.space(6)
                               readonly property real btnWidth: (width - spacing * 2) / 3
@@ -4045,7 +4118,7 @@ BarWidget {
                             foreground: root.foreground
                           }
 
-                          // 10. Task: Select Address
+                          // 9. Task: Select Address
                           Column {
                             width: parent.width
                             spacing: Style.space(8)
@@ -4055,7 +4128,7 @@ BarWidget {
                               spacing: Style.space(8)
 
                               Text {
-                                id: t10Icon
+                                id: t9Icon
                                 text: "󰌷"
                                 color: root.accent
                                 font.family: root.fontFamily
@@ -4064,7 +4137,7 @@ BarWidget {
                               }
 
                               Text {
-                                id: t10Title
+                                id: t9Title
                                 text: "Select Address"
                                 color: root.foreground
                                 font.family: root.fontFamily
@@ -4080,12 +4153,12 @@ BarWidget {
                                 font.pixelSize: Style.font.caption
                                 anchors.verticalCenter: parent.verticalCenter
                                 elide: Text.ElideRight
-                                width: Math.max(0, parent.width - t10Icon.implicitWidth - t10Title.implicitWidth - Style.space(16))
+                                width: Math.max(0, parent.width - t9Icon.implicitWidth - t9Title.implicitWidth - Style.space(16))
                               }
                             }
 
                             Row {
-                              id: t10Btns
+                              id: t9Btns
                               width: parent.width
                               spacing: Style.space(6)
                               readonly property real btnWidth: (width - spacing * 2) / 3
@@ -4221,9 +4294,9 @@ BarWidget {
 
                                   readonly property string cur: modelData.currentChord || ""
                                   readonly property string defChord: modelData.defaultChord || ""
-                                  readonly property string recChord: modelData.recommendedChord || ""
-                                  readonly property bool isDefault: cur === defChord
-                                  readonly property bool isRec: cur === recChord && !isDefault
+                                  readonly property string recChord: (modelData.recommendedChord && modelData.recommendedChord.trim()) ? modelData.recommendedChord : Model.getRecommendedSystemChord(defChord || cur)
+                                  readonly property bool isDefault: Model.normalizeChord(cur) === Model.normalizeChord(defChord)
+                                  readonly property bool isRec: Model.normalizeChord(cur) === Model.normalizeChord(recChord) && !isDefault
                                   readonly property bool isCustom: !isDefault && !isRec
 
                                   Button {
@@ -4251,7 +4324,7 @@ BarWidget {
                                     height: Style.space(30)
                                     selected: parent.isRec
                                     accent: root.accent
-                                    onClicked: root.setSystemKeybinding(modelData.action, parent.recChord, parent.defChord, modelData.dispatcher, modelData.arg)
+                                    onClicked: root.setSystemKeybinding(modelData.action, parent.recChord, parent.defChord, modelData.dispatcher, modelData.arg, parent.recChord)
                                   }
 
                                   Button {
@@ -4395,7 +4468,7 @@ BarWidget {
                                     accent: root.accent
                                     onClicked: {
                                       if (modelData.source === "system") {
-                                        root.setSystemKeybinding(modelData.action2, modelData.recommendedChord, modelData.defaultChord, modelData.dispatcher, modelData.arg)
+                                        root.setSystemKeybinding(modelData.action2, modelData.recommendedChord, modelData.defaultChord, modelData.dispatcher, modelData.arg, modelData.recommendedChord)
                                       } else {
                                         root.checkAndApplyKeybinding(modelData.taskKey2, modelData.recommendedChord)
                                       }
@@ -4735,7 +4808,7 @@ BarWidget {
                                 text: {
                                   var f = (root.status && root.status.trackpad && root.status.trackpad.scrollFactor !== undefined)
                                     ? root.status.trackpad.scrollFactor
-                                    : 0.64
+                                    : 1.0
                                   return Number(f).toFixed(2) + "x"
                                 }
                                 color: root.accent
@@ -4754,7 +4827,7 @@ BarWidget {
                               maximum: 200
                               step: 5
                               integer: true
-                              value: Math.round(((root.status && root.status.trackpad ? root.status.trackpad.scrollFactor : 0.64)) * 100)
+                              value: Math.round(((root.status && root.status.trackpad ? root.status.trackpad.scrollFactor : 1.0)) * 100)
                               onMoved: function(v) {
                                 root.setOption("trackpad_scroll_factor", (v / 100.0).toFixed(2))
                               }
@@ -6663,12 +6736,6 @@ BarWidget {
                             applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingFind) === Model.normalizeChord("SUPER + F"))
                           },
                           {
-                            title: "Toggle Fullscreen",
-                            val: "CMD + CTRL + F",
-                            desc: "Standard macOS fullscreen shortcut (Command + Control + F).",
-                            applied: Boolean(root.status && Model.normalizeChord(root.status.keybindingFullscreen) === Model.normalizeChord("SUPER + CTRL + F"))
-                          },
-                          {
                             title: "Undo",
                             val: "CMD + Z",
                             desc: "Standard Mac shortcut for undoing actions in applications.",
@@ -6807,9 +6874,9 @@ BarWidget {
                           },
                           {
                             title: "Two-Finger Scroll Speed",
-                            val: "0.64x multiplier",
+                            val: "1.00x multiplier",
                             desc: "Smooth two-finger scrolling multiplier calibrated for Apple Force Touch trackpads.",
-                            applied: Boolean(root.status && root.status.trackpad && Math.abs(Number(root.status.trackpad.scrollFactor) - 0.64) < 0.01)
+                            applied: Boolean(root.status && root.status.trackpad && Math.abs(Number(root.status.trackpad.scrollFactor) - 1.0) < 0.01)
                           },
                           {
                             title: "Acceleration Profile",
@@ -6900,13 +6967,15 @@ BarWidget {
                         }
                       }
                     }
+                  }
                 }
               }
             }
           }
+        }
 
-          // Reboot confirmation dialog after limine-update
-          Rectangle {
+        // Reboot confirmation dialog after limine-update
+        Rectangle {
             id: rebootDialogOverlay
             visible: root.rebootConfirmOpen && !root.limineUpdating && !limineProc.running
             anchors.fill: parent
@@ -7114,10 +7183,21 @@ BarWidget {
                   }
                 }
 
-                // Action Buttons (NO "Keep Current" button!)
+                // Action Buttons
                 Row {
                   anchors.right: parent.right
                   spacing: Style.space(10)
+
+                  Button {
+                    text: "Cancel"
+                    bordered: true
+                    fontSize: Style.font.caption
+                    iconSize: Style.font.bodySmall
+                    height: Style.space(32)
+                    onClicked: {
+                      root.cancelConflictDialog()
+                    }
+                  }
 
                   Button {
                     iconText: "󰌌"
@@ -7175,20 +7255,19 @@ BarWidget {
 
               Keys.onPressed: function(event) {
                 if (!root.keyRecorderOpen) return
-                if (root.keyRecorderChecking) {
-                  event.accepted = true
-                  return
-                }
 
-                // If currently showing conflict dialog: Enter overrides, Escape cancels back to recording
+                // If currently showing conflict dialog: Enter applies recommended, Escape resets back to recording
                 if (root.keyRecorderConflict) {
                   if (event.key === Qt.Key_Escape) {
                     root.keyRecorderConflict = false
+                    root.keyRecorderRecordedChord = ""
+                    root.keyRecorderDisplayChord = ""
+                    root.keyRecorderComplete = false
                     event.accepted = true
                     return
                   }
                   if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                    root.applyKeyOverride()
+                    root.applyKeyRecorderRecommended()
                     event.accepted = true
                     return
                   }
@@ -7227,7 +7306,7 @@ BarWidget {
               }
 
               Keys.onReleased: function(event) {
-                if (!root.keyRecorderOpen || root.keyRecorderConflict || root.keyRecorderChecking) return
+                if (!root.keyRecorderOpen || root.keyRecorderConflict) return
                 if (!root.keyRecorderComplete) {
                   if (!event.modifiers || event.modifiers === 0) {
                     root.keyRecorderDisplayChord = ""
@@ -7239,7 +7318,7 @@ BarWidget {
 
             BorderSurface {
               anchors.centerIn: parent
-              width: Math.min(parent.width - Style.space(32), Style.space(520))
+              width: Math.min(parent.width - Style.space(32), Style.space(560))
               height: keyRecorderCol.implicitHeight + Style.space(48)
               color: Color.popups.background
               borderSpec: Border.flat(root.keyRecorderConflict ? (Color.warning || root.accent) : root.accent, Style.normalBorderWidth)
@@ -7334,7 +7413,7 @@ BarWidget {
                           font.pixelSize: Style.font.caption
                         }
                         Text {
-                          text: Model.formatChordForDisplay(root.keyRecorderConflictAction)
+                          text: Model.getTaskFriendlyName(root.keyRecorderConflictAction)
                           color: root.foreground
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.bodySmall
@@ -7344,7 +7423,7 @@ BarWidget {
 
                       Text {
                         width: parent.width
-                        text: "Assigning this key combination will override the existing shortcut. Do you want to apply this key combination anyway?"
+                        text: "This key combination is already in use. You can choose a different shortcut, or apply the recommended alternative."
                         color: root.foreground
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
@@ -7355,14 +7434,29 @@ BarWidget {
 
                   // Action Buttons for Conflict Resolution
                   Row {
-                    width: parent.width
-                    spacing: Style.space(12)
-                    readonly property real btnW: (width - spacing) / 2
+                    anchors.right: parent.right
+                    spacing: Style.space(10)
 
                     Button {
-                      width: parent.btnW
-                      text: "Choose Another"
+                      text: "Cancel"
                       bordered: true
+                      fontSize: Style.font.caption
+                      iconSize: Style.font.bodySmall
+                      height: Style.space(32)
+                      onClicked: {
+                        root.keyRecorderConflict = false
+                        root.keyRecorderOpen = false
+                      }
+                    }
+
+                    Button {
+                      iconText: "󰌌"
+                      text: "Choose Different"
+                      tooltipText: "Record a different key combination"
+                      bordered: true
+                      fontSize: Style.font.caption
+                      iconSize: Style.font.bodySmall
+                      height: Style.space(32)
                       onClicked: {
                         root.keyRecorderConflict = false
                         root.keyRecorderRecordedChord = ""
@@ -7373,12 +7467,17 @@ BarWidget {
                     }
 
                     Button {
-                      width: parent.btnW
-                      text: "Confirm & Override"
+                      iconText: ""
+                      text: "Use Recommended: " + Model.formatChordForDisplay(root.keyRecorderRecommendedChord)
+                      tooltipText: "Apply the recommended key combination " + Model.formatChordForDisplay(root.keyRecorderRecommendedChord)
                       bordered: true
+                      selected: true
                       accent: root.accent
+                      fontSize: Style.font.caption
+                      iconSize: Style.font.bodySmall
+                      height: Style.space(32)
                       onClicked: {
-                        root.applyKeyOverride()
+                        root.applyKeyRecorderRecommended()
                       }
                     }
                   }
@@ -7417,7 +7516,6 @@ BarWidget {
                       Text {
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: {
-                          if (root.keyRecorderChecking) return "Checking availability…"
                           if (root.keyRecorderComplete) return "Ready! Click Confirm or press Enter"
                           if (root.keyRecorderDisplayChord) return "Release modifiers or press final key…"
                           return "e.g. hold Cmd / Ctrl / Alt and press a key"
@@ -7459,10 +7557,10 @@ BarWidget {
 
                     Button {
                       width: parent.btnW
-                      text: root.keyRecorderChecking ? "Checking…" : "Confirm"
+                      text: "Confirm"
                       bordered: true
                       accent: root.accent
-                      enabled: root.keyRecorderComplete && !root.keyRecorderChecking
+                      enabled: root.keyRecorderComplete
                       onClicked: {
                         root.confirmKeyRecording()
                       }
@@ -7476,7 +7574,5 @@ BarWidget {
       }
     }
   }
-}
-}
 }
 }
