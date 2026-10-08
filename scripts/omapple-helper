@@ -3225,11 +3225,32 @@ case "${1:-status}" in
     exec python3 -I "$helper_py" status-speaker-calibrator
     ;;
   open-speaker-calibrator)
+    if [[ "$2" == "50%" || "$2" == "--set-volume-50" || "$2" == "set-volume-50" || "$2" == "50" ]]; then
+      if command -v wpctl >/dev/null 2>&1; then
+        wpctl set-volume @DEFAULT_AUDIO_SINK@ 50% >/dev/null 2>&1 || true
+      elif command -v pactl >/dev/null 2>&1; then
+        pactl set-sink-volume @DEFAULT_SINK@ 50% >/dev/null 2>&1 || true
+      elif command -v amixer >/dev/null 2>&1; then
+        amixer set Master 50% >/dev/null 2>&1 || true
+      fi
+    fi
     if command -v omarchy-shell >/dev/null 2>&1; then
       omarchy-shell shell summon "thefreshoffice.speaker-calibrator" || omarchy-shell shell toggle "thefreshoffice.speaker-calibrator" "{}"
     elif command -v quickshell >/dev/null 2>&1; then
       quickshell -p /usr/share/omarchy/shell ipc call shell summon '["thefreshoffice.speaker-calibrator", "{}"]' || true
     fi
+    ;;
+
+  set-volume)
+    vol="${2:-50%}"
+    if command -v wpctl >/dev/null 2>&1; then
+      wpctl set-volume @DEFAULT_AUDIO_SINK@ "$vol" >/dev/null 2>&1 || true
+    elif command -v pactl >/dev/null 2>&1; then
+      pactl set-sink-volume @DEFAULT_SINK@ "$vol" >/dev/null 2>&1 || true
+    elif command -v amixer >/dev/null 2>&1; then
+      amixer set Master "$vol" >/dev/null 2>&1 || true
+    fi
+    echo "{\"status\":\"ok\",\"volume\":\"$vol\"}"
     ;;
 
   restart-audio)
@@ -3238,7 +3259,7 @@ case "${1:-status}" in
     ;;
 
   *)
-    echo "Usage: $0 {status|detect|set <key> <val>|apply-recommended|apply-t2-fixes|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle|speaker-calibrator-status|open-speaker-calibrator|restart-audio}" >&2
+    echo "Usage: $0 {status|detect|set <key> <val>|apply-recommended|apply-t2-fixes|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle|speaker-calibrator-status|open-speaker-calibrator|set-volume|restart-audio}" >&2
     exit 1
     ;;
 esac

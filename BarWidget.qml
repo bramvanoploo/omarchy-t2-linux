@@ -21,6 +21,7 @@ BarWidget {
   property bool rebootConfirmOpen: false
   property bool recommendedConfirmOpen: false
   property bool t2FixesConfirmOpen: false
+  property bool speakerCalConfirmOpen: false
   property bool openedViaBarButton: false
   property bool keyRecorderOpen: false
   property string keyRecorderTaskKey: ""
@@ -739,7 +740,17 @@ BarWidget {
   }
 
   function openSpeakerCalibrator() {
+    root.speakerCalConfirmOpen = true
+  }
+
+  function launchSpeakerCalibrator(setVolume50) {
+    root.speakerCalConfirmOpen = false
     root.close()
+    if (setVolume50) {
+      speakerCalOpenProc.command = ["bash", helper, "open-speaker-calibrator", "50%"]
+    } else {
+      speakerCalOpenProc.command = ["bash", helper, "open-speaker-calibrator"]
+    }
     speakerCalOpenProc.running = true
   }
 
@@ -1716,6 +1727,18 @@ BarWidget {
             return
           }
         }
+        if (root.speakerCalConfirmOpen) {
+          if (event.key === Qt.Key_Escape) {
+            root.speakerCalConfirmOpen = false
+            event.accepted = true
+            return
+          }
+          if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            root.launchSpeakerCalibrator(true)
+            event.accepted = true
+            return
+          }
+        }
         if (event.key === Qt.Key_Escape) {
           root.close()
           event.accepted = true
@@ -1730,7 +1753,7 @@ BarWidget {
         MouseArea {
           anchors.fill: parent
           onClicked: {
-            if (!root.limineUpdating && !limineProc.running && !root.rebootConfirmOpen && !root.recommendedConfirmOpen && !root.t2FixesConfirmOpen && !root.keyRecorderOpen && !root.conflictDialogOpen) {
+            if (!root.limineUpdating && !limineProc.running && !root.rebootConfirmOpen && !root.recommendedConfirmOpen && !root.t2FixesConfirmOpen && !root.keyRecorderOpen && !root.conflictDialogOpen && !root.speakerCalConfirmOpen) {
               root.close()
             }
           }
@@ -5483,7 +5506,57 @@ BarWidget {
                             }
                           }
 
-                          // Actions Row: Install / Open Calibration Panel / Web Link
+                          // Creator appreciation & support note
+                          BorderSurface {
+                            width: parent.width
+                            color: Util.alpha(root.accent, 0.05)
+                            borderSpec: Border.flat(Util.alpha(root.accent, 0.2), 1)
+                            radius: Style.cornerRadiusSmall
+                            height: creatorAckRow.implicitHeight + Style.space(20)
+
+                            Row {
+                              id: creatorAckRow
+                              anchors.left: parent.left
+                              anchors.right: parent.right
+                              anchors.top: parent.top
+                              anchors.margins: Style.space(10)
+                              spacing: Style.space(12)
+
+                              Text {
+                                id: heartAckIcon
+                                text: "♥"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.title
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Column {
+                                width: parent.width - heartAckIcon.implicitWidth - Style.space(12)
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: Style.space(2)
+
+                                Text {
+                                  text: "Thank you to @thefreshoffice for creating this plugin!"
+                                  color: root.foreground
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.caption
+                                  font.bold: true
+                                }
+
+                                Text {
+                                  text: "Enjoying the calibrated audio? Show some love and leave a heart (♥) for Speaker Calibrator on the Omarchy Plugins directory to support the creator!"
+                                  color: root.dim
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.caption
+                                  wrapMode: Text.WordWrap
+                                  width: parent.width
+                                }
+                              }
+                            }
+                          }
+
+                          // Actions Row: Install / Open Calibration Panel / Uninstall / Web Link
                           Row {
                             width: parent.width
                             spacing: Style.space(10)
@@ -5519,9 +5592,25 @@ BarWidget {
                               onClicked: root.openSpeakerCalibrator()
                             }
 
-                            // Open plugin page on plugins.omarchy.org
+                            // Uninstall Button (if installed)
                             Button {
-                              tooltipText: "View on plugins.omarchy.org ↗"
+                              visible: speakerCalSection.isInstalled
+                              text: speakerCalSection.isBusy ? "Removing..." : "Uninstall"
+                              tooltipText: "Uninstall and remove the Speaker Calibrator plugin"
+                              iconText: speakerCalSection.isBusy ? "󰑐" : "󰆴"
+                              iconSpinning: speakerCalSection.isBusy
+                              bordered: true
+                              height: Style.space(34)
+                              fontSize: Style.font.caption
+                              iconSize: Style.font.bodySmall
+                              enabled: !speakerCalSection.isBusy && root.activePluginOpId === ""
+                              onClicked: root.removePlugin("thefreshoffice.speaker-calibrator")
+                            }
+
+                            // Open plugin page on plugins.omarchy.org to leave a heart
+                            Button {
+                              text: "Leave a Heart ♥"
+                              tooltipText: "Open Speaker Calibrator on plugins.omarchy.org to leave a heart ↗"
                               iconText: "󰖟"
                               bordered: true
                               height: Style.space(34)
@@ -7115,6 +7204,104 @@ BarWidget {
                       root.rebootConfirmOpen = false
                       rebootProc.running = true
                     }
+                  }
+                }
+              }
+            }
+          }
+
+          // Speaker calibration volume confirmation dialog
+          Rectangle {
+            id: speakerCalDialogOverlay
+            visible: root.speakerCalConfirmOpen
+            anchors.fill: parent
+            radius: Style.cornerRadius
+            color: Qt.rgba(0, 0, 0, 0.75)
+            z: 9998
+
+            // Absorb background clicks
+            MouseArea {
+              anchors.fill: parent
+              onClicked: {}
+            }
+
+            BorderSurface {
+              anchors.centerIn: parent
+              width: Math.min(parent.width - Style.space(48), Style.space(520))
+              height: speakerCalCol.implicitHeight + Style.space(48)
+              color: Color.popups.background
+              borderSpec: Border.flat(root.accent, Style.normalBorderWidth)
+              radius: Style.cornerRadius
+
+              Column {
+                id: speakerCalCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: Style.space(20)
+                spacing: Style.space(16)
+
+                Row {
+                  spacing: Style.space(12)
+                  Text {
+                    text: "󰓃"
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title * 1.5
+                    color: root.accent
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                  Column {
+                    spacing: 2
+                    Text {
+                      text: "Speaker Calibration"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.title
+                      font.bold: true
+                      color: root.foreground
+                    }
+                    Text {
+                      text: "Volume setup for acoustic measurement"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      color: root.dim
+                    }
+                  }
+                }
+
+                Text {
+                  text: "To ensure an accurate and proper calibration, setting your speaker volume to 50% is recommended before starting measurement.\n\nWould you like to set the volume to 50% now?"
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  color: root.foreground
+                  wrapMode: Text.WordWrap
+                  width: parent.width
+                }
+
+                Row {
+                  anchors.right: parent.right
+                  spacing: Style.space(10)
+
+                  Button {
+                    text: "Cancel"
+                    bordered: true
+                    onClicked: root.speakerCalConfirmOpen = false
+                  }
+
+                  Button {
+                    text: "No, Keep Current"
+                    bordered: true
+                    tooltipText: "Open calibration panel without changing current volume"
+                    onClicked: root.launchSpeakerCalibrator(false)
+                  }
+
+                  Button {
+                    text: "Yes, Set to 50%"
+                    iconText: "󰕾"
+                    bordered: true
+                    accent: root.accent
+                    selected: true
+                    tooltipText: "Set speaker volume to 50% and open calibration panel"
+                    onClicked: root.launchSpeakerCalibrator(true)
                   }
                 }
               }
