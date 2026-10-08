@@ -719,9 +719,9 @@ PYEOF
     chip_label="$vendor ($sys_arch)"
   fi
 
-  local plugin_ver="1.0.3"
+  local plugin_ver="1.0.4"
   if [[ -f "$PLUGIN_ROOT/manifest.json" ]]; then
-    plugin_ver=$(jq -r '.version // "1.0.3"' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || echo "1.0.3")
+    plugin_ver=$(jq -r '.version // "1.0.4"' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || echo "1.0.4")
   fi
 
   cat <<EOF
