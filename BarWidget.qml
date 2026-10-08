@@ -64,7 +64,7 @@ BarWidget {
   readonly property var tabs: [
     { id: "battery", title: "Battery life", icon: "󰁹", desc: "Energy & power settings" },
     { id: "suspend", title: "Suspend behaviour", icon: "󰤄", desc: "Sleep states & lid actions" },
-    { id: "keybindings", title: "Keybindings", icon: "󰌘", desc: "Keyboard shortcuts & layout" },
+    { id: "keybindings", title: "Keybindings", icon: "󰌌", desc: "Keyboard shortcuts & layout" },
     { id: "trackpad", title: "Trackpad", icon: "󱑣", desc: "Pointer & gesture controls" },
     { id: "sound", title: "Sound", icon: "󰕾", desc: "Audio devices & configuration" },
     { id: "plugins", title: "Plugins", icon: "󰏓", desc: "Apple community plugins" }
