@@ -53,7 +53,7 @@ BarWidget {
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string helper: pluginDir + "/scripts/omapple-helper"
-  readonly property string pluginVersion: (root.status && root.status.version) ? String(root.status.version) : "1.0.4"
+  readonly property string pluginVersion: (root.status && root.status.version) ? String(root.status.version) : "1.1.0"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color accent: Color.accent
@@ -757,6 +757,17 @@ BarWidget {
   Process {
     id: speakerCalOpenProc
     command: ["bash", helper, "open-speaker-calibrator"]
+  }
+
+  function openExternalUrl(url) {
+    if (!url) return
+    root.close()
+    urlOpenProc.command = ["bash", helper, "open-url", url]
+    urlOpenProc.running = true
+  }
+
+  Process {
+    id: urlOpenProc
   }
 
   IpcHandler {
@@ -5616,7 +5627,7 @@ BarWidget {
                               height: Style.space(34)
                               fontSize: Style.font.caption
                               iconSize: Style.font.bodySmall
-                              onClicked: Qt.openUrlExternally("https://plugins.omarchy.org/plugin.html?id=thefreshoffice.speaker-calibrator")
+                              onClicked: root.openExternalUrl("https://plugins.omarchy.org/plugin.html?id=thefreshoffice.speaker-calibrator")
                             }
 
                             // GitHub repo button
@@ -5627,7 +5638,7 @@ BarWidget {
                               height: Style.space(34)
                               fontSize: Style.font.caption
                               iconSize: Style.font.bodySmall
-                              onClicked: Qt.openUrlExternally("https://github.com/thefreshoffice/omarchy-speaker-calibrator")
+                              onClicked: root.openExternalUrl("https://github.com/thefreshoffice/omarchy-speaker-calibrator")
                             }
                           }
                         }
@@ -6162,7 +6173,7 @@ BarWidget {
                                 bordered: true
                                 onClicked: {
                                   var pageUrl = modelData.webUrl || ("https://plugins.omarchy.org/plugin.html?id=" + encodeURIComponent(modelData.id))
-                                  Qt.openUrlExternally(pageUrl)
+                                  root.openExternalUrl(pageUrl)
                                 }
                               }
 
@@ -6172,7 +6183,7 @@ BarWidget {
                                 tooltipText: "GitHub ↗"
                                 iconText: "󰌹"
                                 bordered: true
-                                onClicked: Qt.openUrlExternally(modelData.repo)
+                                onClicked: root.openExternalUrl(modelData.repo)
                               }
                             }
                           }

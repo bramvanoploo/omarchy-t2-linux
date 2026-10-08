@@ -719,9 +719,9 @@ PYEOF
     chip_label="$vendor ($sys_arch)"
   fi
 
-  local plugin_ver="1.0.4"
+  local plugin_ver="1.1.0"
   if [[ -f "$PLUGIN_ROOT/manifest.json" ]]; then
-    plugin_ver=$(jq -r '.version // "1.0.4"' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || echo "1.0.4")
+    plugin_ver=$(jq -r '.version // "1.1.0"' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || echo "1.1.0")
   fi
 
   local speaker_cal_json
@@ -3225,7 +3225,8 @@ case "${1:-status}" in
     exec python3 -I "$helper_py" status-speaker-calibrator
     ;;
   open-speaker-calibrator)
-    if [[ "$2" == "50%" || "$2" == "--set-volume-50" || "$2" == "set-volume-50" || "$2" == "50" ]]; then
+    vol_arg="${2:-}"
+    if [[ "$vol_arg" == "50%" || "$vol_arg" == "--set-volume-50" || "$vol_arg" == "set-volume-50" || "$vol_arg" == "50" ]]; then
       if command -v wpctl >/dev/null 2>&1; then
         wpctl set-volume @DEFAULT_AUDIO_SINK@ 50% >/dev/null 2>&1 || true
       elif command -v pactl >/dev/null 2>&1; then
@@ -3253,13 +3254,24 @@ case "${1:-status}" in
     echo "{\"status\":\"ok\",\"volume\":\"$vol\"}"
     ;;
 
+  open-url)
+    target_url="${2:-}"
+    if [[ -n "$target_url" ]]; then
+      if command -v xdg-open >/dev/null 2>&1; then
+        nohup setsid xdg-open "$target_url" </dev/null >/dev/null 2>&1 &
+      elif command -v gio >/dev/null 2>&1; then
+        nohup setsid gio open "$target_url" </dev/null >/dev/null 2>&1 &
+      fi
+    fi
+    ;;
+
   restart-audio)
     systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null || true
     echo '{"status":"ok","message":"Audio services (PipeWire & WirePlumber) reloaded"}'
     ;;
 
   *)
-    echo "Usage: $0 {status|detect|set <key> <val>|apply-recommended|apply-t2-fixes|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle|speaker-calibrator-status|open-speaker-calibrator|set-volume|restart-audio}" >&2
+    echo "Usage: $0 {status|detect|set <key> <val>|apply-recommended|apply-t2-fixes|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle|speaker-calibrator-status|open-speaker-calibrator|set-volume|open-url|restart-audio}" >&2
     exit 1
     ;;
 esac

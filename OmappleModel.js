@@ -2,7 +2,7 @@
 
 function emptyStatus() {
   return {
-    version: "1.0.4",
+    version: "1.1.0",
     isT2: true,
     isApple: true,
     model: "Detecting…",
@@ -87,7 +87,7 @@ function parseStatus(raw) {
   try {
     var data = JSON.parse(raw);
     if (data && typeof data === "object") {
-      data.version = data.version || "1.0.4";
+      data.version = data.version || "1.1.0";
       data.isT2 = Boolean(data.isT2);
       data.helperInstalled = Boolean(data.helperInstalled);
 
