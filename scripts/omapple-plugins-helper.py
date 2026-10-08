@@ -21,6 +21,7 @@ if hasattr(os, "geteuid") and os.geteuid() == 0:
 import json
 import re
 import time
+import socket
 import subprocess
 import urllib.request
 import urllib.parse
@@ -387,7 +388,7 @@ def is_apple_plugin(plugin):
         "magic keyboard", "butterfly keyboard", "airdrop", "airplay",
         "sidecar", "icloud", "mbpfan", "afanctl", "tiny-dfr",
         "apple silicon", "apple tv", "apple music", "studio display",
-        "omafan", "kait2en", "t2fanrd", "retina"
+        "omafan", "kait2en", "t2fanrd", "retina", "speaker-calibrator"
     ]
     for phrase in apple_phrases:
         if phrase in full_text:
@@ -635,6 +636,139 @@ def toggle_plugin(plugin_id, state):
         sys.exit(rc or 1)
 
 
+def check_speaker_calibrator_source_available():
+    """
+    Checks if the installation source for the speaker-calibrator plugin is available.
+    Returns True if:
+    1. The catalog has an active installable entry for the plugin (installAvailable != False, status != unavailable),
+       AND
+    2. Network reachability to repository/catalog hosts is functional.
+    """
+    # 1. Check network connectivity to repository host (github.com)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.6)
+        res = s.connect_ex(("github.com", 443))
+        s.close()
+        if res != 0:
+            return False
+    except Exception:
+        return False
+
+    # 2. Check catalog cache / listing
+    catalog = None
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                catalog = json.load(f)
+        except Exception:
+            pass
+
+    if catalog and "plugins" in catalog:
+        found = False
+        for p in catalog.get("plugins", []):
+            if p.get("id") == "thefreshoffice.speaker-calibrator":
+                found = True
+                if p.get("installAvailable") is False:
+                    return False
+                st = str(p.get("status", "")).lower()
+                if st in ("unavailable", "deprecated", "removed", "disabled", "archived"):
+                    return False
+                repo = p.get("repo") or p.get("installCommand")
+                if not repo:
+                    return False
+                break
+        if not found:
+            return False
+
+    return True
+
+
+def get_speaker_calibrator_status():
+    plugins_dir = os.path.expanduser("~/.config/omarchy/plugins/thefreshoffice.speaker-calibrator")
+    installed = os.path.isdir(plugins_dir)
+    enabled = False
+    version = ""
+    active_profile = ""
+    service_active = False
+
+    if installed:
+        manifest_path = os.path.join(plugins_dir, "manifest.json")
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    m = json.load(f)
+                    version = m.get("version", "")
+            except Exception:
+                pass
+
+        shell_path = os.path.expanduser("~/.config/omarchy/shell.json")
+        if os.path.exists(shell_path):
+            try:
+                with open(shell_path, "r", encoding="utf-8") as f:
+                    shell_data = json.load(f)
+                    disabled = set(shell_data.get("disabledPlugins", []))
+                    if "thefreshoffice.speaker-calibrator" not in disabled:
+                        layout = shell_data.get("bar", {}).get("layout", {})
+                        in_bar = any(
+                            item.get("id") == "thefreshoffice.speaker-calibrator"
+                            for sec in ("left", "center", "right")
+                            for item in layout.get(sec, [])
+                        )
+                        in_plugins = any(
+                            item.get("id") == "thefreshoffice.speaker-calibrator"
+                            for item in shell_data.get("plugins", [])
+                        )
+                        enabled = in_bar or in_plugins
+            except Exception:
+                pass
+
+        cache_path = os.path.expanduser("~/.local/share/omarchy-speaker-calibrator/status-cache.json")
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    service_active = bool(data.get("service") == "active" or data.get("enabled"))
+                    compare = data.get("compare", {})
+                    curr = compare.get("current", {})
+                    if curr.get("label"):
+                        active_profile = curr.get("label")
+            except Exception:
+                pass
+
+        if not active_profile:
+            cal_script = os.path.join(plugins_dir, "speaker-calibrate.py")
+            if os.path.exists(cal_script):
+                try:
+                    proc = subprocess.run(["python3", cal_script, "status-cache-json"], capture_output=True, text=True, timeout=2)
+                    if proc.returncode == 0:
+                        data = json.loads(proc.stdout)
+                        service_active = bool(data.get("service") == "active" or data.get("enabled"))
+                        compare = data.get("compare", {})
+                        curr = compare.get("current", {})
+                        if curr.get("label"):
+                            active_profile = curr.get("label")
+                except Exception:
+                    pass
+
+    source_available = True
+    if not installed:
+        source_available = check_speaker_calibrator_source_available()
+
+    return {
+        "id": "thefreshoffice.speaker-calibrator",
+        "name": "Speaker Calibrator",
+        "url": "https://plugins.omarchy.org/plugin.html?id=thefreshoffice.speaker-calibrator",
+        "repo": "https://github.com/thefreshoffice/omarchy-speaker-calibrator.git",
+        "installed": installed,
+        "enabled": enabled,
+        "version": version,
+        "activeProfile": active_profile,
+        "serviceActive": service_active,
+        "sourceAvailable": source_available
+    }
+
+
 def main():
     if len(sys.argv) < 2:
         list_plugins()
@@ -658,6 +792,8 @@ def main():
         pid = sys.argv[2] if len(sys.argv) > 2 else ""
         st = sys.argv[3] if len(sys.argv) > 3 else "enable"
         toggle_plugin(pid, st)
+    elif cmd in ("status-speaker-calibrator", "speaker-calibrator-status"):
+        print(json.dumps(get_speaker_calibrator_status(), indent=2))
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)

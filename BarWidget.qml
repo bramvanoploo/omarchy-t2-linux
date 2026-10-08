@@ -65,7 +65,7 @@ BarWidget {
     { id: "suspend", title: "Suspend behaviour", icon: "󰤄", desc: "Sleep states & lid actions" },
     { id: "keybindings", title: "Keybindings", icon: "󰌘", desc: "Keyboard shortcuts & layout" },
     { id: "trackpad", title: "Trackpad", icon: "󱑣", desc: "Pointer & gesture controls" },
-    // { id: "sound", title: "Sound", icon: "󰕾", desc: "Audio devices & configuration" }, // Hidden for now
+    { id: "sound", title: "Sound", icon: "󰕾", desc: "Audio devices & configuration" },
     { id: "plugins", title: "Plugins", icon: "󰏓", desc: "Apple community plugins" }
   ]
 
@@ -557,6 +557,15 @@ BarWidget {
     actionProc.running = true
   }
 
+  function reloadAudioServices() {
+    noticeTimer.stop()
+    root.lastNotice = "Reloading PipeWire & WirePlumber audio services…"
+    if (actionProc.running) actionProc.running = false
+    root.applying = true
+    actionProc.command = ["bash", helper, "restart-audio"]
+    actionProc.running = true
+  }
+
   function dismissRecommendedPrompt() {
     if (root.status && !root.status.recommendedPromptShown) {
       var s = Object.assign({}, root.status)
@@ -729,6 +738,16 @@ BarWidget {
     pluginActionProc.running = true
   }
 
+  function openSpeakerCalibrator() {
+    root.close()
+    speakerCalOpenProc.running = true
+  }
+
+  Process {
+    id: speakerCalOpenProc
+    command: ["bash", helper, "open-speaker-calibrator"]
+  }
+
   IpcHandler {
     target: "bramvanoploo.omarchy-t2-linux"
     function open(): void { root.open() }
@@ -749,6 +768,8 @@ BarWidget {
       root.activeTab = index
       if (root.tabs[index] && root.tabs[index].id === "plugins" && root.opened) {
         root.fetchPlugins(true)
+      } else if (root.tabs[index] && root.tabs[index].id === "sound" && root.opened) {
+        root.refresh()
       }
     }
     function setPluginFilter(query: string): void { root.pluginFilterQuery = query }
@@ -1564,6 +1585,7 @@ BarWidget {
         root.pluginActionStatus = msg || ("Plugin operation failed (exit code " + exitCode + ").")
       }
       root.fetchPlugins(true)
+      root.refresh()
     }
   }
 
@@ -1941,6 +1963,8 @@ BarWidget {
                           root.activeTab = index
                           if (root.tabs[index] && root.tabs[index].id === "plugins") {
                             root.fetchPlugins(true)
+                          } else if (root.tabs[index] && root.tabs[index].id === "sound") {
+                            root.refresh()
                           }
                         }
                       }
@@ -2141,12 +2165,12 @@ BarWidget {
                             : (root.currentTabId === "suspend"
                                 ? "Fine-tune sleep modes, lid behavior, and wake triggers for your MacBook."
                                 : (root.currentTabId === "keybindings"
-                                    ? "Configure Apple T2 keyboard shortcuts, function keys, and layout options."
+                                    ? "Configure Apple keyboard shortcuts, function keys, and layout options."
                                     : (root.currentTabId === "trackpad"
                                         ? "Configure pointer speed, natural scrolling, Force Touch gestures, and palm rejection for the Apple internal trackpad."
                                         : (root.currentTabId === "sound"
-                                            ? "Manage Apple T2 audio outputs, power saving, and sound profiles."
-                                            : "Discover, install, update, and remove Apple and T2 community plugins from plugins.omarchy.org."))))
+                                            ? "Manage Apple audio outputs, power saving, and sound profiles."
+                                            : "Discover, install, update, and remove Apple community plugins from plugins.omarchy.org."))))
                           color: root.dim
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
@@ -2762,54 +2786,6 @@ BarWidget {
                       width: parent.width
                       spacing: Style.space(12)
 
-                      // Suspend Header & Recommended Options Card
-                      BorderSurface {
-                        width: parent.width
-                        height: suspHeaderCol.implicitHeight + Style.space(28)
-                        color: Util.alpha(Color.accent, 0.08)
-                        borderSpec: Border.flat(Util.alpha(Color.accent, 0.3), 1)
-                        radius: Style.cornerRadius
-
-                        Column {
-                          id: suspHeaderCol
-                          anchors.left: parent.left
-                          anchors.right: parent.right
-                          anchors.top: parent.top
-                          anchors.margins: Style.space(16)
-                          spacing: Style.space(6)
-
-                          Row {
-                            spacing: Style.space(10)
-
-                            Text {
-                              text: "󰤄"
-                              color: Color.accent
-                              font.family: root.fontFamily
-                              font.pixelSize: Style.font.title
-                              anchors.verticalCenter: parent.verticalCenter
-                            }
-
-                            Text {
-                              text: "Apple T2 Suspend Behaviour"
-                              color: root.foreground
-                              font.family: root.fontFamily
-                              font.pixelSize: Style.font.body
-                              font.bold: true
-                              anchors.verticalCenter: parent.verticalCenter
-                            }
-                          }
-
-                          Text {
-                            width: parent.width
-                            text: "Configure sleep states, lid behavior, and wake triggers tailored for MacBook hardware to optimize sleep wakeups."
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
-                            wrapMode: Text.WordWrap
-                          }
-                        }
-                      }
-
                       // 1. System Sleep Mode (mem_sleep)
                       BorderSurface {
                         visible: root.status && root.status.memSleepModes && root.status.memSleepModes.length > 1
@@ -3253,53 +3229,6 @@ BarWidget {
                       visible: root.currentTabId === "keybindings"
                       width: parent.width
                       spacing: Style.space(12)
-
-                      BorderSurface {
-                        width: parent.width
-                        height: kbHeaderCol.implicitHeight + Style.space(28)
-                        color: Util.alpha(Color.accent, 0.08)
-                        borderSpec: Border.flat(Util.alpha(Color.accent, 0.3), 1)
-                        radius: Style.cornerRadius
-
-                        Column {
-                          id: kbHeaderCol
-                          anchors.left: parent.left
-                          anchors.right: parent.right
-                          anchors.top: parent.top
-                          anchors.margins: Style.space(16)
-                          spacing: Style.space(6)
-
-                          Row {
-                            spacing: Style.space(10)
-
-                            Text {
-                              text: "󰌘"
-                              color: Color.accent
-                              font.family: root.fontFamily
-                              font.pixelSize: Style.font.title
-                              anchors.verticalCenter: parent.verticalCenter
-                            }
-
-                            Text {
-                              text: "Apple T2 Keyboard & Keybindings"
-                              color: root.foreground
-                              font.family: root.fontFamily
-                              font.pixelSize: Style.font.body
-                              font.bold: true
-                              anchors.verticalCenter: parent.verticalCenter
-                            }
-                          }
-
-                          Text {
-                            width: parent.width
-                            text: "Configure keyboard shortcuts for specific tasks such as Select All and Delete, with Mac defaults tailored for Apple hardware."
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
-                            wrapMode: Text.WordWrap
-                          }
-                        }
-                      }
 
                       // Tasks Keybindings Card (Compact Unified Card)
                       BorderSurface {
@@ -4532,7 +4461,7 @@ BarWidget {
 
                           Text {
                             width: parent.width
-                            text: "On Linux with Apple T2 MacBooks, the Command (⌘) key acts as Super / Win, and Option (⌥) maps to Alt. Function keys can be toggled between standard F1–F12 and multimedia actions."
+                            text: "On Linux with Apple devices, the Command (⌘) key acts as Super / Win, and Option (⌥) maps to Alt. Function keys can be toggled between standard F1–F12 and multimedia actions."
                             color: root.foreground
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.bodySmall
@@ -4551,84 +4480,7 @@ BarWidget {
                       width: parent.width
                       spacing: Style.space(12)
 
-                      // 1. Hero Card: Apple Force Touch Trackpad Status
-                      BorderSurface {
-                        width: parent.width
-                        height: tpHeaderCol.implicitHeight + Style.space(28)
-                        color: Util.alpha(Color.accent, 0.08)
-                        borderSpec: Border.flat(Util.alpha(Color.accent, 0.3), 1)
-                        radius: Style.cornerRadius
-
-                        Column {
-                          id: tpHeaderCol
-                          anchors.left: parent.left
-                          anchors.right: parent.right
-                          anchors.top: parent.top
-                          anchors.margins: Style.space(16)
-                          spacing: Style.space(10)
-
-                          Row {
-                            width: parent.width
-                            spacing: Style.space(10)
-
-                            Text {
-                              text: "󱑣"
-                              color: Color.accent
-                              font.family: root.fontFamily
-                              font.pixelSize: Style.font.title
-                              anchors.verticalCenter: parent.verticalCenter
-                            }
-
-                            Column {
-                              width: parent.width - restartTpBtn.width - Style.space(50)
-                              anchors.verticalCenter: parent.verticalCenter
-                              spacing: 2
-
-                              Text {
-                                text: "Apple Force Touch Trackpad"
-                                color: root.foreground
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.body
-                                font.bold: true
-                              }
-
-                              Text {
-                                text: (root.status && root.status.trackpad && root.status.trackpad.device)
-                                  ? (root.status.trackpad.device + " · Magic Trackpad 2 Engine")
-                                  : "Apple Magic Trackpad 2 Engine (USB 05AC:027C)"
-                                color: Color.accent
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                                elide: Text.ElideRight
-                                width: parent.width
-                              }
-                            }
-
-                            Button {
-                              id: restartTpBtn
-                              text: "Restart Driver"
-                              iconText: "󰑐"
-                              bordered: true
-                              fontSize: Style.font.caption
-                              height: Style.space(28)
-                              anchors.verticalCenter: parent.verticalCenter
-                              tooltipText: "Reload the trackpad input driver if touch tracking or gestures become unresponsive"
-                              onClicked: root.restartTrackpad()
-                            }
-                          }
-
-                          Text {
-                            width: parent.width
-                            text: "Apple MacBooks feature a glass Force Touch trackpad with haptic feedback. Configure motion sensitivity, natural scroll direction, multi-finger gestures, and palm rejection for Linux."
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
-                            wrapMode: Text.WordWrap
-                          }
-                        }
-                      }
-
-                      // 2. Pointer Motion & Scrolling Card
+                      // 1. Pointer Motion & Scrolling Card
                       BorderSurface {
                         width: parent.width
                         height: tpMotionCol.implicitHeight + Style.space(28)
@@ -5441,64 +5293,8 @@ BarWidget {
                           }
                         }
                       }
-                    }
 
-                    // =========================================================
-                    // TAB 3: SOUND
-                    // =========================================================
-                    Column {
-                      id: soundTabContent
-                      visible: root.currentTabId === "sound"
-                      width: parent.width
-                      spacing: Style.space(12)
-
-                      BorderSurface {
-                        width: parent.width
-                        height: sndHeaderCol.implicitHeight + Style.space(28)
-                        color: Util.alpha(Color.accent, 0.08)
-                        borderSpec: Border.flat(Util.alpha(Color.accent, 0.3), 1)
-                        radius: Style.cornerRadius
-
-                        Column {
-                          id: sndHeaderCol
-                          anchors.left: parent.left
-                          anchors.right: parent.right
-                          anchors.top: parent.top
-                          anchors.margins: Style.space(16)
-                          spacing: Style.space(6)
-
-                          Row {
-                            spacing: Style.space(10)
-
-                            Text {
-                              text: "󰕾"
-                              color: Color.accent
-                              font.family: root.fontFamily
-                              font.pixelSize: Style.font.title
-                            }
-
-                            Text {
-                              anchors.verticalCenter: parent.verticalCenter
-                              text: "Apple T2 Sound & Audio"
-                              color: root.foreground
-                              font.family: root.fontFamily
-                              font.pixelSize: Style.font.body
-                              font.bold: true
-                            }
-                          }
-
-                          Text {
-                            width: parent.width
-                            text: "Manage internal speakers, microphone inputs, and audio controller power saving states for Apple T2 hardware."
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
-                            wrapMode: Text.WordWrap
-                          }
-                        }
-                      }
-
-                      // Audio Controller Power Save toggle in Sound tab
+                      // Restart Trackpad Driver Action Card
                       BorderSurface {
                         width: parent.width
                         height: Style.space(62)
@@ -5512,32 +5308,288 @@ BarWidget {
                           anchors.verticalCenter: parent.verticalCenter
 
                           Column {
-                            width: parent.width - soundAudioSwitch.width - Style.space(14)
+                            width: parent.width - restartTpBtn.width - Style.space(14)
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 2
 
                             Text {
-                              text: "Audio Controller Power Save"
+                              text: "Restart Trackpad Driver"
                               color: root.foreground
                               font.family: root.fontFamily
                               font.pixelSize: Style.font.body
                               font.bold: true
                             }
                             Text {
-                              text: "Powers down the Apple Audio controller when no media is playing to conserve battery."
+                              text: "Reload the trackpad input driver if touch tracking or gestures become unresponsive."
                               color: root.dim
                               font.family: root.fontFamily
                               font.pixelSize: Style.font.caption
                             }
                           }
 
-                          ToggleSwitch {
-                            id: soundAudioSwitch
+                          Button {
+                            id: restartTpBtn
                             anchors.verticalCenter: parent.verticalCenter
-                            checked: Boolean(root.status && root.status.audioPowerSave)
-                            accent: root.accent
-                            foreground: checked ? root.accent : root.foreground
-                            onToggled: root.setOption("audio_powersave", !(root.status && root.status.audioPowerSave) ? "true" : "false")
+                            text: root.applying ? "Restarting..." : "Restart Driver"
+                            tooltipText: "Reload the trackpad input driver if touch tracking or gestures become unresponsive"
+                            iconText: "󰑐"
+                            iconSpinning: root.applying
+                            bordered: true
+                            height: Style.space(34)
+                            fontSize: Style.font.caption
+                            iconSize: Style.font.bodySmall
+                            enabled: !root.applying
+                            onClicked: root.restartTrackpad()
+                          }
+                        }
+                      }
+                    }
+
+                    // =========================================================
+                    // TAB 3: SOUND
+                    // =========================================================
+                    Column {
+                      id: soundTabContent
+                      visible: root.currentTabId === "sound"
+                      width: parent.width
+                      spacing: Style.space(12)
+
+                      // 1. Speaker Calibration Plugin Section (above other options)
+                      BorderSurface {
+                        id: speakerCalSection
+                        width: parent.width
+                        visible: speakerCalSection.isInstalled || speakerCalSection.sourceAvailable
+                        height: visible ? (scCol.implicitHeight + Style.space(32)) : 0
+                        color: Util.alpha(root.foreground, 0.03)
+                        borderSpec: Border.flat(Util.alpha(root.accent, 0.25), 1)
+                        radius: Style.cornerRadius
+
+                        readonly property var scInfo: (root.status && root.status.speakerCalibrator) ? root.status.speakerCalibrator : ({})
+                        readonly property bool isInstalled: Boolean(scInfo && scInfo.installed)
+                        readonly property bool catalogHasSource: {
+                          if (!root.pluginList || root.pluginList.length === 0) return false
+                          for (var i = 0; i < root.pluginList.length; i++) {
+                            if (root.pluginList[i] && root.pluginList[i].id === "thefreshoffice.speaker-calibrator") {
+                              return Boolean(root.pluginList[i].repo || root.pluginList[i].installCommand)
+                            }
+                          }
+                          return false
+                        }
+                        readonly property bool sourceAvailable: Boolean(scInfo && scInfo.sourceAvailable) || catalogHasSource
+                        readonly property bool isBusy: root.activePluginOpId === "thefreshoffice.speaker-calibrator"
+
+                        Column {
+                          id: scCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: Style.space(16)
+                          spacing: Style.space(12)
+
+                          // Section Header
+                          Row {
+                            width: parent.width
+                            spacing: Style.space(10)
+
+                            Text {
+                              text: "󰓃"
+                              color: root.accent
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.title
+                              anchors.verticalCenter: parent.verticalCenter
+                            }
+
+                            Column {
+                              width: parent.width - Style.space(40)
+                              anchors.verticalCenter: parent.verticalCenter
+                              spacing: 2
+
+                              Row {
+                                spacing: Style.space(8)
+                                anchors.verticalCenter: undefined
+
+                                Text {
+                                  text: "Speaker Calibration"
+                                  color: root.foreground
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.body
+                                  font.bold: true
+                                  anchors.verticalCenter: parent.verticalCenter
+                                }
+
+                                BorderSurface {
+                                  visible: speakerCalSection.isInstalled
+                                  anchors.verticalCenter: parent.verticalCenter
+                                  height: Style.space(18)
+                                  color: Util.alpha(root.accent, 0.15)
+                                  radius: Style.cornerRadiusSmall
+                                  leftPadding: Style.space(6)
+                                  rightPadding: Style.space(6)
+
+                                  Text {
+                                    anchors.centerIn: parent
+                                    text: "Installed" + (speakerCalSection.scInfo && speakerCalSection.scInfo.version ? (" v" + speakerCalSection.scInfo.version) : "")
+                                    color: root.accent
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.tiny
+                                    font.bold: true
+                                  }
+                                }
+                              }
+
+                              Text {
+                                text: "Measure with internal microphones and generate adaptive, protected parametric speaker tuning tailored for Apple hardware."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                              }
+                            }
+                          }
+
+                          // Active profile notice if calibrated
+                          BorderSurface {
+                            visible: speakerCalSection.isInstalled && speakerCalSection.scInfo && Boolean(speakerCalSection.scInfo.activeProfile)
+                            width: parent.width
+                            height: Style.space(32)
+                            color: Util.alpha(root.accent, 0.08)
+                            radius: Style.cornerRadiusSmall
+
+                            Row {
+                              anchors.fill: parent
+                              anchors.leftMargin: Style.space(10)
+                              anchors.rightMargin: Style.space(10)
+                              anchors.verticalCenter: parent.verticalCenter
+                              spacing: Style.space(8)
+
+                              Text {
+                                text: "󰄲"
+                                color: root.accent
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+
+                              Text {
+                                text: "Active profile: " + (speakerCalSection.scInfo ? speakerCalSection.scInfo.activeProfile : "")
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                elide: Text.ElideRight
+                                width: parent.width - Style.space(32)
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+                            }
+                          }
+
+                          // Actions Row: Install / Open Calibration Panel / Web Link
+                          Row {
+                            width: parent.width
+                            spacing: Style.space(10)
+
+                            // One-click Install Button (if not installed)
+                            Button {
+                              visible: !speakerCalSection.isInstalled
+                              text: speakerCalSection.isBusy ? "Installing Plugin..." : "Install Speaker Calibrator"
+                              tooltipText: "One-click install from plugins.omarchy.org"
+                              iconText: speakerCalSection.isBusy ? "󰑐" : "󰏔"
+                              iconSpinning: speakerCalSection.isBusy
+                              bordered: true
+                              accent: root.accent
+                              height: Style.space(34)
+                              fontSize: Style.font.caption
+                              iconSize: Style.font.bodySmall
+                              enabled: !speakerCalSection.isBusy && root.activePluginOpId === ""
+                              onClicked: root.installPlugin("https://github.com/thefreshoffice/omarchy-speaker-calibrator.git", "thefreshoffice.speaker-calibrator")
+                            }
+
+                            // Open Calibration Panel Button (if installed)
+                            Button {
+                              visible: speakerCalSection.isInstalled
+                              text: "Open Calibration Panel"
+                              tooltipText: "Open the Speaker Calibrator panel to start or tweak calibration"
+                              iconText: "󰓃"
+                              bordered: true
+                              accent: root.accent
+                              height: Style.space(34)
+                              fontSize: Style.font.caption
+                              iconSize: Style.font.bodySmall
+                              enabled: !speakerCalSection.isBusy
+                              onClicked: root.openSpeakerCalibrator()
+                            }
+
+                            // Open plugin page on plugins.omarchy.org
+                            Button {
+                              tooltipText: "View on plugins.omarchy.org ↗"
+                              iconText: "󰖟"
+                              bordered: true
+                              height: Style.space(34)
+                              fontSize: Style.font.caption
+                              iconSize: Style.font.bodySmall
+                              onClicked: Qt.openUrlExternally("https://plugins.omarchy.org/plugin.html?id=thefreshoffice.speaker-calibrator")
+                            }
+
+                            // GitHub repo button
+                            Button {
+                              tooltipText: "GitHub repository ↗"
+                              iconText: "󰌹"
+                              bordered: true
+                              height: Style.space(34)
+                              fontSize: Style.font.caption
+                              iconSize: Style.font.bodySmall
+                              onClicked: Qt.openUrlExternally("https://github.com/thefreshoffice/omarchy-speaker-calibrator")
+                            }
+                          }
+                        }
+                      }
+
+                      // 2. Audio Subsystem Services card
+                      BorderSurface {
+                        width: parent.width
+                        height: Style.space(62)
+                        color: Util.alpha(root.foreground, 0.03)
+                        radius: Style.cornerRadius
+
+                        Row {
+                          anchors.fill: parent
+                          anchors.leftMargin: Style.space(14)
+                          anchors.rightMargin: Style.space(14)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Column {
+                            width: parent.width - reloadAudioBtn.width - Style.space(14)
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 2
+
+                            Text {
+                              text: "Reload Audio Services"
+                              color: root.foreground
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.body
+                              font.bold: true
+                            }
+                            Text {
+                              text: "Restart PipeWire and WirePlumber to recover audio endpoints if the device becomes unresponsive."
+                              color: root.dim
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.caption
+                            }
+                          }
+
+                          Button {
+                            id: reloadAudioBtn
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: root.applying ? "Reloading..." : "Reload"
+                            tooltipText: "Restart PipeWire and WirePlumber user services"
+                            iconText: "󰑐"
+                            iconSpinning: root.applying
+                            bordered: true
+                            height: Style.space(34)
+                            fontSize: Style.font.caption
+                            iconSize: Style.font.bodySmall
+                            enabled: !root.applying
+                            onClicked: root.reloadAudioServices()
                           }
                         }
                       }

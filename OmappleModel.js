@@ -66,6 +66,18 @@ function emptyStatus() {
       accelProfile: "adaptive",
       leftHanded: false,
       swipeWorkspaces: true
+    },
+    speakerCalibrator: {
+      id: "thefreshoffice.speaker-calibrator",
+      name: "Speaker Calibrator",
+      url: "https://plugins.omarchy.org/plugin.html?id=thefreshoffice.speaker-calibrator",
+      repo: "https://github.com/thefreshoffice/omarchy-speaker-calibrator.git",
+      installed: false,
+      enabled: false,
+      version: "",
+      activeProfile: "",
+      serviceActive: false,
+      sourceAvailable: false
     }
   };
 }
@@ -178,6 +190,21 @@ function parseStatus(raw) {
         }
       } else {
         data.trackpad = emptyStatus().trackpad;
+      }
+
+      if (data.speakerCalibrator && typeof data.speakerCalibrator === "object") {
+        data.speakerCalibrator.installed = Boolean(data.speakerCalibrator.installed);
+        data.speakerCalibrator.enabled = Boolean(data.speakerCalibrator.enabled);
+        data.speakerCalibrator.version = data.speakerCalibrator.version ? String(data.speakerCalibrator.version) : "";
+        data.speakerCalibrator.activeProfile = data.speakerCalibrator.activeProfile ? String(data.speakerCalibrator.activeProfile) : "";
+        data.speakerCalibrator.serviceActive = Boolean(data.speakerCalibrator.serviceActive);
+        data.speakerCalibrator.sourceAvailable = Boolean(data.speakerCalibrator.sourceAvailable);
+        data.speakerCalibrator.id = "thefreshoffice.speaker-calibrator";
+        data.speakerCalibrator.name = "Speaker Calibrator";
+        data.speakerCalibrator.url = "https://plugins.omarchy.org/plugin.html?id=thefreshoffice.speaker-calibrator";
+        data.speakerCalibrator.repo = "https://github.com/thefreshoffice/omarchy-speaker-calibrator.git";
+      } else {
+        data.speakerCalibrator = emptyStatus().speakerCalibrator;
       }
 
       return data;
@@ -875,4 +902,5 @@ function formatTapButtonMap(map) {
   if (m === "lmr") return "LMR (X11 Standard)";
   return "LRM (Mac Default)";
 }
+
 

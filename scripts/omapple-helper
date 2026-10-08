@@ -724,6 +724,16 @@ PYEOF
     plugin_ver=$(jq -r '.version // "1.0.4"' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || echo "1.0.4")
   fi
 
+  local speaker_cal_json
+  local helper_py
+  helper_py=$(find_plugins_helper)
+  if [[ -n "$helper_py" && -f "$helper_py" ]]; then
+    speaker_cal_json=$(python3 -I "$helper_py" status-speaker-calibrator 2>/dev/null || echo '{"installed":false,"enabled":false}')
+  else
+    speaker_cal_json='{"installed":false,"enabled":false}'
+  fi
+  [[ -z "$speaker_cal_json" ]] && speaker_cal_json='{"installed":false,"enabled":false}'
+
   cat <<EOF
 {
   "version": "$plugin_ver",
@@ -765,7 +775,8 @@ PYEOF
   "keybindingSelectAddress": "$kb_select_address",
   "systemKeybindingOverrides": $sys_overrides,
   "systemKeybindings": $sys_map,
-  "trackpad": $trackpad_json
+  "trackpad": $trackpad_json,
+  "speakerCalibrator": $speaker_cal_json
 }
 EOF
 }
@@ -3208,9 +3219,26 @@ case "${1:-status}" in
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 -I "$helper_py" toggle "$@"
     ;;
+  speaker-calibrator-status|status-speaker-calibrator)
+    helper_py=$(find_plugins_helper)
+    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
+    exec python3 -I "$helper_py" status-speaker-calibrator
+    ;;
+  open-speaker-calibrator)
+    if command -v omarchy-shell >/dev/null 2>&1; then
+      omarchy-shell shell summon "thefreshoffice.speaker-calibrator" || omarchy-shell shell toggle "thefreshoffice.speaker-calibrator" "{}"
+    elif command -v quickshell >/dev/null 2>&1; then
+      quickshell -p /usr/share/omarchy/shell ipc call shell summon '["thefreshoffice.speaker-calibrator", "{}"]' || true
+    fi
+    ;;
+
+  restart-audio)
+    systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null || true
+    echo '{"status":"ok","message":"Audio services (PipeWire & WirePlumber) reloaded"}'
+    ;;
 
   *)
-    echo "Usage: $0 {status|detect|set <key> <val>|apply-recommended|apply-t2-fixes|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle}" >&2
+    echo "Usage: $0 {status|detect|set <key> <val>|apply-recommended|apply-t2-fixes|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle|speaker-calibrator-status|open-speaker-calibrator|restart-audio}" >&2
     exit 1
     ;;
 esac
