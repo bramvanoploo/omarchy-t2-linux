@@ -28,7 +28,7 @@ fi
 
 mkdir -p "$CONFIG_DIR"
 if [[ ! -f "$SETTINGS_FILE" ]]; then
-  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","keybindingReload":"CTRL + R","keybindingSelectAddress":"CTRL + L","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":1.0,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$SETTINGS_FILE"
+  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"t2FixesPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","keybindingReload":"CTRL + R","keybindingSelectAddress":"CTRL + L","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":1.0,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$SETTINGS_FILE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -595,10 +595,11 @@ print_status_json() {
   clamshell=$(get_clamshell_mode)
   hib_delay=$(get_hibernate_delay)
 
-  local kbd_timeout touchbar_blank inactive_eth pcie_compat rec_prompt_shown kb_select_all kb_delete kb_find kb_undo kb_redo
+  local kbd_timeout touchbar_blank inactive_eth pcie_compat rec_prompt_shown t2_fixes_prompt_shown kb_select_all kb_delete kb_find kb_undo kb_redo
   kbd_timeout=$(get_setting "kbdTimeout" "1m")
   touchbar_blank=$(get_setting "touchbarBlank" "true")
   rec_prompt_shown=$(get_setting "recommendedPromptShown" "false")
+  t2_fixes_prompt_shown=$(get_setting "t2FixesPromptShown" "false")
   kb_select_all=$(get_setting "keybindingSelectAll" "CTRL + A")
   kb_delete=$(get_setting "keybindingDelete" "DELETE")
   kb_find=$(get_setting "keybindingFind" "CTRL + F")
@@ -719,9 +720,9 @@ PYEOF
     chip_label="$vendor ($sys_arch)"
   fi
 
-  local plugin_ver="1.1.0"
+  local plugin_ver="1.1.1"
   if [[ -f "$PLUGIN_ROOT/manifest.json" ]]; then
-    plugin_ver=$(jq -r '.version // "1.1.0"' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || echo "1.1.0")
+    plugin_ver=$(jq -r '.version // "1.1.1"' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || echo "1.1.1")
   fi
 
   local speaker_cal_json
@@ -764,6 +765,7 @@ PYEOF
   "hibernateDelay": "$hib_delay",
   "touchbarBlank": $touchbar_blank,
   "recommendedPromptShown": $rec_prompt_shown,
+  "t2FixesPromptShown": $t2_fixes_prompt_shown,
   "keybindingSelectAll": "$kb_select_all",
   "keybindingDelete": "$kb_delete",
   "keybindingFind": "$kb_find",
@@ -845,7 +847,7 @@ save_user_setting() {
           ;;
       esac
       ;;
-    touchbarBlank|recommendedPromptShown)
+    touchbarBlank|recommendedPromptShown|t2FixesPromptShown)
       case "$val" in
         true|false|True|False) ;;
         *)
@@ -1082,6 +1084,7 @@ unmanaged-devices=interface-name:$dev"
 apply_pcie_ports_compat() {
   local mode="${1:-}" # on | off
   local update_limine="${2:-true}"
+  local conf="/etc/limine-entry-tool.d/t2-mac.conf"
   validate_no_control_chars "$mode" "pcie_ports_compat"
   validate_no_control_chars "$update_limine" "update_limine"
   mode=$(echo "$mode" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
@@ -2549,6 +2552,279 @@ restart_trackpad() {
   echo "Trackpad driver restarted"
 }
 
+do_apply_t2_fixes() {
+  local skip_pcie=false
+  local skip_eth=false
+  local skip_limine=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --skip-pcie|--no-pcie) skip_pcie=true; shift ;;
+      --skip-eth|--no-eth) skip_eth=true; shift ;;
+      --skip-limine) skip_limine=true; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  if [[ "$skip_eth" != "true" ]] && command -v nmcli >/dev/null 2>&1; then
+    while IFS=: read -r dev type state rest; do
+      if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
+        local is_managed=true
+        if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
+          is_managed=false
+        fi
+        if [[ "$is_managed" == "true" ]]; then
+          apply_ethernet_managed "$dev" "no"
+        fi
+      fi
+    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+  fi
+
+  if [[ "$skip_pcie" != "true" ]]; then
+    local pcie_curr
+    pcie_curr=$(get_pcie_ports_compat)
+    if [[ "$pcie_curr" != "true" ]]; then
+      local update_limine=true
+      if [[ "$skip_limine" == "true" ]]; then
+        update_limine=false
+      fi
+      apply_pcie_ports_compat "on" "$update_limine"
+    fi
+  fi
+}
+
+do_apply_recommended() {
+  local skip_limine=false
+  local skip_pcie=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --skip-limine) skip_limine=true; shift ;;
+      --skip-pcie) skip_pcie=true; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  local limine_needed=false
+
+  local cur_mem
+  cur_mem=$(get_mem_sleep)
+  if [[ "$cur_mem" != "deep" ]]; then
+    if [[ ! -r /sys/power/mem_sleep ]] || grep -q "deep" /sys/power/mem_sleep 2>/dev/null; then
+      apply_mem_sleep "deep" "false"
+      limine_needed=true
+    fi
+  fi
+
+  local cur_lid
+  cur_lid=$(get_lid_action)
+  if [[ "$cur_lid" != "suspend" && "$cur_lid" != "suspend-then-hibernate" ]]; then
+    apply_lid_action "suspend"
+  fi
+
+  local cur_clam
+  cur_clam=$(get_clamshell_mode)
+  if [[ "$cur_clam" != "true" ]]; then
+    apply_clamshell "true"
+  fi
+
+  local cur_lid_wake
+  cur_lid_wake=$(get_wake_state "LID0")
+  if [[ "$cur_lid_wake" != "true" ]]; then
+    apply_wake_toggle "LID0" "on"
+  fi
+
+  local cur_ac_wake
+  cur_ac_wake=$(get_wake_state "ADP1")
+  if [[ "$cur_ac_wake" != "false" ]]; then
+    apply_wake_toggle "ADP1" "off"
+  fi
+
+  local cur_hib
+  cur_hib=$(get_hibernate_delay)
+  if [[ "$cur_hib" != "off" && "$cur_hib" != "0" && "$cur_hib" != "never" ]]; then
+    apply_hibernate_delay "off"
+  fi
+
+  local cur_wifi
+  cur_wifi=$(get_wifi_powersave)
+  if [[ "$cur_wifi" != "false" ]]; then
+    apply_wifi_powersave "off"
+  fi
+
+  if command -v nmcli >/dev/null 2>&1; then
+    while IFS=: read -r dev type state rest; do
+      if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
+        local is_managed=true
+        if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
+          is_managed=false
+        fi
+        if [[ "$is_managed" == "true" ]]; then
+          apply_ethernet_managed "$dev" "no"
+        fi
+      fi
+    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+  fi
+
+  local cur_audio
+  cur_audio=$(get_audio_powersave)
+  if [[ "$cur_audio" != "true" ]]; then
+    apply_audio_powersave "true"
+  fi
+
+  local cur_usb
+  cur_usb=$(get_usb_autosuspend)
+  if [[ "$cur_usb" != "true" ]]; then
+    apply_usb_autosuspend "true"
+  fi
+
+  if [[ "$skip_pcie" != "true" ]] && detect_t2; then
+    local cur_pcie
+    cur_pcie=$(get_pcie_ports_compat)
+    if [[ "$cur_pcie" != "true" ]]; then
+      apply_pcie_ports_compat "on" "false"
+      limine_needed=true
+    fi
+  fi
+
+  if [[ "$limine_needed" == "true" && "$skip_limine" != "true" ]]; then
+    run_limine_update
+  fi
+}
+
+do_apply_recommended_suspend() {
+  local skip_limine=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --skip-limine) skip_limine=true; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  local update_limine=true
+  if [[ "$skip_limine" == "true" ]]; then
+    update_limine=false
+  fi
+
+  local cur_mem
+  cur_mem=$(get_mem_sleep)
+  if [[ "$cur_mem" != "deep" ]]; then
+    if [[ ! -r /sys/power/mem_sleep ]] || grep -q "deep" /sys/power/mem_sleep 2>/dev/null; then
+      apply_mem_sleep "deep" "$update_limine"
+    fi
+  fi
+
+  local cur_lid
+  cur_lid=$(get_lid_action)
+  if [[ "$cur_lid" != "suspend" && "$cur_lid" != "suspend-then-hibernate" ]]; then
+    apply_lid_action "suspend"
+  fi
+
+  local cur_clam
+  cur_clam=$(get_clamshell_mode)
+  if [[ "$cur_clam" != "true" ]]; then
+    apply_clamshell "true"
+  fi
+
+  local cur_lid_wake
+  cur_lid_wake=$(get_wake_state "LID0")
+  if [[ "$cur_lid_wake" != "true" ]]; then
+    apply_wake_toggle "LID0" "on"
+  fi
+
+  local cur_ac_wake
+  cur_ac_wake=$(get_wake_state "ADP1")
+  if [[ "$cur_ac_wake" != "false" ]]; then
+    apply_wake_toggle "ADP1" "off"
+  fi
+
+  local cur_hib
+  cur_hib=$(get_hibernate_delay)
+  if [[ "$cur_hib" != "off" && "$cur_hib" != "0" && "$cur_hib" != "never" ]]; then
+    apply_hibernate_delay "off"
+  fi
+}
+
+do_reset_suspend_to_defaults() {
+  apply_mem_sleep "s2idle" "true"
+  apply_lid_action "suspend"
+  apply_clamshell "false"
+  apply_wake_toggle "LID0" "off"
+  apply_wake_toggle "ADP1" "on"
+  apply_hibernate_delay "off"
+}
+
+do_apply_recommended_battery() {
+  local skip_limine=false
+  local skip_pcie=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --skip-limine) skip_limine=true; shift ;;
+      --skip-pcie) skip_pcie=true; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  local update_limine=true
+  if [[ "$skip_limine" == "true" ]]; then
+    update_limine=false
+  fi
+
+  local cur_wifi
+  cur_wifi=$(get_wifi_powersave)
+  if [[ "$cur_wifi" != "false" ]]; then
+    apply_wifi_powersave "off"
+  fi
+
+  if command -v nmcli >/dev/null 2>&1; then
+    while IFS=: read -r dev type state rest; do
+      if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
+        local is_managed=true
+        if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
+          is_managed=false
+        fi
+        if [[ "$is_managed" == "true" ]]; then
+          apply_ethernet_managed "$dev" "no"
+        fi
+      fi
+    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+  fi
+
+  local cur_audio
+  cur_audio=$(get_audio_powersave)
+  if [[ "$cur_audio" != "true" ]]; then
+    apply_audio_powersave "true"
+  fi
+
+  local cur_usb
+  cur_usb=$(get_usb_autosuspend)
+  if [[ "$cur_usb" != "true" ]]; then
+    apply_usb_autosuspend "true"
+  fi
+
+  if [[ "$skip_pcie" != "true" ]] && detect_t2; then
+    local cur_pcie
+    cur_pcie=$(get_pcie_ports_compat)
+    if [[ "$cur_pcie" != "true" ]]; then
+      apply_pcie_ports_compat "on" "$update_limine"
+    fi
+  fi
+}
+
+do_reset_battery_to_defaults() {
+  apply_wifi_powersave "on"
+  if command -v nmcli >/dev/null 2>&1; then
+    while IFS=: read -r dev type state rest; do
+      if [[ "$type" == "ethernet" ]]; then
+        apply_ethernet_managed "$dev" "yes"
+      fi
+    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+  fi
+  apply_audio_powersave "false"
+  apply_usb_autosuspend "false"
+  if detect_t2; then
+    apply_pcie_ports_compat "off" "true"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # CLI Command Dispatcher
 # ---------------------------------------------------------------------------
@@ -2667,6 +2943,9 @@ case "${1:-status}" in
         ;;
       recommended_prompt_shown)
         save_user_setting "recommendedPromptShown" "$val"
+        ;;
+      t2_fixes_prompt_shown)
+        save_user_setting "t2FixesPromptShown" "$val"
         ;;
       keybinding_select_all)
         save_user_setting "keybindingSelectAll" "$val"
@@ -2850,48 +3129,13 @@ case "${1:-status}" in
     shift; apply_hibernate_delay "${1:-}" ;;
   apply-t2-fixes)
     shift
+    if [[ "$(get_setting "t2FixesPromptShown" "false")" != "true" ]]; then
+      save_user_setting "t2FixesPromptShown" "true"
+    fi
     run_privileged do-apply-t2-fixes "$@"
     ;;
   do-apply-t2-fixes)
-    shift
-    local skip_pcie=false
-    local skip_eth=false
-    local skip_limine=false
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --skip-pcie|--no-pcie) skip_pcie=true; shift ;;
-        --skip-eth|--no-eth) skip_eth=true; shift ;;
-        --skip-limine) skip_limine=true; shift ;;
-        *) shift ;;
-      esac
-    done
-
-    if [[ "$skip_eth" != "true" ]] && command -v nmcli >/dev/null 2>&1; then
-      while IFS=: read -r dev type state rest; do
-        if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
-          local is_managed=true
-          if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
-            is_managed=false
-          fi
-          if [[ "$is_managed" == "true" ]]; then
-            apply_ethernet_managed "$dev" "no"
-          fi
-        fi
-      done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
-    fi
-
-    if [[ "$skip_pcie" != "true" ]]; then
-      local pcie_curr
-      pcie_curr=$(get_pcie_ports_compat)
-      if [[ "$pcie_curr" != "true" ]]; then
-        local update_limine=true
-        if [[ "$skip_limine" == "true" ]]; then
-          update_limine=false
-        fi
-        apply_pcie_ports_compat "on" "$update_limine"
-      fi
-    fi
-    ;;
+    shift; do_apply_t2_fixes "$@" ;;
   apply-recommended)
     shift
     if [[ "$(get_setting "kbdTimeout" "1m")" != "1m" ]]; then
@@ -2903,108 +3147,15 @@ case "${1:-status}" in
     if [[ "$(get_setting "recommendedPromptShown" "false")" != "true" ]]; then
       save_user_setting "recommendedPromptShown" "true"
     fi
+    if [[ "$(get_setting "t2FixesPromptShown" "false")" != "true" ]]; then
+      save_user_setting "t2FixesPromptShown" "true"
+    fi
     apply_recommended_keybindings
     apply_recommended_trackpad
     run_privileged do-apply-recommended "$@"
     ;;
   do-apply-recommended)
-    shift
-    local skip_limine=false
-    local skip_pcie=false
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --skip-limine) skip_limine=true; shift ;;
-        --skip-pcie) skip_pcie=true; shift ;;
-        *) shift ;;
-      esac
-    done
-
-    local limine_needed=false
-
-    local cur_mem
-    cur_mem=$(get_mem_sleep)
-    if [[ "$cur_mem" != "deep" ]]; then
-      if [[ ! -r /sys/power/mem_sleep ]] || grep -q "deep" /sys/power/mem_sleep 2>/dev/null; then
-        apply_mem_sleep "deep" "false"
-        limine_needed=true
-      fi
-    fi
-
-    local cur_lid
-    cur_lid=$(get_lid_action)
-    if [[ "$cur_lid" != "suspend" && "$cur_lid" != "suspend-then-hibernate" ]]; then
-      apply_lid_action "suspend"
-    fi
-
-    local cur_clam
-    cur_clam=$(get_clamshell_mode)
-    if [[ "$cur_clam" != "true" ]]; then
-      apply_clamshell "true"
-    fi
-
-    local cur_lid_wake
-    cur_lid_wake=$(get_wake_state "LID0")
-    if [[ "$cur_lid_wake" != "true" ]]; then
-      apply_wake_toggle "LID0" "on"
-    fi
-
-    local cur_ac_wake
-    cur_ac_wake=$(get_wake_state "ADP1")
-    if [[ "$cur_ac_wake" != "false" ]]; then
-      apply_wake_toggle "ADP1" "off"
-    fi
-
-    local cur_hib
-    cur_hib=$(get_hibernate_delay)
-    if [[ "$cur_hib" != "off" && "$cur_hib" != "0" && "$cur_hib" != "never" ]]; then
-      apply_hibernate_delay "off"
-    fi
-
-    local cur_wifi
-    cur_wifi=$(get_wifi_powersave)
-    if [[ "$cur_wifi" != "false" ]]; then
-      apply_wifi_powersave "off"
-    fi
-
-    if command -v nmcli >/dev/null 2>&1; then
-      while IFS=: read -r dev type state rest; do
-        if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
-          local is_managed=true
-          if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
-            is_managed=false
-          fi
-          if [[ "$is_managed" == "true" ]]; then
-            apply_ethernet_managed "$dev" "no"
-          fi
-        fi
-      done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
-    fi
-
-    local cur_audio
-    cur_audio=$(get_audio_powersave)
-    if [[ "$cur_audio" != "true" ]]; then
-      apply_audio_powersave "true"
-    fi
-
-    local cur_usb
-    cur_usb=$(get_usb_autosuspend)
-    if [[ "$cur_usb" != "true" ]]; then
-      apply_usb_autosuspend "true"
-    fi
-
-    if [[ "$skip_pcie" != "true" ]] && detect_t2; then
-      local cur_pcie
-      cur_pcie=$(get_pcie_ports_compat)
-      if [[ "$cur_pcie" != "true" ]]; then
-        apply_pcie_ports_compat "on" "false"
-        limine_needed=true
-      fi
-    fi
-
-    if [[ "$limine_needed" == "true" && "$skip_limine" != "true" ]]; then
-      run_limine_update
-    fi
-    ;;
+    shift; do_apply_recommended "$@" ;;
   apply-recommended-suspend)
     shift
     if [[ "$(get_setting "touchbarBlank" "true")" != "true" ]]; then
@@ -3013,70 +3164,13 @@ case "${1:-status}" in
     run_privileged do-apply-recommended-suspend "$@"
     ;;
   do-apply-recommended-suspend)
-    shift
-    local skip_limine=false
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --skip-limine) skip_limine=true; shift ;;
-        *) shift ;;
-      esac
-    done
-
-    local update_limine=true
-    if [[ "$skip_limine" == "true" ]]; then
-      update_limine=false
-    fi
-
-    local cur_mem
-    cur_mem=$(get_mem_sleep)
-    if [[ "$cur_mem" != "deep" ]]; then
-      if [[ ! -r /sys/power/mem_sleep ]] || grep -q "deep" /sys/power/mem_sleep 2>/dev/null; then
-        apply_mem_sleep "deep" "$update_limine"
-      fi
-    fi
-
-    local cur_lid
-    cur_lid=$(get_lid_action)
-    if [[ "$cur_lid" != "suspend" && "$cur_lid" != "suspend-then-hibernate" ]]; then
-      apply_lid_action "suspend"
-    fi
-
-    local cur_clam
-    cur_clam=$(get_clamshell_mode)
-    if [[ "$cur_clam" != "true" ]]; then
-      apply_clamshell "true"
-    fi
-
-    local cur_lid_wake
-    cur_lid_wake=$(get_wake_state "LID0")
-    if [[ "$cur_lid_wake" != "true" ]]; then
-      apply_wake_toggle "LID0" "on"
-    fi
-
-    local cur_ac_wake
-    cur_ac_wake=$(get_wake_state "ADP1")
-    if [[ "$cur_ac_wake" != "false" ]]; then
-      apply_wake_toggle "ADP1" "off"
-    fi
-
-    local cur_hib
-    cur_hib=$(get_hibernate_delay)
-    if [[ "$cur_hib" != "off" && "$cur_hib" != "0" && "$cur_hib" != "never" ]]; then
-      apply_hibernate_delay "off"
-    fi
-    ;;
+    shift; do_apply_recommended_suspend "$@" ;;
   reset-suspend-to-defaults)
     save_user_setting "touchbarBlank" "false"
     run_privileged do-reset-suspend-to-defaults
     ;;
   do-reset-suspend-to-defaults)
-    apply_mem_sleep "s2idle" "true"
-    apply_lid_action "suspend"
-    apply_clamshell "false"
-    apply_wake_toggle "LID0" "off"
-    apply_wake_toggle "ADP1" "on"
-    apply_hibernate_delay "off"
-    ;;
+    shift; do_reset_suspend_to_defaults ;;
   apply-recommended-battery)
     shift
     if [[ "$(get_setting "kbdTimeout" "1m")" != "1m" ]]; then
@@ -3085,81 +3179,13 @@ case "${1:-status}" in
     run_privileged do-apply-recommended-battery "$@"
     ;;
   do-apply-recommended-battery)
-    shift
-    local skip_limine=false
-    local skip_pcie=false
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --skip-limine) skip_limine=true; shift ;;
-        --skip-pcie) skip_pcie=true; shift ;;
-        *) shift ;;
-      esac
-    done
-
-    local update_limine=true
-    if [[ "$skip_limine" == "true" ]]; then
-      update_limine=false
-    fi
-
-    local cur_wifi
-    cur_wifi=$(get_wifi_powersave)
-    if [[ "$cur_wifi" != "false" ]]; then
-      apply_wifi_powersave "off"
-    fi
-
-    if command -v nmcli >/dev/null 2>&1; then
-      while IFS=: read -r dev type state rest; do
-        if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
-          local is_managed=true
-          if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
-            is_managed=false
-          fi
-          if [[ "$is_managed" == "true" ]]; then
-            apply_ethernet_managed "$dev" "no"
-          fi
-        fi
-      done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
-    fi
-
-    local cur_audio
-    cur_audio=$(get_audio_powersave)
-    if [[ "$cur_audio" != "true" ]]; then
-      apply_audio_powersave "true"
-    fi
-
-    local cur_usb
-    cur_usb=$(get_usb_autosuspend)
-    if [[ "$cur_usb" != "true" ]]; then
-      apply_usb_autosuspend "true"
-    fi
-
-    if [[ "$skip_pcie" != "true" ]] && detect_t2; then
-      local cur_pcie
-      cur_pcie=$(get_pcie_ports_compat)
-      if [[ "$cur_pcie" != "true" ]]; then
-        apply_pcie_ports_compat "on" "$update_limine"
-      fi
-    fi
-    ;;
+    shift; do_apply_recommended_battery "$@" ;;
   reset-battery-to-defaults)
     save_user_setting "kbdTimeout" "off"
     run_privileged do-reset-battery-to-defaults
     ;;
   do-reset-battery-to-defaults)
-    apply_wifi_powersave "on"
-    if command -v nmcli >/dev/null 2>&1; then
-      while IFS=: read -r dev type state rest; do
-        if [[ "$type" == "ethernet" ]]; then
-          apply_ethernet_managed "$dev" "yes"
-        fi
-      done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
-    fi
-    apply_audio_powersave "false"
-    apply_usb_autosuspend "false"
-    if detect_t2; then
-      apply_pcie_ports_compat "off"
-    fi
-    ;;
+    shift; do_reset_battery_to_defaults ;;
   install-system)
     run_privileged do-install-system ;;
   do-install-system)

@@ -53,7 +53,7 @@ BarWidget {
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string helper: pluginDir + "/scripts/omapple-helper"
-  readonly property string pluginVersion: (root.status && root.status.version) ? String(root.status.version) : "1.1.0"
+  readonly property string pluginVersion: (root.status && root.status.version) ? String(root.status.version) : "1.1.1"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color accent: Color.accent
@@ -110,7 +110,7 @@ BarWidget {
     var parsed = Model.parseStatus(raw)
     if (parsed) {
       status = parsed
-      if (root.opened && root.openedViaBarButton && parsed.isT2 && !Model.areAllT2FixesApplied(parsed) && !root.limineUpdating && !root.rebootConfirmOpen) {
+      if (root.opened && root.openedViaBarButton && parsed.isT2 && !parsed.t2FixesPromptShown && !Model.areAllT2FixesApplied(parsed) && !root.limineUpdating && !root.rebootConfirmOpen) {
         root.t2FixesConfirmOpen = true
       } else if (root.opened && parsed.isT2 && !parsed.recommendedPromptShown && !root.limineUpdating && !root.rebootConfirmOpen && !root.t2FixesConfirmOpen) {
         root.recommendedConfirmOpen = true
@@ -134,7 +134,7 @@ BarWidget {
     if (!root.opened) {
       root.openedViaBarButton = true
       root.open()
-      if (root.status && root.status.isT2 && !Model.areAllT2FixesApplied(root.status) && !root.limineUpdating && !root.rebootConfirmOpen) {
+      if (root.status && root.status.isT2 && !root.status.t2FixesPromptShown && !Model.areAllT2FixesApplied(root.status) && !root.limineUpdating && !root.rebootConfirmOpen) {
         root.t2FixesConfirmOpen = true
       }
     } else {
@@ -158,6 +158,9 @@ BarWidget {
 
   function close() {
     if (root.limineUpdating) return
+    if (t2FixesConfirmOpen) {
+      dismissT2FixesPrompt()
+    }
     opened = false
     openedViaBarButton = false
     t2FixesConfirmOpen = false
@@ -193,7 +196,8 @@ BarWidget {
 
   function applyT2Fixes() {
     t2FixesConfirmOpen = false
-    if (root.limineUpdating || limineProc.running || actionProc.running) return
+    if (root.limineUpdating || limineProc.running) return
+    if (actionProc.running) actionProc.running = false
 
     var pcieAlreadyApplied = Boolean(root.status && root.status.pciePortsCompat)
     var ethAlreadyApplied = Model.areAllEthernetUnmanaged(root.status)
@@ -207,6 +211,7 @@ BarWidget {
 
     if (root.status) {
       var s = Object.assign({}, root.status)
+      s.t2FixesPromptShown = true
       if (!pcieAlreadyApplied) {
         s.pciePortsCompat = true
       }
@@ -267,6 +272,7 @@ BarWidget {
       s.kbdTimeout = "1m"
       if (isT2Detected) s.pciePortsCompat = true
       s.recommendedPromptShown = true
+      s.t2FixesPromptShown = true
       s.keybindingSelectAll = "SUPER + A"
       s.keybindingDelete = "SUPER + BACKSPACE"
       s.keybindingFind = "SUPER + F"
@@ -574,6 +580,16 @@ BarWidget {
       root.status = s
     }
     actionProc.command = ["bash", helper, "set", "recommended_prompt_shown", "true"]
+    actionProc.running = true
+  }
+
+  function dismissT2FixesPrompt() {
+    if (root.status && !root.status.t2FixesPromptShown) {
+      var s = Object.assign({}, root.status)
+      s.t2FixesPromptShown = true
+      root.status = s
+    }
+    actionProc.command = ["bash", helper, "set", "t2_fixes_prompt_shown", "true"]
     actionProc.running = true
   }
 
@@ -1464,12 +1480,15 @@ BarWidget {
       } else {
         fetchPlugins(false)
       }
-      if (root.openedViaBarButton && root.status && root.status.isT2 && !Model.areAllT2FixesApplied(root.status) && !root.limineUpdating && !root.rebootConfirmOpen) {
+      if (root.openedViaBarButton && root.status && root.status.isT2 && !root.status.t2FixesPromptShown && !Model.areAllT2FixesApplied(root.status) && !root.limineUpdating && !root.rebootConfirmOpen) {
         root.t2FixesConfirmOpen = true
       } else if (root.status && root.status.isT2 && !root.status.recommendedPromptShown && !root.limineUpdating && !root.rebootConfirmOpen && !root.t2FixesConfirmOpen) {
         root.recommendedConfirmOpen = true
       }
     } else {
+      if (root.t2FixesConfirmOpen) {
+        root.dismissT2FixesPrompt()
+      }
       root.openedViaBarButton = false
       root.t2FixesConfirmOpen = false
       root.keyRecorderOpen = false
@@ -1714,6 +1733,7 @@ BarWidget {
         if (root.t2FixesConfirmOpen) {
           if (event.key === Qt.Key_Escape) {
             root.t2FixesConfirmOpen = false
+            root.dismissT2FixesPrompt()
             event.accepted = true
             return
           }
@@ -6360,6 +6380,7 @@ BarWidget {
                     bordered: true
                     onClicked: {
                       root.t2FixesConfirmOpen = false
+                      root.dismissT2FixesPrompt()
                     }
                   }
 

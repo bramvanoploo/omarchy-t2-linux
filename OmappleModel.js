@@ -2,7 +2,7 @@
 
 function emptyStatus() {
   return {
-    version: "1.1.0",
+    version: "1.1.1",
     isT2: true,
     isApple: true,
     model: "Detecting…",
@@ -38,6 +38,7 @@ function emptyStatus() {
     hibernateDelay: "off",
     touchbarBlank: true,
     recommendedPromptShown: false,
+    t2FixesPromptShown: false,
     keybindingSelectAll: "CTRL + A",
     keybindingDelete: "DELETE",
     keybindingFind: "CTRL + F",
@@ -87,7 +88,7 @@ function parseStatus(raw) {
   try {
     var data = JSON.parse(raw);
     if (data && typeof data === "object") {
-      data.version = data.version || "1.1.0";
+      data.version = data.version || "1.1.1";
       data.isT2 = Boolean(data.isT2);
       data.helperInstalled = Boolean(data.helperInstalled);
 
@@ -138,6 +139,7 @@ function parseStatus(raw) {
       data.wakeOnAc = Boolean(data.wakeOnAc);
       data.touchbarBlank = data.touchbarBlank !== undefined ? Boolean(data.touchbarBlank) : true;
       data.recommendedPromptShown = Boolean(data.recommendedPromptShown);
+      data.t2FixesPromptShown = Boolean(data.t2FixesPromptShown);
       data.keybindingSelectAll = data.keybindingSelectAll ? String(data.keybindingSelectAll).trim() : "CTRL + A";
       data.keybindingDelete = data.keybindingDelete ? String(data.keybindingDelete).trim() : "DELETE";
       data.keybindingFind = data.keybindingFind ? String(data.keybindingFind).trim() : "CTRL + F";
