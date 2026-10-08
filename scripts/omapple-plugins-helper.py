@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """
 scripts/omapple-plugins-helper.py
 Helper for discovering, installing, updating, and removing Apple/T2-related Omarchy plugins.
@@ -6,7 +6,18 @@ Queries the Omarchy Plugins catalog (https://plugins.omarchy.org/catalog.json) m
 """
 
 import sys
+
+# Ensure caller-controlled directories or current working directory cannot be imported from
+sys.path = [p for p in sys.path if p and p != "." and not p.startswith(".")]
+
 import os
+
+# If running as root / privileged, switch away from caller-controlled CWD
+if hasattr(os, "geteuid") and os.geteuid() == 0:
+    try:
+        os.chdir("/")
+    except Exception:
+        pass
 import json
 import re
 import time

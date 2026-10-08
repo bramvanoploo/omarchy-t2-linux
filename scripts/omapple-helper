@@ -5,6 +5,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Ensure privileged entry points cannot import code or load files from caller-controlled directories.
+# If running as root (e.g. via pkexec --keep-cwd or sudo), switch away from caller-controlled CWD.
+if (( EUID == 0 )); then
+  cd / || exit 1
+fi
+
+# Define an isolated Python wrapper to prevent importing from caller-controlled directories,
+# ignoring environment variables (PYTHONPATH/PYTHONHOME), user site-packages, and unsafe paths.
+python3() {
+  command python3 -I "$@"
+}
+export -f python3 2>/dev/null || true
+
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/t2-linux"
 SETTINGS_FILE="$CONFIG_DIR/settings.json"
 SYSTEM_HELPER="/usr/local/libexec/omapple-helper"
@@ -396,7 +410,7 @@ get_setting() {
 }
 
 get_trackpad_info() {
-  python3 - "$SETTINGS_FILE" <<'PYEOF'
+  python3 -I - "$SETTINGS_FILE" <<'PYEOF'
 import sys, os, json, subprocess
 
 settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -598,7 +612,7 @@ print_status_json() {
   pcie_compat=$(get_pcie_ports_compat)
 
   local kb_payload sys_overrides sys_map
-  kb_payload=$(python3 - "$SETTINGS_FILE" <<'PYEOF'
+  kb_payload=$(python3 -I - "$SETTINGS_FILE" <<'PYEOF'
 import glob, os, json, re, sys
 
 settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -893,7 +907,7 @@ save_user_setting() {
   esac
 
   mkdir -p "$(dirname "$SETTINGS_FILE")"
-  python3 - "$SETTINGS_FILE" "$key" "$val" <<'PYEOF'
+  python3 -I - "$SETTINGS_FILE" "$key" "$val" <<'PYEOF'
 import sys, os, json
 
 file_path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -1081,7 +1095,7 @@ apply_pcie_ports_compat() {
   fi
 
   local res=0
-  python3 - "$conf" "$mode" <<'PYEOF' || res=$?
+  python3 -I - "$conf" "$mode" <<'PYEOF' || res=$?
 import sys
 import re
 import os
@@ -1187,7 +1201,7 @@ MemorySleepMode=$val"
 
   # 4. Kernel command line persistence in /etc/limine-entry-tool.d/t2-mac.conf
   local limine_conf="/etc/limine-entry-tool.d/t2-mac.conf"
-  python3 - "$limine_conf" "$val" <<'PYEOF'
+  python3 -I - "$limine_conf" "$val" <<'PYEOF'
 import sys
 import re
 import os
@@ -1479,7 +1493,7 @@ apply_keybindings() {
   local bindings_file="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/bindings.lua"
   [[ -f "$bindings_file" ]] || return 0
 
-  python3 - "$SETTINGS_FILE" "$bindings_file" <<'PYEOF'
+  python3 -I - "$SETTINGS_FILE" "$bindings_file" <<'PYEOF'
 import sys, json, os, re
 
 settings_file = sys.argv[1]
@@ -1684,7 +1698,7 @@ set_keybindings() {
 
 apply_recommended_keybindings() {
   local py_res=0
-  python3 - "$SETTINGS_FILE" <<'PYEOF' || py_res=$?
+  python3 -I - "$SETTINGS_FILE" <<'PYEOF' || py_res=$?
 import sys, json, os, glob
 
 settings_file = sys.argv[1]
@@ -1832,7 +1846,7 @@ PYEOF
 }
 
 reset_keybindings_to_defaults() {
-  python3 - "$SETTINGS_FILE" <<'PYEOF'
+  python3 -I - "$SETTINGS_FILE" <<'PYEOF'
 import sys, json, os
 
 settings_file = sys.argv[1]
@@ -1882,7 +1896,7 @@ set_system_keybinding() {
     return 1
   fi
 
-  python3 - "$SETTINGS_FILE" "$action" "$new_chord" "$def_chord" "$disp" "$arg" "$rec_chord" <<'PYEOF'
+  python3 -I - "$SETTINGS_FILE" "$action" "$new_chord" "$def_chord" "$disp" "$arg" "$rec_chord" <<'PYEOF'
 import sys, json, os
 settings_file = sys.argv[1]
 action = sys.argv[2]
@@ -1947,7 +1961,7 @@ reset_system_keybinding() {
   local action="${1:-}"
   [[ -n "$action" ]] || return 1
 
-  python3 - "$SETTINGS_FILE" "$action" <<'PYEOF'
+  python3 -I - "$SETTINGS_FILE" "$action" <<'PYEOF'
 import sys, json, os
 settings_file, action = sys.argv[1], sys.argv[2]
 if os.path.exists(settings_file):
@@ -1987,7 +2001,7 @@ set_keybinding_with_system_override() {
     return 1
   fi
 
-  python3 - "$SETTINGS_FILE" "$task_key" "$task_chord" "$action" "$new_chord" "$def_chord" "$disp" "$arg" "$rec_chord" <<'PYEOF'
+  python3 -I - "$SETTINGS_FILE" "$task_key" "$task_chord" "$action" "$new_chord" "$def_chord" "$disp" "$arg" "$rec_chord" <<'PYEOF'
 import sys, json, os
 settings_file = sys.argv[1]
 task_key = sys.argv[2]
@@ -2080,7 +2094,7 @@ check_keybinding() {
   local target_chord="${1:-}"
   local current_task_key="${2:-}"
 
-  python3 - "$target_chord" "$current_task_key" "$SETTINGS_FILE" <<'PYEOF'
+  python3 -I - "$target_chord" "$current_task_key" "$SETTINGS_FILE" <<'PYEOF'
 import sys, os, json, re, glob, subprocess
 
 target_chord = sys.argv[1].strip() if len(sys.argv) > 1 else ""
@@ -2275,7 +2289,7 @@ PYEOF
 # ---------------------------------------------------------------------------
 
 apply_trackpad() {
-  python3 - "$SETTINGS_FILE" <<'PYEOF'
+  python3 -I - "$SETTINGS_FILE" <<'PYEOF'
 import sys, os, json, subprocess
 
 settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -2407,7 +2421,7 @@ PYEOF
 
 apply_recommended_trackpad() {
   local py_res=0
-  python3 - "$SETTINGS_FILE" <<'PYEOF' || py_res=$?
+  python3 -I - "$SETTINGS_FILE" <<'PYEOF' || py_res=$?
 import sys, os, json
 
 settings_file = sys.argv[1]
@@ -3152,7 +3166,7 @@ case "${1:-status}" in
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
-    exec python3 "$helper_py" list "$@"
+    exec python3 -I "$helper_py" list "$@"
     ;;
   plugin-install)
     if (( EUID == 0 )); then
@@ -3162,7 +3176,7 @@ case "${1:-status}" in
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
-    exec python3 "$helper_py" install "$@"
+    exec python3 -I "$helper_py" install "$@"
     ;;
   plugin-update)
     if (( EUID == 0 )); then
@@ -3172,7 +3186,7 @@ case "${1:-status}" in
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
-    exec python3 "$helper_py" update "$@"
+    exec python3 -I "$helper_py" update "$@"
     ;;
   plugin-remove)
     if (( EUID == 0 )); then
@@ -3182,7 +3196,7 @@ case "${1:-status}" in
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
-    exec python3 "$helper_py" remove "$@"
+    exec python3 -I "$helper_py" remove "$@"
     ;;
   plugin-toggle)
     if (( EUID == 0 )); then
@@ -3192,7 +3206,7 @@ case "${1:-status}" in
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
-    exec python3 "$helper_py" toggle "$@"
+    exec python3 -I "$helper_py" toggle "$@"
     ;;
 
   *)
