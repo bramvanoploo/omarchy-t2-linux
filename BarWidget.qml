@@ -53,7 +53,7 @@ BarWidget {
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string helper: pluginDir + "/scripts/omapple-helper"
-  readonly property string pluginVersion: (root.status && root.status.version) ? String(root.status.version) : "1.1.1"
+  readonly property string pluginVersion: (root.status && root.status.version) ? String(root.status.version) : "1.1.2"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color accent: Color.accent

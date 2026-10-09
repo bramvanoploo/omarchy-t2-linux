@@ -769,7 +769,40 @@ def get_speaker_calibrator_status():
     }
 
 
+def check_user_access():
+    if hasattr(os, "geteuid"):
+        euid = os.geteuid()
+        if euid == 0:
+            print(json.dumps({"status": "error", "error": "Plugin operations cannot be run as root"}), file=sys.stderr)
+            sys.exit(1)
+        pkexec_uid = os.environ.get("PKEXEC_UID")
+        if pkexec_uid is not None:
+            try:
+                if int(pkexec_uid) != euid:
+                    print(json.dumps({"status": "error", "error": f"Security Error: Cross-user access denied for plugin operations (caller UID {pkexec_uid} != target UID {euid})"}), file=sys.stderr)
+                    sys.exit(1)
+            except ValueError:
+                pass
+        sudo_uid = os.environ.get("SUDO_UID")
+        if sudo_uid is not None:
+            try:
+                if int(sudo_uid) != euid:
+                    print(json.dumps({"status": "error", "error": f"Security Error: Cross-user access denied for plugin operations (caller UID {sudo_uid} != target UID {euid})"}), file=sys.stderr)
+                    sys.exit(1)
+            except ValueError:
+                pass
+        if os.path.exists(PLUGINS_DIR):
+            try:
+                stat = os.stat(PLUGINS_DIR)
+                if stat.st_uid != euid:
+                    print(json.dumps({"status": "error", "error": f"Security Error: Plugins directory not owned by current user (owner UID {stat.st_uid} != current UID {euid})"}), file=sys.stderr)
+                    sys.exit(1)
+            except Exception:
+                pass
+
+
 def main():
+    check_user_access()
     if len(sys.argv) < 2:
         list_plugins()
         return

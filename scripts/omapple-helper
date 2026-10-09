@@ -26,9 +26,59 @@ if [[ ! -x "$SYSTEM_HELPER" && -x "/usr/local/libexec/omarchy-t2-helper" ]]; the
   SYSTEM_HELPER="/usr/local/libexec/omarchy-t2-helper"
 fi
 
-mkdir -p "$CONFIG_DIR"
-if [[ ! -f "$SETTINGS_FILE" ]]; then
-  echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"t2FixesPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","keybindingReload":"CTRL + R","keybindingSelectAddress":"CTRL + L","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":1.0,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$SETTINGS_FILE"
+assert_user_operation() {
+  local op="${1:-User configuration or plugin operation}"
+  if (( EUID == 0 )); then
+    echo "Security Error: $op cannot be run as root." >&2
+    exit 1
+  fi
+  if [[ -n "${PKEXEC_UID:-}" && "$PKEXEC_UID" != "$EUID" ]]; then
+    echo "Security Error: Cross-user access denied for $op (caller UID $PKEXEC_UID != target UID $EUID)." >&2
+    exit 1
+  fi
+  if [[ -n "${SUDO_UID:-}" && "$SUDO_UID" != "$EUID" ]]; then
+    echo "Security Error: Cross-user access denied for $op (caller UID $SUDO_UID != target UID $EUID)." >&2
+    exit 1
+  fi
+}
+
+validate_user_config_path() {
+  local path="$1"
+  local op="${2:-User configuration}"
+  assert_user_operation "$op"
+
+  if [[ -e "$path" ]]; then
+    local owner
+    owner=$(stat -c %u "$path" 2>/dev/null || true)
+    if [[ -n "$owner" && "$owner" != "$EUID" ]]; then
+      echo "Security Error: Path '$path' is not owned by current user (owner UID $owner != current UID $EUID)." >&2
+      exit 1
+    fi
+  else
+    local pdir
+    pdir="$(dirname "$path")"
+    while [[ -n "$pdir" && "$pdir" != "/" && ! -e "$pdir" ]]; do
+      pdir="$(dirname "$pdir")"
+    done
+    if [[ -e "$pdir" ]]; then
+      local powner
+      powner=$(stat -c %u "$pdir" 2>/dev/null || true)
+      if [[ -n "$powner" && "$powner" != "$EUID" ]]; then
+        echo "Security Error: Directory '$pdir' is not owned by current user (owner UID $powner != current UID $EUID)." >&2
+        exit 1
+      fi
+    fi
+  fi
+}
+
+# Only auto-initialize config file for legitimate non-root user sessions
+if (( EUID != 0 )) && [[ -z "${PKEXEC_UID:-}" || "$PKEXEC_UID" == "$EUID" ]] && [[ -z "${SUDO_UID:-}" || "$SUDO_UID" == "$EUID" ]]; then
+  if [[ ! -e "$CONFIG_DIR" ]] || [[ "$(stat -c %u "$CONFIG_DIR" 2>/dev/null || true)" == "$EUID" ]]; then
+    mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+    if [[ -d "$CONFIG_DIR" && ! -f "$SETTINGS_FILE" ]]; then
+      echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"t2FixesPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","keybindingReload":"CTRL + R","keybindingSelectAddress":"CTRL + L","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":1.0,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$SETTINGS_FILE" 2>/dev/null || true
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -399,11 +449,15 @@ get_hibernate_delay() {
 get_setting() {
   local key="$1" default="$2"
   if [[ -f "$SETTINGS_FILE" && -r "$SETTINGS_FILE" ]]; then
-    local res
-    res=$(jq -r --arg k "$key" '.[$k] // empty' "$SETTINGS_FILE" 2>/dev/null || true)
-    if [[ -n "$res" && "$res" != "null" ]]; then
-      echo "$res"
-      return
+    local s_owner
+    s_owner=$(stat -c %u "$SETTINGS_FILE" 2>/dev/null || true)
+    if [[ -z "$s_owner" || "$s_owner" == "$EUID" ]]; then
+      local res
+      res=$(jq -r --arg k "$key" '.[$k] // empty' "$SETTINGS_FILE" 2>/dev/null || true)
+      if [[ -n "$res" && "$res" != "null" ]]; then
+        echo "$res"
+        return
+      fi
     fi
   fi
   echo "$default"
@@ -720,9 +774,9 @@ PYEOF
     chip_label="$vendor ($sys_arch)"
   fi
 
-  local plugin_ver="1.1.1"
+  local plugin_ver="1.1.2"
   if [[ -f "$PLUGIN_ROOT/manifest.json" ]]; then
-    plugin_ver=$(jq -r '.version // "1.1.1"' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || echo "1.1.1")
+    plugin_ver=$(jq -r '.version // "1.1.2"' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || echo "1.1.2")
   fi
 
   local speaker_cal_json
@@ -832,6 +886,8 @@ atomic_write_file() {
 
 save_user_setting() {
   local key="${1:-}" val="${2:-}"
+  assert_user_operation "User setting modification"
+  validate_user_config_path "$SETTINGS_FILE" "User setting modification"
   validate_no_control_chars "$key" "setting_key"
   validate_no_control_chars "$val" "setting_val"
 
@@ -926,6 +982,9 @@ import sys, os, json
 file_path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
 data = {}
 if os.path.isfile(file_path):
+    if hasattr(os, "geteuid") and os.stat(file_path).st_uid != os.geteuid():
+        sys.stderr.write("Security Error: settings.json not owned by current user\n")
+        sys.exit(1)
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -1504,7 +1563,10 @@ uninstall_system_helper() {
 }
 
 apply_keybindings() {
+  assert_user_operation "Keybinding configuration"
+  validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
   local bindings_file="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/bindings.lua"
+  validate_user_config_path "$bindings_file" "Keybinding configuration"
   [[ -f "$bindings_file" ]] || return 0
 
   python3 -I - "$SETTINGS_FILE" "$bindings_file" <<'PYEOF'
@@ -1512,6 +1574,15 @@ import sys, json, os, re
 
 settings_file = sys.argv[1]
 bindings_file = sys.argv[2]
+
+if os.path.exists(settings_file):
+    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
+        sys.stderr.write("Security Error: settings.json not owned by current user\n")
+        sys.exit(1)
+if os.path.exists(bindings_file):
+    if hasattr(os, "geteuid") and os.stat(bindings_file).st_uid != os.geteuid():
+        sys.stderr.write("Security Error: bindings.lua not owned by current user\n")
+        sys.exit(1)
 
 settings = {}
 if os.path.exists(settings_file):
@@ -1669,6 +1740,8 @@ PYEOF
 }
 
 set_keybindings() {
+  assert_user_operation "Keybinding configuration"
+  validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
   while [[ $# -ge 2 ]]; do
     local k="$1"
     local v="$2"
@@ -1711,11 +1784,17 @@ set_keybindings() {
 }
 
 apply_recommended_keybindings() {
+  assert_user_operation "Keybinding configuration"
+  validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
   local py_res=0
   python3 -I - "$SETTINGS_FILE" <<'PYEOF' || py_res=$?
 import sys, json, os, glob
 
 settings_file = sys.argv[1]
+if os.path.exists(settings_file):
+    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
+        sys.stderr.write("Security Error: settings.json not owned by current user\n")
+        sys.exit(1)
 settings = {}
 if os.path.exists(settings_file):
     try:
@@ -1860,10 +1939,16 @@ PYEOF
 }
 
 reset_keybindings_to_defaults() {
+  assert_user_operation "Keybinding configuration"
+  validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
   python3 -I - "$SETTINGS_FILE" <<'PYEOF'
 import sys, json, os
 
 settings_file = sys.argv[1]
+if os.path.exists(settings_file):
+    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
+        sys.stderr.write("Security Error: settings.json not owned by current user\n")
+        sys.exit(1)
 settings = {}
 if os.path.exists(settings_file):
     try:
@@ -1901,6 +1986,9 @@ set_system_keybinding() {
   local rec_chord="${6:-}"
   [[ -n "$action" && -n "$new_chord" ]] || return 1
 
+  assert_user_operation "Keybinding configuration"
+  validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
+
   if [[ ! "$new_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
     echo "Error: Invalid keybinding chord: '$new_chord'" >&2
     return 1
@@ -1913,6 +2001,10 @@ set_system_keybinding() {
   python3 -I - "$SETTINGS_FILE" "$action" "$new_chord" "$def_chord" "$disp" "$arg" "$rec_chord" <<'PYEOF'
 import sys, json, os
 settings_file = sys.argv[1]
+if os.path.exists(settings_file):
+    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
+        sys.stderr.write("Security Error: settings.json not owned by current user\n")
+        sys.exit(1)
 action = sys.argv[2]
 new_chord = sys.argv[3]
 def_chord = sys.argv[4] if len(sys.argv) > 4 else ""
@@ -1975,10 +2067,16 @@ reset_system_keybinding() {
   local action="${1:-}"
   [[ -n "$action" ]] || return 1
 
+  assert_user_operation "Keybinding configuration"
+  validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
+
   python3 -I - "$SETTINGS_FILE" "$action" <<'PYEOF'
 import sys, json, os
 settings_file, action = sys.argv[1], sys.argv[2]
 if os.path.exists(settings_file):
+    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
+        sys.stderr.write("Security Error: settings.json not owned by current user\n")
+        sys.exit(1)
     try:
         with open(settings_file, "r", encoding="utf-8") as f:
             settings = json.load(f)
@@ -2006,6 +2104,9 @@ set_keybinding_with_system_override() {
   local arg="${7:-}"
   local rec_chord="${8:-}"
 
+  assert_user_operation "Keybinding configuration"
+  validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
+
   if [[ ! "$task_chord" =~ ^[A-Za-z0-9_\ +-]+$ || ! "$new_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
     echo "Error: Invalid keybinding chord format" >&2
     return 1
@@ -2018,6 +2119,10 @@ set_keybinding_with_system_override() {
   python3 -I - "$SETTINGS_FILE" "$task_key" "$task_chord" "$action" "$new_chord" "$def_chord" "$disp" "$arg" "$rec_chord" <<'PYEOF'
 import sys, json, os
 settings_file = sys.argv[1]
+if os.path.exists(settings_file):
+    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
+        sys.stderr.write("Security Error: settings.json not owned by current user\n")
+        sys.exit(1)
 task_key = sys.argv[2]
 task_chord = sys.argv[3]
 action = sys.argv[4]
@@ -2108,12 +2213,20 @@ check_keybinding() {
   local target_chord="${1:-}"
   local current_task_key="${2:-}"
 
+  assert_user_operation "Keybinding query"
+  validate_user_config_path "$SETTINGS_FILE" "Keybinding query"
+
   python3 -I - "$target_chord" "$current_task_key" "$SETTINGS_FILE" <<'PYEOF'
 import sys, os, json, re, glob, subprocess
 
 target_chord = sys.argv[1].strip() if len(sys.argv) > 1 else ""
 current_task_key = sys.argv[2].strip() if len(sys.argv) > 2 else ""
 settings_path = sys.argv[3] if len(sys.argv) > 3 else ""
+
+if settings_path and os.path.exists(settings_path):
+    if hasattr(os, "geteuid") and os.stat(settings_path).st_uid != os.geteuid():
+        sys.stderr.write("Security Error: settings.json not owned by current user\n")
+        sys.exit(1)
 
 def normalize_chord(c):
     if not c:
@@ -2303,10 +2416,19 @@ PYEOF
 # ---------------------------------------------------------------------------
 
 apply_trackpad() {
+  assert_user_operation "Trackpad configuration"
+  validate_user_config_path "$SETTINGS_FILE" "Trackpad configuration"
+  local hypr_dir="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
+  validate_user_config_path "$hypr_dir" "Trackpad configuration"
+
   python3 -I - "$SETTINGS_FILE" <<'PYEOF'
 import sys, os, json, subprocess
 
 settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
+if settings_file and os.path.isfile(settings_file):
+    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
+        sys.stderr.write("Security Error: settings.json not owned by current user\n")
+        sys.exit(1)
 settings = {}
 if settings_file and os.path.isfile(settings_file):
     try:
@@ -2434,11 +2556,17 @@ PYEOF
 }
 
 apply_recommended_trackpad() {
+  assert_user_operation "Trackpad configuration"
+  validate_user_config_path "$SETTINGS_FILE" "Trackpad configuration"
   local py_res=0
   python3 -I - "$SETTINGS_FILE" <<'PYEOF' || py_res=$?
 import sys, os, json
 
 settings_file = sys.argv[1]
+if settings_file and os.path.exists(settings_file):
+    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
+        sys.stderr.write("Security Error: settings.json not owned by current user\n")
+        sys.exit(1)
 settings = {}
 if os.path.exists(settings_file):
     try:
@@ -2514,6 +2642,8 @@ PYEOF
 }
 
 reset_trackpad_to_defaults() {
+  assert_user_operation "Trackpad configuration"
+  validate_user_config_path "$SETTINGS_FILE" "Trackpad configuration"
   save_user_setting "trackpadNaturalScroll" "false"
   save_user_setting "trackpadTapToClick" "true"
   save_user_setting "trackpadClickfingerBehavior" "true"
@@ -2534,6 +2664,7 @@ reset_trackpad_to_defaults() {
 }
 
 restart_trackpad() {
+  assert_user_operation "Trackpad operation"
   if [[ -x /usr/share/omarchy/bin/omarchy-restart-trackpad ]]; then
     /usr/share/omarchy/bin/omarchy-restart-trackpad || true
   fi
@@ -3055,49 +3186,62 @@ case "${1:-status}" in
     ;;
 
   apply-keybindings)
+    assert_user_operation "Keybinding configuration"
     apply_keybindings
     ;;
 
   apply-recommended-keybindings)
+    assert_user_operation "Keybinding configuration"
     apply_recommended_keybindings
     ;;
 
   reset-keybindings-to-defaults)
+    assert_user_operation "Keybinding configuration"
     reset_keybindings_to_defaults
     ;;
 
   apply-recommended-trackpad)
+    assert_user_operation "Trackpad configuration"
     apply_recommended_trackpad
     ;;
 
   reset-trackpad-to-defaults)
+    assert_user_operation "Trackpad configuration"
     reset_trackpad_to_defaults
     ;;
 
   restart-trackpad)
+    assert_user_operation "Trackpad operation"
     restart_trackpad
     ;;
 
   set-keybindings)
+    assert_user_operation "Keybinding configuration"
     shift; set_keybindings "$@" ;;
 
   set-system-keybinding)
+    assert_user_operation "Keybinding configuration"
     shift; set_system_keybinding "$@" ;;
 
   reset-system-keybinding)
+    assert_user_operation "Keybinding configuration"
     shift; reset_system_keybinding "$@" ;;
 
   set-keybinding-with-system-override)
+    assert_user_operation "Keybinding configuration"
     shift; set_keybinding_with_system_override "$@" ;;
 
   check-keybinding)
+    assert_user_operation "Keybinding query"
     shift; check_keybinding "${1:-}" "${2:-}" ;;
 
   start-key-record)
+    assert_user_operation "Key recording"
     echo 'hl.dispatch(hl.dsp.submap("omapple_record"))' | hyprctl repl >/dev/null 2>&1 || true
     ;;
 
   stop-key-record)
+    assert_user_operation "Key recording"
     echo 'hl.dispatch(hl.dsp.submap("reset"))' | hyprctl repl >/dev/null 2>&1 || true
     ;;
 
@@ -3128,6 +3272,7 @@ case "${1:-status}" in
   apply-hibernate-delay)
     shift; apply_hibernate_delay "${1:-}" ;;
   apply-t2-fixes)
+    assert_user_operation "T2 fixes configuration"
     shift
     if [[ "$(get_setting "t2FixesPromptShown" "false")" != "true" ]]; then
       save_user_setting "t2FixesPromptShown" "true"
@@ -3137,6 +3282,7 @@ case "${1:-status}" in
   do-apply-t2-fixes)
     shift; do_apply_t2_fixes "$@" ;;
   apply-recommended)
+    assert_user_operation "Recommended configuration"
     shift
     if [[ "$(get_setting "kbdTimeout" "1m")" != "1m" ]]; then
       save_user_setting "kbdTimeout" "1m"
@@ -3157,6 +3303,7 @@ case "${1:-status}" in
   do-apply-recommended)
     shift; do_apply_recommended "$@" ;;
   apply-recommended-suspend)
+    assert_user_operation "Suspend configuration"
     shift
     if [[ "$(get_setting "touchbarBlank" "true")" != "true" ]]; then
       save_user_setting "touchbarBlank" "true"
@@ -3166,12 +3313,14 @@ case "${1:-status}" in
   do-apply-recommended-suspend)
     shift; do_apply_recommended_suspend "$@" ;;
   reset-suspend-to-defaults)
+    assert_user_operation "Suspend configuration"
     save_user_setting "touchbarBlank" "false"
     run_privileged do-reset-suspend-to-defaults
     ;;
   do-reset-suspend-to-defaults)
     shift; do_reset_suspend_to_defaults ;;
   apply-recommended-battery)
+    assert_user_operation "Battery configuration"
     shift
     if [[ "$(get_setting "kbdTimeout" "1m")" != "1m" ]]; then
       save_user_setting "kbdTimeout" "1m"
@@ -3181,6 +3330,7 @@ case "${1:-status}" in
   do-apply-recommended-battery)
     shift; do_apply_recommended_battery "$@" ;;
   reset-battery-to-defaults)
+    assert_user_operation "Battery configuration"
     save_user_setting "kbdTimeout" "off"
     run_privileged do-reset-battery-to-defaults
     ;;
@@ -3196,61 +3346,48 @@ case "${1:-status}" in
     uninstall_system_helper ;;
 
   plugins-list|plugins)
-    if (( EUID == 0 )); then
-      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
-      exit 1
-    fi
+    assert_user_operation "Plugin operations"
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 -I "$helper_py" list "$@"
     ;;
   plugin-install)
-    if (( EUID == 0 )); then
-      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
-      exit 1
-    fi
+    assert_user_operation "Plugin operations"
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 -I "$helper_py" install "$@"
     ;;
   plugin-update)
-    if (( EUID == 0 )); then
-      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
-      exit 1
-    fi
+    assert_user_operation "Plugin operations"
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 -I "$helper_py" update "$@"
     ;;
   plugin-remove)
-    if (( EUID == 0 )); then
-      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
-      exit 1
-    fi
+    assert_user_operation "Plugin operations"
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 -I "$helper_py" remove "$@"
     ;;
   plugin-toggle)
-    if (( EUID == 0 )); then
-      echo '{"status":"error","error":"Plugin commands cannot be run as root"}' >&2
-      exit 1
-    fi
+    assert_user_operation "Plugin operations"
     shift
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 -I "$helper_py" toggle "$@"
     ;;
   speaker-calibrator-status|status-speaker-calibrator)
+    assert_user_operation "Plugin operations"
     helper_py=$(find_plugins_helper)
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 -I "$helper_py" status-speaker-calibrator
     ;;
   open-speaker-calibrator)
+    assert_user_operation "Speaker calibrator launch"
     vol_arg="${2:-}"
     if [[ "$vol_arg" == "50%" || "$vol_arg" == "--set-volume-50" || "$vol_arg" == "set-volume-50" || "$vol_arg" == "50" ]]; then
       if command -v wpctl >/dev/null 2>&1; then
@@ -3269,6 +3406,7 @@ case "${1:-status}" in
     ;;
 
   set-volume)
+    assert_user_operation "Audio volume control"
     vol="${2:-50%}"
     if command -v wpctl >/dev/null 2>&1; then
       wpctl set-volume @DEFAULT_AUDIO_SINK@ "$vol" >/dev/null 2>&1 || true
@@ -3281,6 +3419,7 @@ case "${1:-status}" in
     ;;
 
   open-url)
+    assert_user_operation "URL open operation"
     target_url="${2:-}"
     if [[ -n "$target_url" ]]; then
       if command -v xdg-open >/dev/null 2>&1; then
@@ -3292,6 +3431,7 @@ case "${1:-status}" in
     ;;
 
   restart-audio)
+    assert_user_operation "Audio reload operation"
     systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null || true
     echo '{"status":"ok","message":"Audio services (PipeWire & WirePlumber) reloaded"}'
     ;;

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "bramvanoploo.omarchy-t2-linux",
   "name": "Omapple",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "author": "Bram van Oploo",
   "license": "MIT",
   "description": "Let's keep the Apple hard ware alive. Configuration options and presets tailored for the Mac. Including T2 specific improvements and fixes, if the hardware is detected.",

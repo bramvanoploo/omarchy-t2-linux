@@ -1,6 +1,39 @@
 polkit.addRule(function(action, subject) {
   if (action.id === "org.freedesktop.policykit.exec"
       && (action.lookup("program") === "/usr/local/libexec/omapple-helper" || action.lookup("program") === "/usr/local/libexec/omarchy-t2-helper")
-      && subject.active && subject.local)
-    return polkit.Result.YES;
+      && action.lookup("user") === "root"
+      && subject.active && subject.local) {
+    var cmd = action.lookup("command_line");
+    if (!cmd) return undefined;
+
+    var match = cmd.trim().match(/^\S+\s+([a-zA-Z0-9_-]+)/);
+    if (!match) return undefined;
+
+    var subcommand = match[1];
+    var allowedCommands = [
+      "apply-epp",
+      "apply-aspm",
+      "apply-wifi-powersave",
+      "apply-ethernet-managed",
+      "apply-pcie-ports-compat",
+      "apply-mem-sleep",
+      "apply-lid-action",
+      "apply-clamshell",
+      "apply-wake-lid",
+      "apply-wake-ac",
+      "apply-audio-powersave",
+      "apply-usb-autosuspend",
+      "apply-hibernate-delay",
+      "do-apply-t2-fixes",
+      "do-apply-recommended",
+      "do-apply-recommended-suspend",
+      "do-reset-suspend-to-defaults",
+      "do-apply-recommended-battery",
+      "do-reset-battery-to-defaults"
+    ];
+
+    if (allowedCommands.indexOf(subcommand) !== -1) {
+      return polkit.Result.YES;
+    }
+  }
 });
