@@ -1,10 +1,11 @@
-// OmappleModel.js: State parsing, defaults, and formatting for Omapple
+// OmappleModel.js: State parsing, defaults, and formatting for OmApple
 
 function emptyStatus() {
   return {
-    version: "1.1.2",
+    version: "1.2.0",
     isT2: true,
     isApple: true,
+    hasTouchBar: false,
     model: "Detecting…",
     vendor: "Apple Inc.",
     chip: "Apple T2 Security Chip",
@@ -88,8 +89,16 @@ function parseStatus(raw) {
   try {
     var data = JSON.parse(raw);
     if (data && typeof data === "object") {
-      data.version = data.version || "1.1.2";
+      data.version = data.version || "1.2.0";
       data.isT2 = Boolean(data.isT2);
+      if (data.hasTouchBar !== undefined) {
+        data.hasTouchBar = Boolean(data.hasTouchBar);
+      } else if (data.model) {
+        var m = String(data.model);
+        data.hasTouchBar = /^MacBookPro(13,[23]|14,[23]|15,[1-4]|16,[1-4]|17,1)$/.test(m) || m === "Mac14,7";
+      } else {
+        data.hasTouchBar = false;
+      }
       data.helperInstalled = Boolean(data.helperInstalled);
 
       if (data.battery && typeof data.battery === "object") {
@@ -225,11 +234,11 @@ function barIcon(status) {
 }
 
 function tooltip(status) {
-  if (!status) return "Omapple";
+  if (!status) return "OmApple";
   if (!status.isT2) {
-    return "Omapple\nApple T2 chip not detected on this system";
+    return "OmApple\nApple T2 chip not detected on this system";
   }
-  var tip = "Omapple (" + (status.model || "T2 MacBook") + ")";
+  var tip = "OmApple (" + (status.model || "T2 MacBook") + ")";
   if (status.battery && status.battery.present) {
     var pct = Math.min(100, Math.max(0, status.battery.percent || 0));
     tip += "\nBattery: " + pct + "% (" + status.battery.status + ")";
@@ -781,6 +790,8 @@ function areAllSuspendRecommendedApplied(status) {
     memOk = (mem === "deep");
   }
 
+  var tbOk = status.hasTouchBar ? (tb === true) : true;
+
   return (
     memOk &&
     (lid === "suspend" || lid === "suspend-then-hibernate") &&
@@ -788,7 +799,7 @@ function areAllSuspendRecommendedApplied(status) {
     wakeLid === true &&
     wakeAc === false &&
     (hib === "off" || hib === "0" || hib === "never") &&
-    tb === true
+    tbOk
   );
 }
 

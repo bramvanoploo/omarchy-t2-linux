@@ -1,10 +1,10 @@
-# Omapple
+# OmApple
 
 An [Omarchy](https://omarchy.org) status bar plugin and settings center for Apple hardware running Linux. It provides comprehensive controls for battery life, sleep/wake behavior, macOS keybindings, Force Touch trackpad gestures, and an Apple community plugin catalog—with specialized optimizations and fixes when an **Apple T2 Security Chip** is detected (2018–2020 Intel MacBook Pro, MacBook Air, and Mac mini).
 
 Clicking the bar icon (``) opens a dedicated control panel with organized tabs for tuning hardware power profiles, suspend states, input ergonomics, and community extensions.
 
-![Omapple Preview](preview.png)
+![OmApple Preview](preview.png)
 
 ---
 
@@ -30,7 +30,7 @@ The panel organizes all hardware tunables and configurations into dedicated vert
 - **Wake on Lid Open (LID0)**: Automatically resume the laptop from sleep as soon as the display lid is opened.
 - **Wake on Charger Connect (ADP1)**: Wake the system from sleep whenever a USB-C or MagSafe charger is connected.
 - **Hibernate Delay (Suspend-Then-Hibernate)**: Automatically transitions from suspend to hibernation after a set duration (`30 min`, `1 hour`, `2 hours`, or `Never`) to avoid battery exhaustion during long sleep intervals.
-- **Touch Bar Blanking on Sleep**: Powers off the OLED Touch Bar display immediately before system sleep.
+- **Touch Bar Blanking on Sleep**: Powers off the OLED Touch Bar display immediately before system sleep *(automatically hidden if no Touch Bar is detected on the system)*.
 
 ### 3. Keybindings
 - **Task: Select All**: Change default Linux `CTRL + A` to `SUPER + A` (Command + A) for Mac muscle memory, or assign custom chords.
@@ -80,10 +80,11 @@ The panel organizes all hardware tunables and configurations into dedicated vert
 The plugin automatically detects your hardware on startup:
 - Probes `/sys/bus/pci/devices/*/device` for PCI Vendor `0x106b` and Device IDs `0x1801` / `0x1802` (Apple T2 Bridge Controller & Secure Enclave Processor).
 - Checks DMI system identifiers (`product_name` and `sys_vendor`).
+- Probes for OLED Touch Bar hardware via backlight devices (`appletb_backlight`), USB device descriptors (`05ac:8600`, `05ac:8102`), input devices, and DMI product matching.
 
 ### Adaptive Hardware Handling
-- **Apple T2 MacBooks** (2018–2020 Intel MacBook Pro, MacBook Air, and Mac mini): Unlocks specialized T2 controls, including the one-click "Apply T2 fixes only" button, PCIe port compatibility tunables, T2 audio power management, Touch Bar sleep blanking, and T2-specific plugin filtering.
-- **Other Apple & Linux Hardware**: Provides the full suite of battery life optimizations, CPU EPP profiles, sleep/wake settings, Force Touch trackpad gestures, macOS keybindings, and Apple community plugins, while automatically hiding controls that only apply to T2 chips.
+- **Apple T2 MacBooks** (2018–2020 Intel MacBook Pro, MacBook Air, and Mac mini): Unlocks specialized T2 controls, including the one-click "Apply T2 fixes only" button, PCIe port compatibility tunables, T2 audio power management, Touch Bar sleep blanking (when equipped), and T2-specific plugin filtering.
+- **Other Apple & Linux Hardware**: Provides the full suite of battery life optimizations, CPU EPP profiles, sleep/wake settings, Force Touch trackpad gestures, macOS keybindings, and Apple community plugins, while automatically hiding controls that only apply to T2 chips or absent hardware (such as Touch Bar blanking).
 
 ---
 

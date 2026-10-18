@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "id": "bramvanoploo.omarchy-t2-linux",
-  "name": "Omapple",
-  "version": "1.1.2",
+  "name": "OmApple",
+  "version": "1.2.0",
   "author": "Bram van Oploo",
   "license": "MIT",
   "description": "Let's keep the Apple hard ware alive. Configuration options and presets tailored for the Mac. Including T2 specific improvements and fixes, if the hardware is detected.",
@@ -14,7 +14,7 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Omapple",
+    "displayName": "OmApple",
     "description": "Apple MacBook optimizations for battery life, suspend behavior, trackpad controls, and community plugins",
     "category": "System",
     "defaultSection": "right",

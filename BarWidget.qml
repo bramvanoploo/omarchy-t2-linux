@@ -53,7 +53,7 @@ BarWidget {
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string helper: pluginDir + "/scripts/omapple-helper"
-  readonly property string pluginVersion: (root.status && root.status.version) ? String(root.status.version) : "1.1.2"
+  readonly property string pluginVersion: (root.status && root.status.version) ? String(root.status.version) : "1.2.0"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color accent: Color.accent
@@ -1852,7 +1852,7 @@ BarWidget {
 
                       Text {
                         id: omappleTitle
-                        text: "Omapple"
+                        text: "OmApple"
                         color: root.foreground
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.title
@@ -3232,6 +3232,7 @@ BarWidget {
 
                       // 7. Touch Bar Blanking on Sleep
                       BorderSurface {
+                        visible: Boolean(root.status && root.status.hasTouchBar)
                         width: parent.width
                         height: Style.space(62)
                         color: Util.alpha(root.foreground, 0.03)
@@ -6664,50 +6665,55 @@ BarWidget {
                       }
 
                       Repeater {
-                        model: [
-                          {
-                            title: "Sleep mode",
-                            val: "Deep Sleep",
-                            desc: "Enters traditional ACPI S3 deep sleep state to minimize battery drain when suspended.",
-                            applied: Boolean(root.status && (root.status.memSleepModes ? (root.status.memSleepModes.indexOf("deep") === -1 || root.status.memSleep === "deep") : root.status.memSleep === "deep"))
-                          },
-                          {
-                            title: "Lid Close Action",
-                            val: "Suspend",
-                            desc: "Suspends the MacBook to preserve power when closing the display lid on battery.",
-                            applied: Boolean(root.status && (root.status.lidAction === "suspend" || root.status.lidAction === "suspend-then-hibernate"))
-                          },
-                          {
-                            title: "Clam Shell Mode",
-                            val: "Stay Awake",
-                            desc: "Keeps the system awake when connected to an external monitor and charger with lid closed.",
-                            applied: Boolean(root.status && root.status.clamshellMode === true)
-                          },
-                          {
-                            title: "Wake On Lid Open",
-                            val: "Enabled",
-                            desc: "Automatically and instantly wakes the system when opening the laptop lid.",
-                            applied: Boolean(root.status && root.status.wakeOnLid === true)
-                          },
-                          {
-                            title: "Wake on AC Charger Connect",
-                            val: "Disabled",
-                            desc: "Prevents unwanted wakeups when plugging in the USB-C or MagSafe charger.",
-                            applied: Boolean(root.status && root.status.wakeOnAc === false)
-                          },
-                          {
-                            title: "Hibernate Delay",
-                            val: "Never",
-                            desc: "Prevents unexpected transitions to disk hibernation to maintain quick sleep responsiveness.",
-                            applied: Boolean(root.status && (root.status.hibernateDelay === "off" || root.status.hibernateDelay === "0" || root.status.hibernateDelay === "never"))
-                          },
-                          {
-                            title: "Touch Bar Blanking on Sleep",
-                            val: "Enabled",
-                            desc: "Ensures the OLED Touch Bar is powered off cleanly immediately upon suspend.",
-                            applied: Boolean(root.status && root.status.touchbarBlank === true)
+                        model: {
+                          var items = [
+                            {
+                              title: "Sleep mode",
+                              val: "Deep Sleep",
+                              desc: "Enters traditional ACPI S3 deep sleep state to minimize battery drain when suspended.",
+                              applied: Boolean(root.status && (root.status.memSleepModes ? (root.status.memSleepModes.indexOf("deep") === -1 || root.status.memSleep === "deep") : root.status.memSleep === "deep"))
+                            },
+                            {
+                              title: "Lid Close Action",
+                              val: "Suspend",
+                              desc: "Suspends the MacBook to preserve power when closing the display lid on battery.",
+                              applied: Boolean(root.status && (root.status.lidAction === "suspend" || root.status.lidAction === "suspend-then-hibernate"))
+                            },
+                            {
+                              title: "Clam Shell Mode",
+                              val: "Stay Awake",
+                              desc: "Keeps the system awake when connected to an external monitor and charger with lid closed.",
+                              applied: Boolean(root.status && root.status.clamshellMode === true)
+                            },
+                            {
+                              title: "Wake On Lid Open",
+                              val: "Enabled",
+                              desc: "Automatically and instantly wakes the system when opening the laptop lid.",
+                              applied: Boolean(root.status && root.status.wakeOnLid === true)
+                            },
+                            {
+                              title: "Wake on AC Charger Connect",
+                              val: "Disabled",
+                              desc: "Prevents unwanted wakeups when plugging in the USB-C or MagSafe charger.",
+                              applied: Boolean(root.status && root.status.wakeOnAc === false)
+                            },
+                            {
+                              title: "Hibernate Delay",
+                              val: "Never",
+                              desc: "Prevents unexpected transitions to disk hibernation to maintain quick sleep responsiveness.",
+                              applied: Boolean(root.status && (root.status.hibernateDelay === "off" || root.status.hibernateDelay === "0" || root.status.hibernateDelay === "never"))
+                            }
+                          ];
+                          if (root.status && root.status.hasTouchBar) {
+                            items.push({
+                              title: "Touch Bar Blanking on Sleep",
+                              val: "Enabled",
+                              desc: "Ensures the OLED Touch Bar is powered off cleanly immediately upon suspend.",
+                              applied: Boolean(root.status && root.status.touchbarBlank === true)
+                            });
                           }
-                        ]
+                          return items;
+                        }
 
                         delegate: BorderSurface {
                           width: parent.width
