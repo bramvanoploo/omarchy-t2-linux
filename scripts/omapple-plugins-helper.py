@@ -37,6 +37,20 @@ STATS_CACHE_FILE = os.path.join(CACHE_DIR, "omapple-plugins-stats.json")
 CACHE_TTL = 3600  # 1 hour
 PLUGINS_DIR = os.path.expanduser("~/.config/omarchy/plugins")
 
+# Hard ceilings for remote JSON payloads. A compromised catalog/stats endpoint
+# must not be able to exhaust helper memory, so every fetch is bounded by
+# declared size, streamed size, wall-clock budget and parsed entry count.
+# Exceeding any ceiling fails closed and falls back to the on-disk cache.
+MAX_CATALOG_BYTES = 1500000
+MAX_STATS_BYTES = 200000
+MAX_CATALOG_PLUGINS = 2000
+MAX_STATS_ENTRIES = 5000
+FETCH_CHUNK = 65536
+# Wall-clock budget for reading a whole body: a slow-drip endpoint stays under
+# the per-read socket timeout, so bound the total time as well.
+CATALOG_FETCH_BUDGET = 12.0
+STATS_FETCH_BUDGET = 8.0
+
 # Built-in fallback in case network is down and cache doesn't exist
 FALLBACK_T2_PLUGINS = [
     {
@@ -144,16 +158,35 @@ FALLBACK_T2_PLUGINS = [
 ]
 
 
+import tempfile
+
+
+def user_owned_dir(path):
+    if not os.path.exists(path):
+        return True
+    try:
+        return os.stat(path).st_uid == os.geteuid()
+    except Exception:
+        return False
+
+
 def ensure_cache_dir():
-    os.makedirs(CACHE_DIR, exist_ok=True)
+    if os.path.exists(CACHE_DIR) and not user_owned_dir(CACHE_DIR):
+        raise PermissionError(f"Cache directory not owned by current user: {CACHE_DIR}")
+    os.makedirs(CACHE_DIR, mode=0o700, exist_ok=True)
 
 
 def safe_write_json(file_path, data):
     ensure_cache_dir()
-    tmp_path = file_path + ".tmp." + str(os.getpid())
+    parent = os.path.dirname(file_path) or "."
+    if not user_owned_dir(parent):
+        raise PermissionError(f"Cache directory not owned by current user: {parent}")
+    fd, tmp_path = tempfile.mkstemp(prefix=os.path.basename(file_path) + ".tmp.", dir=parent)
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, file_path)
     except Exception:
         if os.path.exists(tmp_path):
@@ -161,6 +194,67 @@ def safe_write_json(file_path, data):
                 os.remove(tmp_path)
             except Exception:
                 pass
+        raise
+
+
+def safe_plugin_path(plugin_id, *parts):
+    if not plugin_id or not re.match(r"^[a-zA-Z0-9_.-]+$", plugin_id) or plugin_id.startswith("-"):
+        return None
+    base = os.path.realpath(PLUGINS_DIR)
+    candidate = os.path.realpath(os.path.join(base, plugin_id, *parts))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        return None
+    return candidate
+
+
+def _read_capped(response, max_bytes, budget):
+    """Read a response body under a hard byte and wall-clock ceiling.
+
+    An endpoint can ignore Content-Length and stream an unbounded body, and a
+    slow-drip body evades the per-read socket timeout. Both are bounded here.
+    The caller treats the raised ValueError as a fetch failure and falls back
+    to the on-disk cache.
+    """
+    declared = response.headers.get("Content-Length")
+    if declared is not None:
+        try:
+            declared_bytes = int(str(declared).strip())
+        except (TypeError, ValueError):
+            declared_bytes = None
+        if declared_bytes is not None and declared_bytes > max_bytes:
+            raise ValueError(
+                "Response declares %s bytes, above the %d byte ceiling"
+                % (declared_bytes, max_bytes)
+            )
+
+    deadline = time.monotonic() + budget
+    chunks = []
+    total = 0
+    while True:
+        chunk = response.read(FETCH_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("Response exceeded the %d byte ceiling" % max_bytes)
+        if time.monotonic() > deadline:
+            raise ValueError("Response exceeded the %.0fs fetch budget" % budget)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def http_get_json(url, timeout, max_bytes, budget):
+    """Fetch a JSON document over HTTPS with bounded memory and time."""
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "Omarchy-T2-Linux-Plugin/1.0 (+https://plugins.omarchy.org)",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        raw = _read_capped(response, max_bytes, budget)
+    return json.loads(raw.decode("utf-8"))
 
 
 def fetch_catalog(force_refresh=False):
@@ -176,16 +270,19 @@ def fetch_catalog(force_refresh=False):
         except Exception:
             pass
 
-    # Try downloading fresh catalog
+    # Try downloading fresh catalog, with bounded size, time and entry count
     try:
-        req = urllib.request.Request(
-            CATALOG_URL,
-            headers={"User-Agent": "Omarchy-T2-Linux-Plugin/1.0 (+https://plugins.omarchy.org)"}
-        )
-        with urllib.request.urlopen(req, timeout=6) as response:
-            data = json.loads(response.read().decode("utf-8"))
-            safe_write_json(CACHE_FILE, data)
-            return data
+        data = http_get_json(CATALOG_URL, 6, MAX_CATALOG_BYTES, CATALOG_FETCH_BUDGET)
+        if not isinstance(data, dict):
+            raise ValueError("Catalog payload is not a JSON object")
+        plugins = data.get("plugins")
+        if isinstance(plugins, list) and len(plugins) > MAX_CATALOG_PLUGINS:
+            raise ValueError(
+                "Catalog lists %d plugins, above the %d entry ceiling"
+                % (len(plugins), MAX_CATALOG_PLUGINS)
+            )
+        safe_write_json(CACHE_FILE, data)
+        return data
     except Exception:
         # Fall back to cache if available
         if os.path.exists(CACHE_FILE):
@@ -210,20 +307,21 @@ def fetch_stats(force_refresh=False):
         except Exception:
             pass
 
-    # Try downloading fresh engagement stats
+    # Try downloading fresh engagement stats, with bounded size, time and entries
     try:
-        req = urllib.request.Request(
-            STATS_URL,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "Omarchy-T2-Linux-Plugin/1.0 (+https://plugins.omarchy.org)"
-            }
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            stats = data.get("plugins", {})
-            safe_write_json(STATS_CACHE_FILE, stats)
-            return stats
+        data = http_get_json(STATS_URL, 5, MAX_STATS_BYTES, STATS_FETCH_BUDGET)
+        if not isinstance(data, dict):
+            raise ValueError("Stats payload is not a JSON object")
+        stats = data.get("plugins", {})
+        if not isinstance(stats, dict):
+            raise ValueError("Stats payload has no per-plugin object")
+        if len(stats) > MAX_STATS_ENTRIES:
+            raise ValueError(
+                "Stats list %d entries, above the %d entry ceiling"
+                % (len(stats), MAX_STATS_ENTRIES)
+            )
+        safe_write_json(STATS_CACHE_FILE, stats)
+        return stats
     except Exception:
         if os.path.exists(STATS_CACHE_FILE):
             try:
@@ -296,8 +394,8 @@ def get_installed_plugins_map():
         # Fallback inspection of ~/.config/omarchy/plugins
         if os.path.isdir(PLUGINS_DIR):
             for entry in os.listdir(PLUGINS_DIR):
-                pdir = os.path.join(PLUGINS_DIR, entry)
-                if os.path.isdir(pdir) or os.path.islink(pdir):
+                pdir = safe_plugin_path(entry)
+                if pdir and os.path.isdir(pdir):
                     manifest_file = os.path.join(pdir, "manifest.json")
                     v = "1.0.0"
                     if os.path.exists(manifest_file):
@@ -316,7 +414,9 @@ def get_installed_plugins_map():
 
 
 def get_local_plugin_version(plugin_id):
-    manifest_file = os.path.join(PLUGINS_DIR, plugin_id, "manifest.json")
+    manifest_file = safe_plugin_path(plugin_id, "manifest.json")
+    if not manifest_file:
+        return ""
     if os.path.isfile(manifest_file):
         try:
             with open(manifest_file, "r", encoding="utf-8") as f:
@@ -437,7 +537,7 @@ def list_plugins(force_refresh=False):
         if is_apple_plugin(p):
             t2_flag = matches_q_t2(p)
             inst = installed_map.get(pid)
-            is_installed = inst is not None or os.path.exists(os.path.join(PLUGINS_DIR, pid))
+            is_installed = inst is not None or (bool(safe_plugin_path(pid)) and os.path.exists(os.path.join(safe_plugin_path(pid), "")))
             is_enabled = inst.get("enabled", False) if inst else False
 
             local_v = get_local_plugin_version(pid) if is_installed else ""
@@ -493,7 +593,7 @@ def list_plugins(force_refresh=False):
         pid = fb["id"]
         if pid not in matched_dict and pid != "bramvanoploo.omarchy-t2-linux":
             inst = installed_map.get(pid)
-            is_installed = inst is not None or os.path.exists(os.path.join(PLUGINS_DIR, pid))
+            is_installed = inst is not None or (bool(safe_plugin_path(pid)) and os.path.exists(os.path.join(safe_plugin_path(pid), "")))
             is_enabled = inst.get("enabled", False) if inst else False
             local_v = get_local_plugin_version(pid) if is_installed else ""
             remote_v = fb.get("version", "1.0.0")
@@ -562,7 +662,8 @@ def run_cmd(cmd_list):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=120
+            timeout=120,
+            start_new_session=True
         )
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
     except Exception as e:
@@ -575,8 +676,11 @@ def install_plugin(repo_or_url, plugin_id=""):
         sys.exit(1)
 
     url = repo_or_url.strip()
-    if url.startswith("-") or not re.match(r'^[a-zA-Z0-9_.:/@-]+$', url):
+    if url.startswith("-"):
         print(json.dumps({"success": False, "error": f"Invalid repository URL format: {repo_or_url}"}))
+        sys.exit(1)
+    if not re.match(r'^(https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\.git)?|git@github\.com:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\.git)?)$', url):
+        print(json.dumps({"success": False, "error": f"Invalid GitHub repository URL: {repo_or_url}"}))
         sys.exit(1)
 
     if not url.startswith("http://") and not url.startswith("https://") and not url.startswith("git@"):
@@ -801,6 +905,11 @@ def check_user_access():
                 pass
 
 
+def emit_error(error):
+    print(json.dumps({"status": "error", "error": str(error)}))
+    sys.exit(1)
+
+
 def main():
     check_user_access()
     if len(sys.argv) < 2:
@@ -833,4 +942,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        emit_error(exc)

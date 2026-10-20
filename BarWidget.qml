@@ -74,6 +74,8 @@ BarWidget {
   property bool pluginsLoading: false
   property string pluginActionStatus: ""
   property string activePluginOpId: ""
+  property int pluginsFetchStamp: 0
+  property int pluginsFetchMinInterval: 300000
   property string pluginFilterQuery: ""
   property int pluginFilterMode: 0 // 0: All Apple Plugins, 1: Installed
   property bool filterT2Only: false
@@ -702,19 +704,51 @@ BarWidget {
 
   function fetchPlugins(force) {
     if (pluginsProc.running) return
+    // The plugins tab fetches whenever the widget opens. Throttle forced
+    // refreshes so open/close churn cannot become a request flood; the helper
+    // cache TTL covers the rest.
+    var now = Date.now()
+    if (force && root.pluginsFetchStamp > 0
+        && (now - root.pluginsFetchStamp) < root.pluginsFetchMinInterval) {
+      force = false
+    }
+    root.pluginsFetchStamp = now
     root.pluginsLoading = true
     var args = ["bash", helper, "plugins-list"]
     if (force) args.push("--force-refresh")
     pluginsProc.command = args
     pluginsProc.running = true
+    pluginsFetchWatchdog.restart()
+  }
+
+  function resolvePluginRepoUrl(repoUrl, installCommand) {
+    var raw = String(repoUrl || installCommand || "").trim()
+    if (raw.indexOf("omarchy plugin add") === 0) {
+      var parts = raw.split(/\s+/)
+      raw = parts.length > 3 ? parts[3] : ""
+    }
+    raw = raw.replace(/\s+--.*$/, "").trim()
+    if (raw.indexOf("https://github.com/") === 0 || raw.indexOf("git@github.com:") === 0) {
+      return raw
+    }
+    if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(raw)) {
+      return "https://github.com/" + raw + ".git"
+    }
+    return ""
   }
 
   function installPlugin(repoUrl, pluginId) {
-    if (pluginActionProc.running || !repoUrl) return
+    if (pluginActionProc.running || !pluginId) return
+    var safeRepo = resolvePluginRepoUrl(repoUrl, repoUrl)
+    if (!safeRepo) {
+      root.pluginActionStatus = "Install refused: repository URL must be a GitHub repository URL."
+      return
+    }
     root.activePluginOpId = pluginId
-    root.pluginActionStatus = "Installing " + (pluginId || repoUrl) + "..."
-    pluginActionProc.command = ["bash", helper, "plugin-install", repoUrl, pluginId]
+    root.pluginActionStatus = "Installing " + (pluginId || safeRepo) + "..."
+    pluginActionProc.command = ["bash", helper, "plugin-install", safeRepo, pluginId]
     pluginActionProc.running = true
+    pluginActionWatchdog.restart()
   }
 
   function updatePlugin(pluginId) {
@@ -723,6 +757,7 @@ BarWidget {
     root.pluginActionStatus = "Updating " + pluginId + "..."
     pluginActionProc.command = ["bash", helper, "plugin-update", pluginId]
     pluginActionProc.running = true
+    pluginActionWatchdog.restart()
   }
 
   function removePlugin(pluginId) {
@@ -731,6 +766,7 @@ BarWidget {
     root.pluginActionStatus = "Removing " + pluginId + "..."
     pluginActionProc.command = ["bash", helper, "plugin-remove", pluginId]
     pluginActionProc.running = true
+    pluginActionWatchdog.restart()
   }
 
   function togglePlugin(pluginId, enable) {
@@ -753,6 +789,7 @@ BarWidget {
 
     pluginActionProc.command = ["bash", helper, "plugin-toggle", pluginId, enable ? "enable" : "disable"]
     pluginActionProc.running = true
+    pluginActionWatchdog.restart()
   }
 
   function openSpeakerCalibrator() {
@@ -776,9 +813,14 @@ BarWidget {
   }
 
   function openExternalUrl(url) {
-    if (!url) return
+    var safe = String(url || "").trim()
+    if (!/^https?:\/\/[^\s]+$/i.test(safe)) {
+      root.lastNotice = "External URL blocked: only http(s) links are supported."
+      noticeTimer.restart()
+      return
+    }
     root.close()
-    urlOpenProc.command = ["bash", helper, "open-url", url]
+    urlOpenProc.command = ["bash", helper, "open-url", safe]
     urlOpenProc.running = true
   }
 
@@ -1589,7 +1631,42 @@ BarWidget {
       }
     }
     onExited: function(exitCode) {
+      pluginsFetchWatchdog.stop()
       root.pluginsLoading = false
+    }
+  }
+
+  // Wall-clock ceiling for a catalog fetch. The helper bounds the response
+  // size; this bounds the whole call, so a stalled endpoint cannot pin the
+  // loading state the plugins tab shows when the widget opens.
+  Timer {
+    id: pluginsFetchWatchdog
+    interval: 20000
+    repeat: false
+    onTriggered: {
+      if (pluginsProc.running) {
+        pluginsProc.running = false
+      }
+      if (root.pluginsLoading) {
+        root.pluginsLoading = false
+        root.lastNotice = "Plugin catalog request timed out. Using cached results."
+        noticeTimer.restart()
+      }
+    }
+  }
+
+  // Ceiling for install/update/remove/toggle. Git clones are slow, so this
+  // only fires on a genuinely stuck operation.
+  Timer {
+    id: pluginActionWatchdog
+    interval: 180000
+    repeat: false
+    onTriggered: {
+      if (pluginActionProc.running) {
+        pluginActionProc.running = false
+        root.activePluginOpId = ""
+        root.pluginActionStatus = "Plugin operation timed out."
+      }
     }
   }
 
@@ -1605,6 +1682,7 @@ BarWidget {
       waitForEnd: true
     }
     onExited: function(exitCode) {
+      pluginActionWatchdog.stop()
       var opId = root.activePluginOpId
       root.activePluginOpId = ""
       var msg = ""
