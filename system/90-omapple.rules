@@ -1,39 +1,75 @@
 polkit.addRule(function(action, subject) {
-  if (action.id === "org.freedesktop.policykit.exec"
-      && (action.lookup("program") === "/usr/local/libexec/omapple-helper" || action.lookup("program") === "/usr/local/libexec/omarchy-t2-helper")
-      && action.lookup("user") === "root"
-      && subject.active && subject.local) {
-    var cmd = action.lookup("command_line");
-    if (!cmd) return undefined;
-
-    var match = cmd.trim().match(/^\S+\s+([a-zA-Z0-9_-]+)/);
-    if (!match) return undefined;
-
-    var subcommand = match[1];
-    var allowedCommands = [
-      "apply-epp",
-      "apply-aspm",
-      "apply-wifi-powersave",
-      "apply-ethernet-managed",
-      "apply-pcie-ports-compat",
-      "apply-mem-sleep",
-      "apply-lid-action",
-      "apply-clamshell",
-      "apply-wake-lid",
-      "apply-wake-ac",
-      "apply-audio-powersave",
-      "apply-usb-autosuspend",
-      "apply-hibernate-delay",
-      "do-apply-t2-fixes",
-      "do-apply-recommended",
-      "do-apply-recommended-suspend",
-      "do-reset-suspend-to-defaults",
-      "do-apply-recommended-battery",
-      "do-reset-battery-to-defaults"
-    ];
-
-    if (allowedCommands.indexOf(subcommand) !== -1) {
-      return polkit.Result.YES;
-    }
+  if (action.id !== "org.freedesktop.policykit.exec") {
+    return undefined;
   }
+
+  var program = action.lookup("program");
+  var allowedPrograms = [
+    "/usr/local/libexec/omapple-helper",
+    "/usr/local/libexec/omarchy-t2-helper"
+  ];
+
+  if (allowedPrograms.indexOf(program) === -1) {
+    return undefined;
+  }
+
+  if (!subject.active || !subject.local) {
+    return polkit.Result.NO;
+  }
+
+  if (action.lookup("user") !== "root") {
+    return polkit.Result.NO;
+  }
+
+  var cmd = action.lookup("command_line");
+  if (!cmd || /[;&|<>$`\"\n\r\0]/.test(cmd)) {
+    return polkit.Result.NO;
+  }
+
+  var parts = cmd.trim().split(/\s+/);
+  if (parts.length < 2 || parts[0] !== program) {
+    return polkit.Result.NO;
+  }
+
+  var subcommand = parts[1];
+  var args = parts.slice(2);
+  var boolArg = "^(true|false|on|off|yes|no|1|0)$";
+  var boolFlag = "^(true|false)$";
+  var wakeArg = "^(on|off|true|false|yes|no|1|0)$";
+  var hibernateArg = "^(off|never|false|0|15min|15m|900|900s|30min|30m|1800|1800s|1hour|1h|60min|60m|3600|3600s|2hours|2h|120min|120m|7200|7200s|4hours|4h|14400|14400s|8hours|8h|28800|28800s|24hours|24h|86400|86400s|([0-9]|[1-9][0-9]{0,4}|[1-5][0-9]{4}|600000|600[0-3][0-9]{2}|604[0-7][0-9]{2}|604800))$";
+  var skipT2Flags = "^(--skip-pcie|--no-pcie|--skip-eth|--no-eth|--skip-limine)$";
+  var skipRecFlags = "^(--skip-limine|--skip-pcie)$";
+  var skipSuspFlags = "^(--skip-limine)$";
+
+  function matchAll(pattern) {
+    var re = new RegExp(pattern);
+    for (var i = 0; i < args.length; i++) {
+      if (!re.test(args[i])) return false;
+    }
+    return true;
+  }
+
+  if (subcommand === "apply-epp" && args.length === 1 && new RegExp("^(default|performance|balance_performance|balance_power|power|balanced)$").test(args[0])) return polkit.Result.YES;
+  if (subcommand === "apply-aspm" && args.length === 1 && new RegExp("^(default|performance|powersave|powersupersave)$").test(args[0])) return polkit.Result.YES;
+  if (subcommand === "apply-wifi-powersave" && args.length === 1 && new RegExp("^(on|off|true|false|1|0|enable|disabled?)$").test(args[0])) return polkit.Result.YES;
+  if (subcommand === "apply-ethernet-managed" && args.length === 2 && /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,14}$/.test(args[0]) && new RegExp(boolArg).test(args[1])) return polkit.Result.YES;
+  if (subcommand === "apply-pcie-ports-compat" && (args.length === 1 || args.length === 2) && new RegExp("^(on|off|true|false|add|remove|yes|no|1|0)$").test(args[0]) && (args.length === 1 || new RegExp(boolFlag).test(args[1]))) return polkit.Result.YES;
+  if (subcommand === "apply-mem-sleep" && (args.length === 1 || args.length === 2) && new RegExp("^(deep|s2idle|standby|shallow)$").test(args[0]) && (args.length === 1 || new RegExp(boolFlag).test(args[1]))) return polkit.Result.YES;
+  if (subcommand === "apply-lid-action" && args.length === 1 && new RegExp("^(suspend|ignore|lock|hibernate|poweroff|suspend-then-hibernate|hybrid-sleep)$").test(args[0])) return polkit.Result.YES;
+  if (subcommand === "apply-clamshell" && args.length === 1 && new RegExp(boolArg).test(args[0])) return polkit.Result.YES;
+  if (subcommand === "apply-wake-lid" && args.length === 1 && new RegExp(wakeArg).test(args[0])) return polkit.Result.YES;
+  if (subcommand === "apply-wake-ac" && args.length === 1 && new RegExp(wakeArg).test(args[0])) return polkit.Result.YES;
+  if (subcommand === "apply-audio-powersave" && args.length === 1 && new RegExp(boolArg).test(args[0])) return polkit.Result.YES;
+  if (subcommand === "apply-usb-autosuspend" && args.length === 1 && new RegExp(boolArg).test(args[0])) return polkit.Result.YES;
+  if (subcommand === "apply-hibernate-delay" && args.length === 1 && new RegExp(hibernateArg).test(args[0])) return polkit.Result.YES;
+  if (subcommand === "do-apply-t2-fixes" && matchAll(skipT2Flags)) return polkit.Result.YES;
+  if (subcommand === "do-apply-recommended" && matchAll(skipRecFlags)) return polkit.Result.YES;
+  if (subcommand === "do-apply-recommended-suspend" && matchAll(skipSuspFlags)) return polkit.Result.YES;
+  if (subcommand === "do-reset-suspend-to-defaults" && args.length === 0) return polkit.Result.YES;
+  if (subcommand === "do-apply-recommended-battery" && matchAll(skipRecFlags)) return polkit.Result.YES;
+  if (subcommand === "do-reset-battery-to-defaults" && args.length === 0) return polkit.Result.YES;
+  if (subcommand === "do-install-system" && args.length === 0) return polkit.Result.AUTH_ADMIN;
+  if (subcommand === "do-uninstall-system" && args.length === 0) return polkit.Result.AUTH_ADMIN;
+
+  return polkit.Result.NO;
 });
