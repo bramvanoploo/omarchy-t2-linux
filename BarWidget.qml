@@ -5813,21 +5813,210 @@ BarWidget {
                           anchors.verticalCenter: parent.verticalCenter
                           spacing: Style.space(8)
 
-                          TextField {
-                            id: pluginSearchField
+                          Loader {
+                            id: pluginSearchLoader
                             width: Style.space(220)
                             height: Style.space(32)
-                            verticalPadding: Style.space(4)
-                            font.pixelSize: Style.font.caption
-                            font.family: root.fontFamily
-                            placeholderText: "Search Apple plugins..."
-                            text: root.pluginFilterQuery
-                            onTextEdited: root.pluginFilterQuery = text
-                            Keys.onPressed: function(event) {
-                              if (event.key === Qt.Key_Escape) {
-                                text = ""
-                                root.pluginFilterQuery = ""
-                                event.accepted = true
+                            active: root.opened && root.currentTabId === "plugins"
+                            sourceComponent: FocusScope {
+                              id: pluginSearchScope
+                              width: Style.space(220)
+                              height: Style.space(32)
+
+                              readonly property bool _focused: searchInput.activeFocus
+                              readonly property bool _hot: searchMouseArea.containsMouse || _focused
+                              readonly property var _borderSpec: Border.controlSpec(_focused ? "focus" : (_hot ? "hover-cursor" : "normal"), root.foreground, root.accent)
+
+                              BorderSurface {
+                                anchors.fill: parent
+                                radius: Style.cornerRadius
+                                color: Style.controlFill(pluginSearchScope._focused, pluginSearchScope._hot, root.foreground, root.accent)
+                                borderSpec: pluginSearchScope._borderSpec
+                              }
+
+                              MouseArea {
+                                id: searchMouseArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.IBeamCursor
+                                onClicked: searchInput.forceActiveFocus()
+                              }
+
+                              Text {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.leftMargin: Style.space(10)
+                                anchors.rightMargin: Style.space(10)
+                                anchors.verticalCenter: parent.verticalCenter
+                                visible: searchInput.text.length === 0
+                                text: "Search Apple plugins..."
+                                font.pixelSize: Style.font.caption
+                                font.family: root.fontFamily
+                                color: Qt.darker(root.foreground, 1.6)
+                                elide: Text.ElideRight
+                              }
+
+                              TextInput {
+                                id: searchInput
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.leftMargin: Style.space(10)
+                                anchors.rightMargin: Style.space(10)
+                                anchors.verticalCenter: parent.verticalCenter
+                                font.pixelSize: Style.font.caption
+                                font.family: root.fontFamily
+                                color: root.foreground
+                                selectionColor: Style.selectionFillFor(root.foreground, root.accent)
+                                selectedTextColor: root.foreground
+                                selectByMouse: true
+                                clip: true
+
+                                // CRITICAL: readOnly must remain permanently true so Qt does not
+                                // subscribe to QClipboard::dataChanged or read Wayland clipboard
+                                // offers on the GUI thread to compute canPaste (QTBUG-149610).
+                                readOnly: true
+
+                                cursorVisible: activeFocus
+                                cursorDelegate: Rectangle {
+                                  width: 1
+                                  color: root.foreground
+                                  visible: searchInput.cursorVisible
+                                  SequentialAnimation on opacity {
+                                    running: searchInput.cursorVisible
+                                    loops: Animation.Infinite
+                                    PropertyAction { value: 1 }
+                                    PauseAnimation { duration: 530 }
+                                    PropertyAction { value: 0 }
+                                    PauseAnimation { duration: 530 }
+                                  }
+                                }
+
+                                text: root.pluginFilterQuery
+
+                                Connections {
+                                  target: root
+                                  function onPluginFilterQueryChanged() {
+                                    if (searchInput.text !== root.pluginFilterQuery) {
+                                      searchInput.text = root.pluginFilterQuery
+                                    }
+                                  }
+                                }
+
+                                function syncQuery() {
+                                  root.pluginFilterQuery = searchInput.text
+                                }
+
+                                Keys.onPressed: function(event) {
+                                  if (event.key === Qt.Key_Escape) {
+                                    searchInput.text = ""
+                                    syncQuery()
+                                    event.accepted = true
+                                    return
+                                  }
+
+                                  var ctrl = Boolean(event.modifiers & Qt.ControlModifier)
+
+                                  if (ctrl && event.key === Qt.Key_A) {
+                                    searchInput.selectAll()
+                                    event.accepted = true
+                                    return
+                                  }
+
+                                  if (ctrl && (event.key === Qt.Key_C || event.key === Qt.Key_X)) {
+                                    if (searchInput.selectionEnd > searchInput.selectionStart) {
+                                      searchInput.copy()
+                                      if (event.key === Qt.Key_X) {
+                                        var s = searchInput.selectionStart
+                                        searchInput.remove(s, searchInput.selectionEnd)
+                                        searchInput.cursorPosition = s
+                                        syncQuery()
+                                      }
+                                    }
+                                    event.accepted = true
+                                    return
+                                  }
+
+                                  if (event.key === Qt.Key_Backspace) {
+                                    if (searchInput.selectionEnd > searchInput.selectionStart) {
+                                      var s = searchInput.selectionStart
+                                      searchInput.remove(s, searchInput.selectionEnd)
+                                      searchInput.cursorPosition = s
+                                      syncQuery()
+                                    } else if (searchInput.cursorPosition > 0) {
+                                      var pos = searchInput.cursorPosition
+                                      var delCount = 1
+                                      if (ctrl) {
+                                        var t = searchInput.text
+                                        var p = pos
+                                        while (p > 0 && /\s/.test(t.charAt(p - 1))) p--
+                                        while (p > 0 && !/\s/.test(t.charAt(p - 1))) p--
+                                        delCount = pos - p
+                                      }
+                                      searchInput.remove(pos - delCount, pos)
+                                      searchInput.cursorPosition = pos - delCount
+                                      syncQuery()
+                                    }
+                                    event.accepted = true
+                                    return
+                                  }
+
+                                  if (event.key === Qt.Key_Delete) {
+                                    if (searchInput.selectionEnd > searchInput.selectionStart) {
+                                      var s = searchInput.selectionStart
+                                      searchInput.remove(s, searchInput.selectionEnd)
+                                      searchInput.cursorPosition = s
+                                      syncQuery()
+                                    } else if (searchInput.cursorPosition < searchInput.text.length) {
+                                      var pos = searchInput.cursorPosition
+                                      var delCount = 1
+                                      if (ctrl) {
+                                        var t = searchInput.text
+                                        var p = pos
+                                        while (p < t.length && /\s/.test(t.charAt(p))) p++
+                                        while (p < t.length && !/\s/.test(t.charAt(p))) p++
+                                        delCount = p - pos
+                                      }
+                                      searchInput.remove(pos, pos + delCount)
+                                      searchInput.cursorPosition = pos
+                                      syncQuery()
+                                    }
+                                    event.accepted = true
+                                    return
+                                  }
+
+                                  // Navigation keys are handled naturally by TextInput
+                                  if (event.key === Qt.Key_Left || event.key === Qt.Key_Right ||
+                                      event.key === Qt.Key_Home || event.key === Qt.Key_End ||
+                                      event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+                                    return
+                                  }
+
+                                  // Ignore Ctrl+V to prevent any clipboard reading
+                                  if (ctrl && event.key === Qt.Key_V) {
+                                    event.accepted = true
+                                    return
+                                  }
+
+                                  // Printable character input with bounded query length
+                                  if (!ctrl && !(event.modifiers & Qt.AltModifier) && !(event.modifiers & Qt.MetaModifier) && event.text && event.text.length > 0) {
+                                    var ch = event.text.charCodeAt(0)
+                                    if (ch >= 32 && ch !== 127) {
+                                      if (searchInput.selectionEnd > searchInput.selectionStart) {
+                                        var s = searchInput.selectionStart
+                                        searchInput.remove(s, searchInput.selectionEnd)
+                                        searchInput.cursorPosition = s
+                                      }
+                                      if (searchInput.text.length < 128) {
+                                        var pos = searchInput.cursorPosition
+                                        searchInput.insert(pos, event.text)
+                                        searchInput.cursorPosition = pos + event.text.length
+                                        syncQuery()
+                                      }
+                                      event.accepted = true
+                                      return
+                                    }
+                                  }
+                                }
                               }
                             }
                           }
