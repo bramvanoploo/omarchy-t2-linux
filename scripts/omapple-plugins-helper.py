@@ -207,7 +207,7 @@ def safe_plugin_path(plugin_id, *parts):
     return candidate
 
 
-def _read_capped(response, max_bytes, budget):
+def _read_capped(response, max_bytes, deadline):
     """Read a response body under a hard byte and wall-clock ceiling.
 
     An endpoint can ignore Content-Length and stream an unbounded body, and a
@@ -227,7 +227,6 @@ def _read_capped(response, max_bytes, budget):
                 % (declared_bytes, max_bytes)
             )
 
-    deadline = time.monotonic() + budget
     chunks = []
     total = 0
     while True:
@@ -238,13 +237,117 @@ def _read_capped(response, max_bytes, budget):
         if total > max_bytes:
             raise ValueError("Response exceeded the %d byte ceiling" % max_bytes)
         if time.monotonic() > deadline:
-            raise ValueError("Response exceeded the %.0fs fetch budget" % budget)
+            raise ValueError("Response exceeded fetch budget")
         chunks.append(chunk)
     return b"".join(chunks)
 
 
+class BoundedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """HTTP redirect handler that enforces bounded memory, budget, and scheme.
+
+    Standard urllib drains redirect bodies with unbounded fp.read() inside
+    HTTPRedirectHandler.http_error_302 before returning the response. This
+    handler closes the response socket immediately without draining the body,
+    bounds the wall-clock budget, restricts redirection strictly to HTTPS, and
+    caps max redirections.
+    """
+
+    max_redirections = 3
+    max_repeats = 1
+
+    def __init__(self, deadline, max_bytes):
+        super().__init__()
+        self.deadline = deadline
+        self.max_bytes = max_bytes
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        # Prevent urllib's unbounded fp.read() by closing response immediately
+        try:
+            fp.close()
+        except Exception:
+            pass
+
+        if time.monotonic() > self.deadline:
+            raise ValueError("Fetch exceeded wall-clock budget during redirect")
+
+        declared = headers.get("Content-Length")
+        if declared is not None:
+            try:
+                declared_bytes = int(str(declared).strip())
+                if declared_bytes > self.max_bytes:
+                    raise ValueError(
+                        f"Redirect response declared {declared_bytes} bytes, above {self.max_bytes} byte ceiling"
+                    )
+            except (TypeError, ValueError) as err:
+                if "above" in str(err):
+                    raise
+
+        if "location" in headers:
+            newurl = headers["location"]
+        elif "uri" in headers:
+            newurl = headers["uri"]
+        else:
+            return None
+
+        newurl = urllib.parse.urljoin(req.full_url, newurl)
+        urlparts = urllib.parse.urlparse(newurl)
+        if urlparts.scheme != "https":
+            raise urllib.error.HTTPError(
+                newurl,
+                code,
+                f"Redirection to non-HTTPS URL '{newurl}' is forbidden",
+                headers,
+                None,
+            )
+
+        new = self.redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+
+        if hasattr(req, "redirect_dict"):
+            visited = new.redirect_dict = req.redirect_dict
+            if (
+                visited.get(newurl, 0) >= self.max_repeats
+                or len(visited) >= self.max_redirections
+            ):
+                raise urllib.error.HTTPError(
+                    req.full_url, code, self.inf_msg + msg, headers, None
+                )
+        else:
+            visited = new.redirect_dict = req.redirect_dict = {}
+        visited[newurl] = visited.get(newurl, 0) + 1
+
+        rem_budget = self.deadline - time.monotonic()
+        if rem_budget <= 0:
+            raise ValueError("Fetch exceeded wall-clock budget during redirect")
+        if isinstance(getattr(req, "timeout", None), (int, float)):
+            timeout = min(req.timeout, rem_budget)
+        else:
+            timeout = rem_budget
+
+        return self.parent.open(new, timeout=timeout)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+def make_bounded_opener(deadline, max_bytes):
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(urllib.request.ProxyHandler())
+    opener.add_handler(urllib.request.HTTPSHandler())
+    opener.add_handler(urllib.request.HTTPDefaultErrorHandler())
+    opener.add_handler(urllib.request.HTTPErrorProcessor())
+    opener.add_handler(urllib.request.UnknownHandler())
+    opener.add_handler(BoundedRedirectHandler(deadline=deadline, max_bytes=max_bytes))
+    return opener
+
+
 def http_get_json(url, timeout, max_bytes, budget):
     """Fetch a JSON document over HTTPS with bounded memory and time."""
+    if not url.startswith("https://"):
+        raise ValueError(f"Only HTTPS URLs are allowed: {url}")
+
+    deadline = time.monotonic() + budget
+    opener = make_bounded_opener(deadline, max_bytes)
     req = urllib.request.Request(
         url,
         headers={
@@ -252,8 +355,9 @@ def http_get_json(url, timeout, max_bytes, budget):
             "User-Agent": "Omarchy-T2-Linux-Plugin/1.0 (+https://plugins.omarchy.org)",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        raw = _read_capped(response, max_bytes, budget)
+    rem_budget = max(0.1, deadline - time.monotonic())
+    with opener.open(req, timeout=min(timeout, rem_budget)) as response:
+        raw = _read_capped(response, max_bytes, deadline)
     return json.loads(raw.decode("utf-8"))
 
 
