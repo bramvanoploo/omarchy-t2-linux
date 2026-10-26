@@ -39,16 +39,21 @@ PLUGINS_DIR = os.path.expanduser("~/.config/omarchy/plugins")
 
 # Hard ceilings for remote JSON payloads. A compromised catalog/stats endpoint
 # must not be able to exhaust helper memory, so every fetch is bounded by
-# declared size, streamed size, wall-clock budget and parsed entry count.
-# Exceeding any ceiling fails closed and falls back to the on-disk cache.
-MAX_CATALOG_BYTES = 1500000
-MAX_STATS_BYTES = 200000
-MAX_CATALOG_PLUGINS = 2000
-MAX_STATS_ENTRIES = 5000
+# declared size, streamed size, wall-clock budget and parsed entry count, and
+# every retained cache is read under the same byte ceiling. Exceeding any
+# ceiling fails closed and falls back to the cache, then to the built-in list.
+# The ceilings sit above the current legitimate payloads with ~2x headroom so a
+# growing catalog keeps working: catalog.json is ~15.1 MB with 5,952 plugins and
+# the stats API is ~0.38 MB with 6,045 entries.
+MAX_CATALOG_BYTES = 32000000
+MAX_STATS_BYTES = 1500000
+MAX_CATALOG_PLUGINS = 12000
+MAX_STATS_ENTRIES = 15000
 FETCH_CHUNK = 65536
 # Wall-clock budget for reading a whole body: a slow-drip endpoint stays under
-# the per-read socket timeout, so bound the total time as well.
-CATALOG_FETCH_BUDGET = 12.0
+# the per-read socket timeout, so bound the total time as well. The catalog is
+# ~15 MB, so the budget must allow a sustained transfer on a normal link.
+CATALOG_FETCH_BUDGET = 45.0
 STATS_FETCH_BUDGET = 8.0
 
 # Built-in fallback in case network is down and cache doesn't exist
@@ -195,6 +200,32 @@ def safe_write_json(file_path, data):
             except Exception:
                 pass
         raise
+
+
+def load_json_cache(file_path, max_bytes):
+    """Load a retained cache under the same byte ceiling as a live fetch.
+
+    A cache written by an older, unbounded helper can be arbitrarily large, so
+    a payload a compromised endpoint supplied back then still exhausts helper
+    memory when the cache is read after upgrade, including as the fallback
+    after a failed fetch. Check the size and cap the read so oversized legacy
+    caches fail closed like an oversized response does.
+    """
+    size = os.path.getsize(file_path)
+    if size > max_bytes:
+        raise ValueError(
+            "Cache file %s is %d bytes, above the %d byte ceiling"
+            % (file_path, size, max_bytes)
+        )
+    with open(file_path, "rb") as f:
+        raw = f.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        # The file grew between stat and read; the capped read is authoritative.
+        raise ValueError(
+            "Cache file %s exceeded the %d byte ceiling while reading"
+            % (file_path, max_bytes)
+        )
+    return json.loads(raw.decode("utf-8"))
 
 
 def safe_plugin_path(plugin_id, *parts):
@@ -369,8 +400,7 @@ def fetch_catalog(force_refresh=False):
         try:
             mtime = os.path.getmtime(CACHE_FILE)
             if now - mtime < CACHE_TTL:
-                with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                return load_json_cache(CACHE_FILE, MAX_CATALOG_BYTES)
         except Exception:
             pass
 
@@ -391,8 +421,7 @@ def fetch_catalog(force_refresh=False):
         # Fall back to cache if available
         if os.path.exists(CACHE_FILE):
             try:
-                with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                return load_json_cache(CACHE_FILE, MAX_CATALOG_BYTES)
             except Exception:
                 pass
         return {"plugins": FALLBACK_T2_PLUGINS}
@@ -406,8 +435,7 @@ def fetch_stats(force_refresh=False):
         try:
             mtime = os.path.getmtime(STATS_CACHE_FILE)
             if now - mtime < CACHE_TTL:
-                with open(STATS_CACHE_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                return load_json_cache(STATS_CACHE_FILE, MAX_STATS_BYTES)
         except Exception:
             pass
 
@@ -429,8 +457,7 @@ def fetch_stats(force_refresh=False):
     except Exception:
         if os.path.exists(STATS_CACHE_FILE):
             try:
-                with open(STATS_CACHE_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                return load_json_cache(STATS_CACHE_FILE, MAX_STATS_BYTES)
             except Exception:
                 pass
         return {}
@@ -867,8 +894,7 @@ def check_speaker_calibrator_source_available():
     catalog = None
     if os.path.exists(CACHE_FILE):
         try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                catalog = json.load(f)
+            catalog = load_json_cache(CACHE_FILE, MAX_CATALOG_BYTES)
         except Exception:
             pass
 
