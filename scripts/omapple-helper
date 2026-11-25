@@ -75,8 +75,12 @@ validate_user_config_path() {
 if (( EUID != 0 )) && [[ -z "${PKEXEC_UID:-}" || "$PKEXEC_UID" == "$EUID" ]] && [[ -z "${SUDO_UID:-}" || "$SUDO_UID" == "$EUID" ]]; then
   if [[ ! -e "$CONFIG_DIR" ]] || [[ "$(stat -c %u "$CONFIG_DIR" 2>/dev/null || true)" == "$EUID" ]]; then
     mkdir -p "$CONFIG_DIR" 2>/dev/null || true
-    if [[ -d "$CONFIG_DIR" && ! -f "$SETTINGS_FILE" ]]; then
-      echo '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"t2FixesPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","keybindingReload":"CTRL + R","keybindingSelectAddress":"CTRL + L","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":1.0,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$SETTINGS_FILE" 2>/dev/null || true
+    if [[ -d "$CONFIG_DIR" && ! -e "$SETTINGS_FILE" && ! -L "$SETTINGS_FILE" ]]; then
+      (
+        umask 077
+        tmp_sf=$(mktemp "$CONFIG_DIR/.settings.json.tmp.XXXXXX" 2>/dev/null) || exit 0
+        printf '%s\n' '{"kbdTimeout":"1m","touchbarBlank":true,"recommendedPromptShown":false,"t2FixesPromptShown":false,"keybindingSelectAll":"CTRL + A","keybindingDelete":"DELETE","keybindingFind":"CTRL + F","keybindingUndo":"CTRL + Z","keybindingRedo":"CTRL + SHIFT + Z","keybindingSave":"CTRL + S","keybindingCut":"CTRL + X","keybindingReload":"CTRL + R","keybindingSelectAddress":"CTRL + L","trackpadNaturalScroll":true,"trackpadTapToClick":true,"trackpadClickfingerBehavior":true,"trackpadDisableWhileTyping":true,"trackpadScrollFactor":1.0,"trackpadMiddleButtonEmulation":false,"trackpadTapAndDrag":true,"trackpadDragLock":false,"trackpadDrag3fg":0,"trackpadTapButtonMap":"lrm","trackpadFlipX":false,"trackpadFlipY":false,"trackpadSensitivity":0.0,"trackpadAccelProfile":"adaptive","trackpadLeftHanded":false,"trackpadSwipeWorkspaces":true}' > "$tmp_sf" && mv -n "$tmp_sf" "$SETTINGS_FILE" || rm -f "$tmp_sf"
+      ) 2>/dev/null || true
     fi
   fi
 fi
@@ -333,13 +337,18 @@ get_wifi_powersave() {
   echo false
 }
 
+nm_devices_unescaped() {
+  # nmcli -t escapes ':' in device names as '\:'. Replace '\:' with RS (0x1e)
+  # before splitting on ':' so device names with colons parse cleanly.
+  nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null | sed 's/\\:/\x1e/g' || true
+}
+
 get_inactive_ethernet_json() {
   local json="[]"
   if command -v nmcli >/dev/null 2>&1; then
-    # Let jq build the payload: nmcli -t escapes ':' in device names as '\:',
-    # and string concatenation would turn that into invalid JSON.
     local args=() filter='[]' n=0
     while IFS=: read -r dev type state rest; do
+      dev="${dev//$'\x1e'/:}"
       if [[ "$type" == "ethernet" ]]; then
         if [[ "$state" != "connected" && "$state" != "connecting" ]]; then
           local managed=true
@@ -351,7 +360,7 @@ get_inactive_ethernet_json() {
           n=$((n + 1))
         fi
       fi
-    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+    done < <(nm_devices_unescaped)
 
     if (( n > 0 )); then
       json=$(jq -nc "${args[@]}" "$filter")
@@ -360,9 +369,10 @@ get_inactive_ethernet_json() {
   echo "$json"
 }
 
+LIMINE_CONF="${OMAPPLE_LIMINE_CONF:-/etc/limine-entry-tool.d/t2-mac.conf}"
+
 get_pcie_ports_compat() {
-  local conf="/etc/limine-entry-tool.d/t2-mac.conf"
-  if [[ -r "$conf" ]] && grep -q '\bpcie_ports=compat\b' "$conf" 2>/dev/null; then
+  if [[ -r "$LIMINE_CONF" ]] && grep -q '\bpcie_ports=compat\b' "$LIMINE_CONF" 2>/dev/null; then
     echo true
   else
     echo false
@@ -388,7 +398,10 @@ get_mem_sleep_modes_json() {
     raw="${raw//\[/}"
     raw="${raw//\]/}"
     for m in $raw; do
-      [[ -n "$m" ]] && modes+=("\"$m\"")
+      if [[ -n "$m" ]]; then
+        json_escape "$m"
+        modes+=("\"$REPLY\"")
+      fi
     done
   fi
   if (( ${#modes[@]} == 0 )); then
@@ -688,13 +701,15 @@ PYEOF
 }
 
 print_status_json() {
-  # `--keys` includes the full Omarchy system-keybinding map. The widget polls
-  # without it: the map is ~58 KB of the ~61 KB payload and only the keybindings
-  # tab reads it, so the poll keeps its shape and reports availability instead.
-  local want_keys=0
-  if [[ "${1:-}" == "--keys" ]]; then
-    want_keys=1
-  fi
+  # `--keys` includes the full Omarchy system-keybinding map (~58 KB); `--sound`
+  # probes speaker-calibrator. Polls omit both so only the active tab pays.
+  local want_keys=0 want_sound=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --keys) want_keys=1 ;;
+      --sound) want_sound=1 ;;
+    esac
+  done
 
   local is_t2=false
   if detect_t2; then
@@ -846,16 +861,19 @@ PYEOF
     plugin_ver=$(jq -r '.version // empty' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || true)
   fi
 
-  local speaker_cal_json
-  local helper_py
-  helper_py=$(find_plugins_helper)
-  if [[ -n "$helper_py" && -f "$helper_py" ]]; then
-    speaker_cal_json=$(python3 -I "$helper_py" status-speaker-calibrator 2>/dev/null || echo '{"installed":false,"enabled":false}')
-  else
-    speaker_cal_json='{"installed":false,"enabled":false}'
+  local speaker_cal_json="null"
+  if (( want_sound == 1 )); then
+    local helper_py
+    helper_py=$(find_plugins_helper)
+    if [[ -n "$helper_py" && -f "$helper_py" ]]; then
+      speaker_cal_json=$(python3 -I "$helper_py" status-speaker-calibrator 2>/dev/null || echo '{"installed":false,"enabled":false}')
+    else
+      speaker_cal_json='{"installed":false,"enabled":false}'
+    fi
+    [[ -z "$speaker_cal_json" ]] && speaker_cal_json='{"installed":false,"enabled":false}'
   fi
-  [[ -z "$speaker_cal_json" ]] && speaker_cal_json='{"installed":false,"enabled":false}'
 
+  json_escape "$plugin_ver"; plugin_ver=$REPLY
   json_escape "$model"; model=$REPLY
   json_escape "$vendor"; vendor=$REPLY
   json_escape "$chip_label"; chip_label=$REPLY
@@ -982,7 +1000,7 @@ atomic_write_file() {
 
   dir="$(dirname "$target")"
   mkdir -p "$dir"
-  tmp="${target}.tmp.$$"
+  tmp=$(umask 077 && mktemp "${dir}/.$(basename "$target").tmp.XXXXXX")
   printf "%s\n" "$content" > "$tmp"
   chmod "$mode" "$tmp"
   mv -f "$tmp" "$target"
@@ -1198,7 +1216,7 @@ apply_wifi_powersave() {
   esac
 
   local iface
-  iface=$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}' || true)
+  iface=$(wifi_iface)
   if [[ -n "$iface" && "$iface" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
     iw dev "$iface" set power_save "$state" 2>/dev/null || true
   fi
@@ -1250,6 +1268,7 @@ unmanage_idle_ethernet() {
   command -v nmcli >/dev/null 2>&1 || return 0
   local dev type state rest is_managed
   while IFS=: read -r dev type state rest; do
+    dev="${dev//$'\x1e'/:}"
     [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]] || continue
     is_managed=true
     if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
@@ -1258,15 +1277,16 @@ unmanage_idle_ethernet() {
     if [[ "$is_managed" == "true" ]]; then
       apply_ethernet_managed "$dev" "no"
     fi
-  done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+  done < <(nm_devices_unescaped)
 }
 
 manage_all_ethernet() {
   command -v nmcli >/dev/null 2>&1 || return 0
   local dev type state rest
   while IFS=: read -r dev type state rest; do
+    dev="${dev//$'\x1e'/:}"
     [[ "$type" == "ethernet" ]] && apply_ethernet_managed "$dev" "yes"
-  done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+  done < <(nm_devices_unescaped)
 }
 
 # The presets share the same opt-out flags; the polkit rules already bound which
@@ -1283,10 +1303,54 @@ parse_skip_flags() {
   done
 }
 
+update_limine_cmdline_flag() {
+  local conf="$1" mode="$2" flag="$3" val="${4:-}"
+  python3 -I - "$conf" "$mode" "$flag" "$val" <<'PYEOF'
+import os, re, sys
+
+path, mode, flag, val = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+content = ""
+if os.path.exists(path):
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+LINE_RE = re.compile(r"^([ \t]*KERNEL_CMDLINE[^=\n]*=[+ \t]*[\"'])([^\"']*)([\"'])", re.M)
+token = f"{flag}={val}" if val else flag
+pattern = re.compile(rf"\b{re.escape(flag)}(?:=\w+)?\b") if val else re.compile(rf"\b{re.escape(flag)}\b")
+
+if mode == "remove":
+    def repl(m):
+        cleaned = re.sub(r"[ \t]+", " ", pattern.sub("", m.group(2))).rstrip()
+        return f"{m.group(1)}{cleaned}{m.group(3)}"
+    new_content = LINE_RE.sub(repl, content)
+elif pattern.search(content) and val:
+    new_content = pattern.sub(token, content)
+elif pattern.search(content):
+    new_content = content
+else:
+    def repl(m):
+        v = m.group(2).rstrip()
+        sep = " " if v and not v.endswith(" ") else ""
+        return f"{m.group(1)}{v}{sep}{token}{m.group(3)}"
+    new_content, count = LINE_RE.subn(repl, content)
+    if count == 0:
+        sep = "\n" if content and not content.endswith("\n") else ""
+        new_content = content + sep + f'KERNEL_CMDLINE[default]+=" {token}"\n'
+
+if new_content != content:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp_path = path + ".tmp." + str(os.getpid())
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    os.replace(tmp_path, path)
+    sys.exit(0)
+sys.exit(2)
+PYEOF
+}
+
 apply_pcie_ports_compat() {
   local mode="${1:-}" # on | off
   local update_limine="${2:-true}"
-  local conf="/etc/limine-entry-tool.d/t2-mac.conf"
   validate_no_control_chars "$mode" "pcie_ports_compat"
   validate_no_control_chars "$update_limine" "update_limine"
   mode=$(echo "$mode" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
@@ -1311,59 +1375,9 @@ apply_pcie_ports_compat() {
   fi
 
   local res=0
-  python3 -I - "$conf" "$mode" <<'PYEOF' || res=$?
-import sys
-import re
-import os
-
-path = sys.argv[1]
-mode = sys.argv[2]
-
-content = ""
-if os.path.exists(path):
-    with open(path, "r", encoding="utf-8") as f:
-        content = f.read()
-
-def remove_compat(text):
-    def repl(m):
-        prefix = m.group(1)
-        val = m.group(2)
-        closing = m.group(3)
-        val = re.sub(r"\bpcie_ports=compat\b", "", val)
-        val = re.sub(r"[ \t]+", " ", val).rstrip()
-        return f"{prefix}{val}{closing}"
-    return re.sub(r"^([ \t]*KERNEL_CMDLINE[^=\n]*=[+ \t]*[\"'])([^\"']*)([\"'])", repl, text, flags=re.M)
-
-def add_compat(text):
-    if re.search(r"\bpcie_ports=compat\b", text):
-        return text
-    def repl(m):
-        prefix = m.group(1)
-        val = m.group(2).rstrip()
-        closing = m.group(3)
-        sep = " " if val and not val.endswith(" ") else ""
-        return f"{prefix}{val}{sep}pcie_ports=compat{closing}"
-    new_text, count = re.subn(r"^([ \t]*KERNEL_CMDLINE[^=\n]*=[+ \t]*[\"'])([^\"']*)([\"'])", repl, text, flags=re.M)
-    if count == 0:
-        sep = "\n" if text and not text.endswith("\n") else ""
-        new_text = text + sep + 'KERNEL_CMDLINE[default]+=" pcie_ports=compat"\n'
-    return new_text
-
-if mode == "off":
-    new_content = remove_compat(content)
-else:
-    new_content = add_compat(content)
-
-if new_content != content:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp_path = path + ".tmp." + str(os.getpid())
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        f.write(new_content)
-    os.replace(tmp_path, path)
-    sys.exit(0)
-else:
-    sys.exit(2)
-PYEOF
+  local op="set"
+  [[ "$mode" == "off" ]] && op="remove"
+  update_limine_cmdline_flag "$LIMINE_CONF" "$op" "pcie_ports=compat" || res=$?
 
   if [[ "$update_limine" == "true" && $res -eq 0 ]]; then
     run_limine_update
@@ -1403,11 +1417,11 @@ apply_mem_sleep() {
   # 3. systemd-sleep configuration
   mkdir -p /etc/systemd/sleep.conf.d
   local cfg="/etc/systemd/sleep.conf.d/30-t2-sleep.conf"
-  if [[ -f "$cfg" ]] && grep -q "\[Sleep\]" "$cfg" 2>/dev/null; then
-    if grep -q "MemorySleepMode=" "$cfg" 2>/dev/null; then
+  if [[ -f "$cfg" ]] && grep -qE '^[[:space:]]*\[Sleep\]' "$cfg" 2>/dev/null; then
+    if grep -qE '^[[:space:]]*MemorySleepMode=' "$cfg" 2>/dev/null; then
       sed -i "s/^[[:space:]]*MemorySleepMode=.*/MemorySleepMode=$val/" "$cfg"
     else
-      sed -i "/\[Sleep\]/a MemorySleepMode=$val" "$cfg"
+      sed -i "/^[[:space:]]*\[Sleep\]/a MemorySleepMode=$val" "$cfg"
     fi
   else
     local content="[Sleep]
@@ -1416,42 +1430,10 @@ MemorySleepMode=$val"
   fi
 
   # 4. Kernel command line persistence in /etc/limine-entry-tool.d/t2-mac.conf
-  local limine_conf="/etc/limine-entry-tool.d/t2-mac.conf"
-  python3 -I - "$limine_conf" "$val" <<'PYEOF'
-import sys
-import re
-import os
-
-path = sys.argv[1]
-val = sys.argv[2]
-
-content = ""
-if os.path.exists(path):
-    with open(path, "r", encoding="utf-8") as f:
-        content = f.read()
-
-def update_mem_sleep_default(text, val):
-    if re.search(r"\bmem_sleep_default=\w+\b", text):
-        return re.sub(r"\bmem_sleep_default=\w+\b", f"mem_sleep_default={val}", text)
-    def repl(m):
-        prefix = m.group(1)
-        v = m.group(2).rstrip()
-        closing = m.group(3)
-        sep = " " if v and not v.endswith(" ") else ""
-        return f"{prefix}{v}{sep}mem_sleep_default={val}{closing}"
-    new_text, count = re.subn(r"^([ \t]*KERNEL_CMDLINE[^=\n]*=[+ \t]*[\"'])([^\"']*)([\"'])", repl, text, flags=re.M)
-    if count == 0:
-        sep = "\n" if text and not text.endswith("\n") else ""
-        new_text = text + sep + f'KERNEL_CMDLINE[default]+=" mem_sleep_default={val}"\n'
-    return new_text
-
-new_content = update_mem_sleep_default(content, val)
-os.makedirs(os.path.dirname(path), exist_ok=True)
-tmp_path = path + ".tmp." + str(os.getpid())
-with open(tmp_path, "w", encoding="utf-8") as f:
-    f.write(new_content)
-os.replace(tmp_path, path)
-PYEOF
+  update_limine_cmdline_flag "$LIMINE_CONF" "set" "mem_sleep_default" "$val" || {
+    local rc=$?
+    (( rc == 2 )) || return "$rc"
+  }
 
   # 5. Update bootloader if requested
   if [[ "$update_limine" == "true" ]]; then
@@ -1530,7 +1512,7 @@ restore_wake_state() {
   saved=$(< "$WAKE_STATE_FILE")
   while IFS='=' read -r dev state; do
     [[ -n "$dev" && -n "$state" ]] || continue
-    apply_wake_toggle "$dev" "$state"
+    apply_wake_toggle "$dev" "$state" "false"
   done <<< "$saved"
   echo "Restored wake devices from $WAKE_STATE_FILE."
 }
@@ -1538,6 +1520,7 @@ restore_wake_state() {
 apply_wake_toggle() {
   local dev="${1:-}"
   local desired="${2:-}" # on | off
+  local persist="${3:-true}"
   validate_no_control_chars "$dev" "wake_dev"
   validate_no_control_chars "$desired" "wake_desired"
 
@@ -1564,7 +1547,9 @@ apply_wake_toggle() {
   if [[ ("$desired" == "on" && "$current" == "false") || ("$desired" == "off" && "$current" == "true") ]]; then
     echo "$dev" > /proc/acpi/wakeup 2>/dev/null || true
   fi
-  record_wake_state "$dev" "$desired"
+  if [[ "$persist" == "true" ]]; then
+    record_wake_state "$dev" "$desired"
+  fi
 }
 
 apply_audio_powersave() {
@@ -1667,19 +1652,21 @@ apply_hibernate_delay() {
     fi
   else
     mkdir -p /etc/systemd/sleep.conf.d
-    if [[ -f "$cfg" ]] && grep -q "\[Sleep\]" "$cfg" 2>/dev/null; then
+    if [[ -f "$cfg" ]] && grep -qE '^[[:space:]]*\[Sleep\]' "$cfg" 2>/dev/null; then
       sed -i '/HibernateDelaySec=/d' "$cfg"
-      sed -i "/\[Sleep\]/a HibernateDelaySec=$sec" "$cfg"
+      sed -i "/^[[:space:]]*\[Sleep\]/a HibernateDelaySec=$sec" "$cfg"
     else
       local content="[Sleep]
 HibernateDelaySec=$sec"
       atomic_write_file "$cfg" "$content"
     fi
 
-    local lid_content="[Login]
+    if [[ ! -f "$lid_cfg" ]] || grep -qE '^[[:space:]]*HandleLidSwitch=suspend[[:space:]]*$' "$lid_cfg" 2>/dev/null; then
+      local lid_content="[Login]
 HandleLidSwitch=suspend-then-hibernate"
-    atomic_write_file "$lid_cfg" "$lid_content"
-    systemctl kill -s HUP systemd-logind 2>/dev/null || true
+      atomic_write_file "$lid_cfg" "$lid_content"
+      systemctl kill -s HUP systemd-logind 2>/dev/null || true
+    fi
   fi
 }
 
@@ -1708,16 +1695,7 @@ if os.path.exists(bindings_file):
         sys.stderr.write("Security Error: bindings.lua not owned by current user\n")
         sys.exit(1)
 
-try:
-    settings = omapple_kb.load_settings(settings_file)
-except PermissionError as exc:
-    sys.stderr.write(f"Security Error: {exc}\n")
-    sys.exit(1)
-if settings is None:
-    # Writing bindings.lua from an unreadable settings.json would replace the
-    # omarchy-t2 block with the defaults, so stop instead.
-    sys.stderr.write("Error: settings.json is not readable as JSON, so keybindings were not applied\n")
-    sys.exit(1)
+settings = omapple_kb.load_settings_or_exit(settings_file)
 
 norm_c = omapple_kb.canonical_chord
 
@@ -1934,82 +1912,74 @@ import sys, os
 settings_file = sys.argv[1]
 sys.path.insert(0, sys.argv[2] if len(sys.argv) > 2 else "")
 import omapple_kb
-try:
-    settings = omapple_kb.load_settings(settings_file)
-except PermissionError as exc:
-    sys.stderr.write(f"Security Error: {exc}\n")
-    sys.exit(1)
-if settings is None:
-    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
-    sys.exit(1)
-if os.path.exists(settings_file):
+settings = omapple_kb.load_settings_or_exit(settings_file)
 
-    rec_keys = {
-        "keybindingSelectAll": "SUPER + A",
-        "keybindingDelete": "SUPER + BACKSPACE",
-        "keybindingFind": "SUPER + F",
-        "keybindingUndo": "SUPER + Z",
-        "keybindingRedo": "SUPER + SHIFT + Z",
-        "keybindingSave": "SUPER + S",
-        "keybindingCut": "SUPER + X",
-        "keybindingReload": "SUPER + R",
-        "keybindingSelectAddress": "SUPER + L"
+rec_keys = {
+    "keybindingSelectAll": "SUPER + A",
+    "keybindingDelete": "SUPER + BACKSPACE",
+    "keybindingFind": "SUPER + F",
+    "keybindingUndo": "SUPER + Z",
+    "keybindingRedo": "SUPER + SHIFT + Z",
+    "keybindingSave": "SUPER + S",
+    "keybindingCut": "SUPER + X",
+    "keybindingReload": "SUPER + R",
+    "keybindingSelectAddress": "SUPER + L"
+}
+
+changed = False
+if "keybindingFullscreen" in settings:
+    del settings["keybindingFullscreen"]
+    changed = True
+for k, v in rec_keys.items():
+    if settings.get(k) != v:
+        settings[k] = v
+        changed = True
+
+overrides = dict(settings.get("systemKeybindingOverrides", {}))
+raw = omapple_kb.load_records()
+if raw:
+    bound = [r[0] for r in raw]
+
+    rec_tasks = {
+        "SUPER + A": "select all",
+        "SUPER + BACKSPACE": "forward delete",
+        "SUPER + F": "find",
+        "SUPER + Z": "undo",
+        "SUPER + SHIFT + Z": "redo",
+        "SUPER + S": "save",
+        "SUPER + X": "cut",
+        "SUPER + R": "reload",
+        "SUPER + L": "select address"
     }
 
-    changed = False
-    if "keybindingFullscreen" in settings:
-        del settings["keybindingFullscreen"]
-        changed = True
-    for k, v in rec_keys.items():
-        if settings.get(k) != v:
-            settings[k] = v
-            changed = True
+    norm_rec = {omapple_kb.normalize_chord_tokens(rc): (rc, name) for rc, name in rec_tasks.items()}
 
-    overrides = dict(settings.get("systemKeybindingOverrides", {}))
-    raw = omapple_kb.load_records()
-    if raw:
-        bound = [r[0] for r in raw]
+    for combo, desc, disp, arg in raw:
+        c_norm = omapple_kb.normalize_chord_tokens(combo)
+        if c_norm in norm_rec:
+            r_chord, r_name = norm_rec[c_norm]
+            desc_clean = desc.lower().replace(" ", "").replace("_", "").replace("-", "")
+            r_clean = r_name.replace(" ", "")
+            if desc_clean not in (r_clean, "delete", "findindocument", "save", "cut", "universalcut", "reload", "selectaddress", "selectaddressbar", "focusaddressbar"):
+                rec_alt = omapple_kb.get_rec(combo, bound)
+                overrides[desc] = {
+                    "action": desc,
+                    "defaultChord": combo,
+                    "currentChord": rec_alt,
+                    "recommendedChord": rec_alt,
+                    "dispatcher": disp,
+                    "arg": arg
+                }
 
-        rec_tasks = {
-            "SUPER + A": "select all",
-            "SUPER + BACKSPACE": "forward delete",
-            "SUPER + F": "find",
-            "SUPER + Z": "undo",
-            "SUPER + SHIFT + Z": "redo",
-            "SUPER + S": "save",
-            "SUPER + X": "cut",
-            "SUPER + R": "reload",
-            "SUPER + L": "select address"
-        }
+if settings.get("systemKeybindingOverrides") != overrides:
+    settings["systemKeybindingOverrides"] = overrides
+    changed = True
 
-        norm_rec = {omapple_kb.normalize_chord_tokens(rc): (rc, name) for rc, name in rec_tasks.items()}
-
-        for combo, desc, disp, arg in raw:
-            c_norm = omapple_kb.normalize_chord_tokens(combo)
-            if c_norm in norm_rec:
-                r_chord, r_name = norm_rec[c_norm]
-                desc_clean = desc.lower().replace(" ", "").replace("_", "").replace("-", "")
-                r_clean = r_name.replace(" ", "")
-                if desc_clean not in (r_clean, "delete", "findindocument", "save", "cut", "universalcut", "reload", "selectaddress", "selectaddressbar", "focusaddressbar"):
-                    rec_alt = omapple_kb.get_rec(combo, bound)
-                    overrides[desc] = {
-                        "action": desc,
-                        "defaultChord": combo,
-                        "currentChord": rec_alt,
-                        "recommendedChord": rec_alt,
-                        "dispatcher": disp,
-                        "arg": arg
-                    }
-
-    if settings.get("systemKeybindingOverrides") != overrides:
-        settings["systemKeybindingOverrides"] = overrides
-        changed = True
-
-    if changed:
-        omapple_kb.save_settings(settings_file, settings)
-        sys.exit(0)
-    else:
-        sys.exit(2)
+if changed:
+    omapple_kb.save_settings(settings_file, settings)
+    sys.exit(0)
+else:
+    sys.exit(2)
 PYEOF
   if [[ $py_res -eq 0 ]]; then
     apply_keybindings
@@ -2028,14 +1998,7 @@ import sys
 settings_file = sys.argv[1]
 sys.path.insert(0, sys.argv[2] if len(sys.argv) > 2 else "")
 import omapple_kb
-try:
-    settings = omapple_kb.load_settings(settings_file)
-except PermissionError as exc:
-    sys.stderr.write(f"Security Error: {exc}\n")
-    sys.exit(1)
-if settings is None:
-    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
-    sys.exit(1)
+settings = omapple_kb.load_settings_or_exit(settings_file)
 
 settings["keybindingSelectAll"] = "CTRL + A"
 settings["keybindingDelete"] = "DELETE"
@@ -2071,14 +2034,7 @@ import sys
 settings_file, action = sys.argv[1], sys.argv[2]
 sys.path.insert(0, sys.argv[3] if len(sys.argv) > 3 else "")
 import omapple_kb
-try:
-    settings = omapple_kb.load_settings(settings_file)
-except PermissionError as exc:
-    sys.stderr.write(f"Security Error: {exc}\n")
-    sys.exit(1)
-if settings is None:
-    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
-    sys.exit(1)
+settings = omapple_kb.load_settings_or_exit(settings_file)
 overrides = settings.get("systemKeybindingOverrides", {})
 if action in overrides:
     del overrides[action]
@@ -2128,14 +2084,7 @@ import sys
 settings_file = sys.argv[1]
 sys.path.insert(0, sys.argv[2] if len(sys.argv) > 2 else "")
 import omapple_kb
-try:
-    settings = omapple_kb.load_settings(settings_file)
-except PermissionError as exc:
-    sys.stderr.write(f"Security Error: {exc}\n")
-    sys.exit(1)
-if settings is None:
-    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
-    sys.exit(1)
+settings = omapple_kb.load_settings_or_exit(settings_file)
 task_key = sys.argv[3]
 task_chord = sys.argv[4]
 action = sys.argv[5]
@@ -2233,14 +2182,7 @@ import sys, os, subprocess
 sys.path.insert(0, sys.argv[3] if len(sys.argv) > 3 else "")
 import omapple_kb
 settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
-try:
-    settings = omapple_kb.load_settings(settings_file)
-except PermissionError as exc:
-    sys.stderr.write(f"Security Error: {exc}\n")
-    sys.exit(1)
-if settings is None:
-    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
-    sys.exit(1)
+settings = omapple_kb.load_settings_or_exit(settings_file)
 
 def as_bool(v, fallback):
     if v is None: return fallback
@@ -2370,14 +2312,7 @@ import sys, os
 sys.path.insert(0, sys.argv[2] if len(sys.argv) > 2 else "")
 import omapple_kb
 settings_file = sys.argv[1]
-try:
-    settings = omapple_kb.load_settings(settings_file)
-except PermissionError as exc:
-    sys.stderr.write(f"Security Error: {exc}\n")
-    sys.exit(1)
-if settings is None:
-    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
-    sys.exit(1)
+settings = omapple_kb.load_settings_or_exit(settings_file)
 
 recommended = {
     "trackpadNaturalScroll": True,
@@ -2673,13 +2608,7 @@ do_apply_recommended_battery() {
 
 do_reset_battery_to_defaults() {
   apply_wifi_powersave "on"
-  if command -v nmcli >/dev/null 2>&1; then
-    while IFS=: read -r dev type state rest; do
-      if [[ "$type" == "ethernet" ]]; then
-        apply_ethernet_managed "$dev" "yes"
-      fi
-    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
-  fi
+  manage_all_ethernet
   apply_audio_powersave "false"
   apply_usb_autosuspend "false"
   if detect_t2; then
@@ -2701,7 +2630,8 @@ done
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-status}" in
   status)
-    print_status_json "${2:-}"
+    shift
+    print_status_json "$@"
     ;;
 
   battery)
@@ -3130,12 +3060,16 @@ case "${1:-status}" in
   open-url)
     assert_user_operation "URL open operation"
     target_url="${2:-}"
-    if [[ -n "$target_url" ]]; then
+    validate_no_control_chars "$target_url" "target_url"
+    if [[ "$target_url" =~ ^https?:// ]]; then
       if command -v xdg-open >/dev/null 2>&1; then
         nohup setsid xdg-open "$target_url" </dev/null >/dev/null 2>&1 &
       elif command -v gio >/dev/null 2>&1; then
         nohup setsid gio open "$target_url" </dev/null >/dev/null 2>&1 &
       fi
+    elif [[ -n "$target_url" ]]; then
+      echo "Error: Refusing to open non-HTTP(S) URL '$target_url'" >&2
+      exit 1
     fi
     ;;
 

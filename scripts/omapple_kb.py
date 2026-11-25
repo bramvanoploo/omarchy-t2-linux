@@ -9,6 +9,9 @@ import glob
 import json
 import os
 import re
+import stat
+import sys
+import tempfile
 
 RECORDS_GLOB = "~/.cache/omarchy/keybindings-*.records"
 MOD_ORDER = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
@@ -16,9 +19,17 @@ MOD_ORDER = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
 
 def latest_records_file():
     files = [f for f in glob.glob(os.path.expanduser(RECORDS_GLOB)) if os.access(f, os.R_OK)]
-    if not files:
-        return ""
-    return max(files, key=os.path.getmtime)
+    best = ""
+    best_mtime = -1.0
+    for f in files:
+        try:
+            mt = os.path.getmtime(f)
+            if mt > best_mtime:
+                best_mtime = mt
+                best = f
+        except OSError:
+            continue
+    return best
 
 
 def normalize_chord_tokens(c):
@@ -41,15 +52,19 @@ def normalize_chord_tokens(c):
     return frozenset(mods), key
 
 
+def _format_chord(mods, key):
+    ordered = sorted(mods, key=lambda m: MOD_ORDER.get(m, 10))
+    ordered.append(key)
+    return " + ".join(ordered)
+
+
 def canonical_chord(c):
     """Chord as written into settings.json and bindings.lua: ordered modifiers,
     aliases folded, so "cmd+s" and "WIN + S" both become "SUPER + S"."""
     mods, key = normalize_chord_tokens(c)
     if not key:
         return ""
-    ordered = sorted(mods, key=lambda m: MOD_ORDER.get(m, 10))
-    ordered.append(key)
-    return " + ".join(ordered)
+    return _format_chord(mods, key)
 
 
 def load_records(path=None):
@@ -75,7 +90,7 @@ def load_records(path=None):
                 disp = parts[1].strip() if len(parts) > 1 and parts[1].strip() else "exec"
                 arg = parts[2].strip() if len(parts) > 2 else ""
                 out.append((combo, desc.strip(), disp, arg))
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     return out
 
@@ -93,12 +108,8 @@ def get_rec(chord, bound=()):
         cand = set(mods)
         cand.add(extra)
         if (frozenset(cand), key) not in taken:
-            ordered = sorted(cand, key=lambda m: MOD_ORDER.get(m, 10))
-            ordered.append(key)
-            return " + ".join(ordered)
-    ordered = sorted(set(mods) | {"ALT"}, key=lambda m: MOD_ORDER.get(m, 10))
-    ordered.append(key)
-    return " + ".join(ordered)
+            return _format_chord(cand, key)
+    return _format_chord(set(mods) | {"ALT"}, key)
 
 
 def load_settings(path):
@@ -107,11 +118,21 @@ def load_settings(path):
     Returns None when the file exists but cannot be read as an object: writing on
     top of it would replace it with only the keys one subcommand happens to touch,
     so the caller must stop instead of starting from an empty dict.
-    Raises PermissionError when the file belongs to somebody else.
+    Raises PermissionError when the file belongs to somebody else or is a symlink.
     """
-    if not path or not os.path.isfile(path):
+    if not path:
         return {}
-    if hasattr(os, "geteuid") and os.stat(path).st_uid != os.geteuid():
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return None
+    if stat.S_ISLNK(st.st_mode):
+        raise PermissionError("settings.json must not be a symlink")
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
         raise PermissionError("settings.json not owned by current user")
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -121,8 +142,35 @@ def load_settings(path):
     return data if isinstance(data, dict) else None
 
 
+def load_settings_or_exit(path):
+    """Load settings.json or exit 1 with a clear stderr message on error."""
+    try:
+        settings = load_settings(path)
+    except PermissionError as exc:
+        sys.stderr.write(f"Security Error: {exc}\n")
+        sys.exit(1)
+    if settings is None:
+        sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
+        sys.exit(1)
+    return settings
+
+
 def save_settings(path, data):
-    tmp = path + ".tmp." + str(os.getpid())
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
-    os.replace(tmp, path)
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    if hasattr(os, "geteuid"):
+        pst = os.lstat(parent)
+        if stat.S_ISLNK(pst.st_mode) or pst.st_uid != os.geteuid():
+            raise PermissionError("settings.json directory not owned by current user")
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".tmp.", dir=parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

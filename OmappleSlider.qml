@@ -137,6 +137,7 @@ Item {
       var finalVal = root.liveValue
       root.released(finalVal)
     }
+    onCanceled: root.dragging = false
     onWheel: function(wheel) {
       // Ignore wheel events on the slider so scrolling propagates to the parent Flickable
       wheel.accepted = false

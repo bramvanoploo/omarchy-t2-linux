@@ -36,6 +36,6 @@ install -Dm644 "$src/system/omapple-wake.service" /etc/systemd/system/omapple-wa
 
 systemctl daemon-reload >/dev/null 2>&1 || true
 systemctl enable omapple-wake.service >/dev/null 2>&1 || true
-systemctl try-restart polkitd.service >/dev/null 2>&1 || true
+systemctl try-restart polkit.service polkitd.service >/dev/null 2>&1 || true
 
 echo "✓ Installed /usr/local/libexec/omapple-helper, omapple_kb.py, omapple-plugins-helper.py, omapple-wake.service and polkit rules (with backwards compatibility symlinks)."

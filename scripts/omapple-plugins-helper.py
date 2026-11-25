@@ -20,6 +20,8 @@ if hasattr(os, "geteuid") and os.geteuid() == 0:
         pass
 import json
 import re
+import stat
+import tempfile
 import time
 import socket
 import subprocess
@@ -28,13 +30,18 @@ import urllib.parse
 import urllib.error
 from datetime import datetime
 
+SELF_PLUGIN_ID = "bramvanoploo.omarchy-t2-linux"
+PLUGIN_ID_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
+
 CATALOG_URL = "https://plugins.omarchy.org/catalog.json"
 STATS_URL = "https://api.omarchyplugins.com/v1/stats"
 QUERY_URL = "https://plugins.omarchy.org/?q=T2"
 CACHE_DIR = os.path.expanduser("~/.cache/omarchy")
 CACHE_FILE = os.path.join(CACHE_DIR, "omapple-plugins-catalog.json")
 STATS_CACHE_FILE = os.path.join(CACHE_DIR, "omapple-plugins-stats.json")
+SPEAKER_CAL_SOURCE_CACHE_FILE = os.path.join(CACHE_DIR, "omapple-speaker-calibrator-source.json")
 CACHE_TTL = 3600  # 1 hour
+SPEAKER_CAL_SOURCE_TTL = 300  # 5 minutes
 PLUGINS_DIR = os.path.expanduser("~/.config/omarchy/plugins")
 
 # Hard ceilings for remote JSON payloads. A compromised catalog/stats endpoint
@@ -166,21 +173,22 @@ FALLBACK_T2_PLUGINS = [
 
 
 def user_owned_dir(path):
-    if not os.path.exists(path):
-        return True
     try:
-        return os.stat(path).st_uid == os.geteuid()
-    except Exception:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
         return False
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        return False
+    return not hasattr(os, "geteuid") or st.st_uid == os.geteuid()
 
 
 def ensure_cache_dir():
-    if os.path.exists(CACHE_DIR) and not user_owned_dir(CACHE_DIR):
+    if os.path.lexists(CACHE_DIR) and not user_owned_dir(CACHE_DIR):
         raise PermissionError(f"Cache directory not owned by current user: {CACHE_DIR}")
     os.makedirs(CACHE_DIR, mode=0o700, exist_ok=True)
-    # Older helpers used a unique temp name per run, so every interrupted fetch
-    # left its own ~13 MB orphan behind. Clear those once; the current fixed
-    # name needs no sweeping because the next write truncates it.
+    os.chmod(CACHE_DIR, 0o700)
     for name in os.listdir(CACHE_DIR):
         if ".tmp." in name:
             try:
@@ -191,15 +199,12 @@ def ensure_cache_dir():
 
 def safe_write_json(file_path, data):
     ensure_cache_dir()
-    parent = os.path.dirname(file_path) or "."
+    parent = os.path.dirname(os.path.abspath(file_path)) or "."
     if not user_owned_dir(parent):
         raise PermissionError(f"Cache directory not owned by current user: {parent}")
-    # One fixed temp name instead of a unique one per call: a fetch killed
-    # mid-write (the widget watchdog used to fire before the helper's own read
-    # budget) then left a fresh ~13 MB orphan in the cache dir on every retry.
-    tmp_path = file_path + ".tmp"
+    fd, tmp_path = tempfile.mkstemp(prefix=os.path.basename(file_path) + ".tmp.", dir=parent)
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
             f.flush()
             os.fsync(f.fileno())
@@ -403,75 +408,83 @@ def http_get_json(url, timeout, max_bytes, budget):
     return json.loads(raw.decode("utf-8"))
 
 
-def fetch_catalog(force_refresh=False):
+def _safe_int(val, default=0):
+    try:
+        return int(val or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_tags(plugin):
+    raw = plugin.get("tags")
+    if not isinstance(raw, list):
+        return []
+    return [str(t) for t in raw if t is not None]
+
+
+def _fetch_cached(cache_path, max_bytes, url, timeout, budget, extract_fn, fallback, force_refresh=False):
     ensure_cache_dir()
     now = time.time()
-
-    if not force_refresh and os.path.exists(CACHE_FILE):
+    if not force_refresh and os.path.exists(cache_path):
         try:
-            mtime = os.path.getmtime(CACHE_FILE)
-            if now - mtime < CACHE_TTL:
-                return load_json_cache(CACHE_FILE, MAX_CATALOG_BYTES)
+            if now - os.path.getmtime(cache_path) < CACHE_TTL:
+                return load_json_cache(cache_path, max_bytes)
         except Exception:
             pass
-
-    # Try downloading fresh catalog, with bounded size, time and entry count
     try:
-        data = http_get_json(CATALOG_URL, 6, MAX_CATALOG_BYTES, CATALOG_FETCH_BUDGET)
-        if not isinstance(data, dict):
-            raise ValueError("Catalog payload is not a JSON object")
-        plugins = data.get("plugins")
-        if isinstance(plugins, list) and len(plugins) > MAX_CATALOG_PLUGINS:
-            raise ValueError(
-                "Catalog lists %d plugins, above the %d entry ceiling"
-                % (len(plugins), MAX_CATALOG_PLUGINS)
-            )
-        safe_write_json(CACHE_FILE, data)
-        return data
+        data = http_get_json(url, timeout, max_bytes, budget)
+        payload = extract_fn(data)
+        safe_write_json(cache_path, payload)
+        return payload
     except Exception:
-        # Fall back to cache if available
-        if os.path.exists(CACHE_FILE):
+        if os.path.exists(cache_path):
             try:
-                return load_json_cache(CACHE_FILE, MAX_CATALOG_BYTES)
+                return load_json_cache(cache_path, max_bytes)
             except Exception:
                 pass
-        return {"plugins": FALLBACK_T2_PLUGINS}
+        return fallback
+
+
+def _validate_catalog(data):
+    if not isinstance(data, dict):
+        raise ValueError("Catalog payload is not a JSON object")
+    plugins = data.get("plugins")
+    if not isinstance(plugins, list):
+        raise ValueError("Catalog payload 'plugins' is not a JSON list")
+    if len(plugins) > MAX_CATALOG_PLUGINS:
+        raise ValueError(
+            "Catalog lists %d plugins, above the %d entry ceiling"
+            % (len(plugins), MAX_CATALOG_PLUGINS)
+        )
+    return data
+
+
+def _validate_stats(data):
+    if not isinstance(data, dict):
+        raise ValueError("Stats payload is not a JSON object")
+    stats = data.get("plugins", {})
+    if not isinstance(stats, dict):
+        raise ValueError("Stats payload has no per-plugin object")
+    if len(stats) > MAX_STATS_ENTRIES:
+        raise ValueError(
+            "Stats list %d entries, above the %d entry ceiling"
+            % (len(stats), MAX_STATS_ENTRIES)
+        )
+    return stats
+
+
+def fetch_catalog(force_refresh=False):
+    return _fetch_cached(
+        CACHE_FILE, MAX_CATALOG_BYTES, CATALOG_URL, 6, CATALOG_FETCH_BUDGET,
+        _validate_catalog, {"plugins": FALLBACK_T2_PLUGINS}, force_refresh
+    )
 
 
 def fetch_stats(force_refresh=False):
-    ensure_cache_dir()
-    now = time.time()
-
-    if not force_refresh and os.path.exists(STATS_CACHE_FILE):
-        try:
-            mtime = os.path.getmtime(STATS_CACHE_FILE)
-            if now - mtime < CACHE_TTL:
-                return load_json_cache(STATS_CACHE_FILE, MAX_STATS_BYTES)
-        except Exception:
-            pass
-
-    # Try downloading fresh engagement stats, with bounded size, time and entries
-    try:
-        data = http_get_json(STATS_URL, 5, MAX_STATS_BYTES, STATS_FETCH_BUDGET)
-        if not isinstance(data, dict):
-            raise ValueError("Stats payload is not a JSON object")
-        stats = data.get("plugins", {})
-        if not isinstance(stats, dict):
-            raise ValueError("Stats payload has no per-plugin object")
-        if len(stats) > MAX_STATS_ENTRIES:
-            raise ValueError(
-                "Stats list %d entries, above the %d entry ceiling"
-                % (len(stats), MAX_STATS_ENTRIES)
-            )
-        safe_write_json(STATS_CACHE_FILE, stats)
-        return stats
-    except Exception:
-        if os.path.exists(STATS_CACHE_FILE):
-            try:
-                return load_json_cache(STATS_CACHE_FILE, MAX_STATS_BYTES)
-            except Exception:
-                pass
-        return {}
+    return _fetch_cached(
+        STATS_CACHE_FILE, MAX_STATS_BYTES, STATS_URL, 5, STATS_FETCH_BUDGET,
+        _validate_stats, {}, force_refresh
+    )
 
 
 def compute_engagement_ranks(plugins, stats):
@@ -480,14 +493,16 @@ def compute_engagement_ranks(plugins, stats):
     Rank metrics evaluated: hearts, copies, views, stars.
     """
     metrics = ["hearts", "copies", "views", "stars"]
-    stars_map = {p.get("id"): int(p.get("stars", 0) or 0) for p in plugins if p.get("id")}
+    valid_plugins = [p for p in plugins if isinstance(p, dict) and p.get("id")]
+    stars_map = {p["id"]: _safe_int(p.get("stars", 0)) for p in valid_plugins}
 
     def get_count(pid, metric):
         if metric == "stars":
             return stars_map.get(pid, 0)
-        return int(stats.get(pid, {}).get(metric, 0) or 0)
+        entry = stats.get(pid, {}) if isinstance(stats, dict) else {}
+        return _safe_int(entry.get(metric, 0) if isinstance(entry, dict) else 0)
 
-    ids = [p.get("id") for p in plugins if p.get("id")]
+    ids = [p["id"] for p in valid_plugins]
     ranked_ids = [pid for pid in ids if any(get_count(pid, m) > 0 for m in metrics)]
 
     ranks = {pid: {} for pid in ids}
@@ -594,11 +609,11 @@ def matches_q_t2(plugin):
     Search logic matching https://plugins.omarchy.org/?q=T2:
     Tokens starting with 't2' in name, id, description, tags, or author.
     """
-    name = plugin.get("name", "")
-    pid = plugin.get("id", "")
-    desc = plugin.get("description", "")
-    tags = " ".join(plugin.get("tags", []))
-    author = plugin.get("author", "")
+    name = plugin.get("name") or ""
+    pid = plugin.get("id") or ""
+    desc = plugin.get("description") or ""
+    tags = " ".join(_safe_tags(plugin))
+    author = plugin.get("author") or ""
     full_text = f"{name} {pid} {desc} {tags} {author}".lower()
     words = re.findall(r'[\w]+', full_text)
     return any(w.startswith("t2") for w in words)
@@ -609,18 +624,18 @@ def is_apple_plugin(plugin):
     Search logic for all Apple-related Omarchy plugins:
     Matches Apple, MacBook, Mac, macOS, Touch Bar, AirDrop, Sidecar, iCloud, Magic Mouse/Trackpad, etc.
     """
-    pid = plugin.get("id", "")
-    if pid == "bramvanoploo.omarchy-t2-linux":
+    pid = plugin.get("id") or ""
+    if pid == SELF_PLUGIN_ID:
         return False
 
     if matches_q_t2(plugin):
         return True
 
-    name = plugin.get("name", "").lower()
+    name = (plugin.get("name") or "").lower()
     pid_lower = pid.lower()
-    desc = plugin.get("description", "").lower()
-    tags = [t.lower() for t in plugin.get("tags", [])]
-    author = plugin.get("author", "").lower()
+    desc = (plugin.get("description") or "").lower()
+    tags = [t.lower() for t in _safe_tags(plugin)]
+    author = (plugin.get("author") or "").lower()
     full_text = f"{name} {pid_lower} {desc} {' '.join(tags)} {author}"
 
     apple_phrases = [
@@ -660,126 +675,87 @@ def parse_listing_time(plugin):
     return 0.0
 
 
+def _build_plugin_entry(p, installed_map, ranks, stats, is_fallback=False):
+    pid = p.get("id", "")
+    t2_flag = True if is_fallback else matches_q_t2(p)
+    inst = installed_map.get(pid)
+    pdir = safe_plugin_path(pid)
+    is_installed = inst is not None or (bool(pdir) and os.path.exists(pdir))
+    is_enabled = inst.get("enabled", False) if inst else False
+    local_v = get_local_plugin_version(pid) if is_installed else ""
+    remote_v = p.get("version", "1.0.0")
+    update_avail = is_version_newer(remote_v, local_v) if is_installed and local_v else False
+
+    repo = p.get("repo", "")
+    install_cmd = p.get("installCommand", "")
+    if not install_cmd and repo and not is_fallback:
+        git_url = repo if repo.endswith(".git") else f"{repo}.git"
+        install_cmd = f"omarchy plugin add {git_url} --enable"
+
+    rank_info = ranks.get(pid, {})
+    rank_val = rank_info.get("overall", p.get("rank") if is_fallback else None)
+    rank_label = f"#{rank_val}" if rank_val else (p.get("rankLabel", "") if is_fallback else "")
+    p_stats = stats.get(pid, {}) if isinstance(stats, dict) else {}
+    if not isinstance(p_stats, dict):
+        p_stats = {}
+
+    return {
+        "id": pid,
+        "name": p.get("name", pid),
+        "author": p.get("author", "Community"),
+        "description": p.get("description", ""),
+        "version": remote_v,
+        "installedVersion": local_v,
+        "installed": is_installed,
+        "enabled": is_enabled,
+        "updateAvailable": update_avail,
+        "repo": repo,
+        "installCommand": install_cmd,
+        "tags": _safe_tags(p),
+        "stars": _safe_int(p.get("stars", 0)),
+        "rank": rank_val,
+        "rankLabel": rank_label,
+        "views": _safe_int(p_stats.get("views", p.get("views", 0) if is_fallback else 0)),
+        "copies": _safe_int(p_stats.get("copies", p.get("copies", 0) if is_fallback else 0)),
+        "hearts": _safe_int(p_stats.get("hearts", p.get("hearts", 0) if is_fallback else 0)),
+        "accent": p.get("accent", "lime" if is_fallback else "cyan"),
+        "webUrl": f"https://plugins.omarchy.org/plugin.html?id={urllib.parse.quote(pid)}",
+        "isExactT2": t2_flag,
+        "isT2": t2_flag,
+        "isApple": True,
+        "category": "T2 Plugin" if t2_flag else "Apple Plugin",
+        "_listingTime": parse_listing_time(p)
+    }
+
+
 def list_plugins(force_refresh=False):
     catalog = fetch_catalog(force_refresh)
-    catalog_plugins = catalog.get("plugins", [])
+    raw_plugins = catalog.get("plugins", []) if isinstance(catalog, dict) else []
+    catalog_plugins = [p for p in raw_plugins if isinstance(p, dict)]
     stats = fetch_stats(force_refresh)
     ranks = compute_engagement_ranks(catalog_plugins, stats)
     installed_map = get_installed_plugins_map()
 
     matched_dict = {}
 
-    # 1. Matches for Apple & T2 plugins
     for p in catalog_plugins:
         pid = p.get("id", "")
-        # Don't show this plugin itself
-        if pid == "bramvanoploo.omarchy-t2-linux":
+        if not pid or pid == SELF_PLUGIN_ID:
             continue
-
         if is_apple_plugin(p):
-            t2_flag = matches_q_t2(p)
-            inst = installed_map.get(pid)
-            is_installed = inst is not None or (bool(safe_plugin_path(pid)) and os.path.exists(os.path.join(safe_plugin_path(pid), "")))
-            is_enabled = inst.get("enabled", False) if inst else False
+            matched_dict[pid] = _build_plugin_entry(p, installed_map, ranks, stats, is_fallback=False)
 
-            local_v = get_local_plugin_version(pid) if is_installed else ""
-            remote_v = p.get("version", "1.0.0")
-
-            # Check update
-            update_avail = False
-            if is_installed and local_v:
-                update_avail = is_version_newer(remote_v, local_v)
-
-            repo = p.get("repo", "")
-            install_cmd = p.get("installCommand", "")
-            if not install_cmd and repo:
-                git_url = repo if repo.endswith(".git") else f"{repo}.git"
-                install_cmd = f"omarchy plugin add {git_url} --enable"
-
-            rank_info = ranks.get(pid, {})
-            rank_val = rank_info.get("overall")
-            rank_label = f"#{rank_val}" if rank_val else ""
-            p_stats = stats.get(pid, {})
-
-            entry = {
-                "id": pid,
-                "name": p.get("name", pid),
-                "author": p.get("author", "Community"),
-                "description": p.get("description", ""),
-                "version": remote_v,
-                "installedVersion": local_v,
-                "installed": is_installed,
-                "enabled": is_enabled,
-                "updateAvailable": update_avail,
-                "repo": repo,
-                "installCommand": install_cmd,
-                "tags": p.get("tags", []),
-                "stars": p.get("stars", 0),
-                "rank": rank_val,
-                "rankLabel": rank_label,
-                "views": p_stats.get("views", 0),
-                "copies": p_stats.get("copies", 0),
-                "hearts": p_stats.get("hearts", 0),
-                "accent": p.get("accent", "cyan"),
-                "webUrl": f"https://plugins.omarchy.org/plugin.html?id={urllib.parse.quote(pid)}",
-                "isExactT2": t2_flag,
-                "isT2": t2_flag,
-                "isApple": True,
-                "category": "T2 Plugin" if t2_flag else "Apple Plugin",
-                "_listingTime": parse_listing_time(p)
-            }
-            matched_dict[pid] = entry
-
-    # Ensure known fallback T2 plugins are included if not present
     for fb in FALLBACK_T2_PLUGINS:
         pid = fb["id"]
-        if pid not in matched_dict and pid != "bramvanoploo.omarchy-t2-linux":
-            inst = installed_map.get(pid)
-            is_installed = inst is not None or (bool(safe_plugin_path(pid)) and os.path.exists(os.path.join(safe_plugin_path(pid), "")))
-            is_enabled = inst.get("enabled", False) if inst else False
-            local_v = get_local_plugin_version(pid) if is_installed else ""
-            remote_v = fb.get("version", "1.0.0")
-
-            update_avail = is_version_newer(remote_v, local_v) if is_installed and local_v else False
-            rank_info = ranks.get(pid, {})
-            rank_val = rank_info.get("overall", fb.get("rank"))
-            rank_label = f"#{rank_val}" if rank_val else fb.get("rankLabel", "")
-            p_stats = stats.get(pid, {})
-
-            matched_dict[pid] = {
-                "id": pid,
-                "name": fb.get("name", pid),
-                "author": fb.get("author", "Community"),
-                "description": fb.get("description", ""),
-                "version": remote_v,
-                "installedVersion": local_v,
-                "installed": is_installed,
-                "enabled": is_enabled,
-                "updateAvailable": update_avail,
-                "repo": fb.get("repo", ""),
-                "installCommand": fb.get("installCommand", ""),
-                "tags": fb.get("tags", []),
-                "stars": fb.get("stars", 0),
-                "rank": rank_val,
-                "rankLabel": rank_label,
-                "views": p_stats.get("views", fb.get("views", 0)),
-                "copies": p_stats.get("copies", fb.get("copies", 0)),
-                "hearts": p_stats.get("hearts", fb.get("hearts", 0)),
-                "accent": fb.get("accent", "lime"),
-                "webUrl": f"https://plugins.omarchy.org/plugin.html?id={urllib.parse.quote(pid)}",
-                "isExactT2": True,
-                "isT2": True,
-                "isApple": True,
-                "category": "T2 Plugin",
-                "_listingTime": parse_listing_time(fb)
-            }
+        if pid not in matched_dict and pid != SELF_PLUGIN_ID:
+            matched_dict[pid] = _build_plugin_entry(fb, installed_map, ranks, stats, is_fallback=True)
 
     # Site default sort: recently added (listingTime descending, then name ascending)
     items = list(matched_dict.values())
     if "--t2-only" in sys.argv:
         items = [x for x in items if x.get("isT2") or x.get("isExactT2")]
 
-    items.sort(key=lambda x: (-x.get("_listingTime", 0.0), x["name"].lower()))
+    items.sort(key=lambda x: (-x.get("_listingTime", 0.0), str(x.get("name", "")).lower()))
     for x in items:
         x.pop("_listingTime", None)
 
@@ -839,94 +815,134 @@ def install_plugin(repo_or_url):
         sys.exit(rc or 1)
 
 
-def update_plugin(plugin_id):
-    if not plugin_id or not re.match(r'^[a-zA-Z0-9_.-]+$', plugin_id) or plugin_id.startswith("-"):
+def _validate_plugin_id(plugin_id):
+    if not plugin_id or not PLUGIN_ID_RE.match(plugin_id) or plugin_id.startswith("-"):
         print(json.dumps({"success": False, "error": f"Invalid plugin ID: {plugin_id}"}))
         sys.exit(1)
 
-    rc, out, err = run_cmd(["omarchy", "plugin", "update", plugin_id, "--yes"])
+
+def _run_plugin_action(cmd, ok_msg, fail_msg):
+    rc, out, err = run_cmd(cmd)
     if rc == 0:
-        print(json.dumps({"success": True, "message": out or f"{plugin_id} updated successfully."}))
+        print(json.dumps({"success": True, "message": out or ok_msg}))
         sys.exit(0)
-    else:
-        print(json.dumps({"success": False, "error": err or out or "Failed to update plugin."}))
-        sys.exit(rc or 1)
+    print(json.dumps({"success": False, "error": err or out or fail_msg}))
+    sys.exit(rc or 1)
+
+
+def update_plugin(plugin_id):
+    _validate_plugin_id(plugin_id)
+    _run_plugin_action(
+        ["omarchy", "plugin", "update", plugin_id, "--yes"],
+        f"{plugin_id} updated successfully.",
+        "Failed to update plugin.",
+    )
 
 
 def remove_plugin(plugin_id):
-    if not plugin_id or not re.match(r'^[a-zA-Z0-9_.-]+$', plugin_id) or plugin_id.startswith("-"):
-        print(json.dumps({"success": False, "error": f"Invalid plugin ID: {plugin_id}"}))
-        sys.exit(1)
-
-    rc, out, err = run_cmd(["omarchy", "plugin", "remove", plugin_id, "--yes"])
-    if rc == 0:
-        print(json.dumps({"success": True, "message": out or f"{plugin_id} removed successfully."}))
-        sys.exit(0)
-    else:
-        print(json.dumps({"success": False, "error": err or out or "Failed to remove plugin."}))
-        sys.exit(rc or 1)
+    _validate_plugin_id(plugin_id)
+    _run_plugin_action(
+        ["omarchy", "plugin", "remove", plugin_id, "--yes"],
+        f"{plugin_id} removed successfully.",
+        "Failed to remove plugin.",
+    )
 
 
 def toggle_plugin(plugin_id, state):
-    if not plugin_id or not re.match(r'^[a-zA-Z0-9_.-]+$', plugin_id) or plugin_id.startswith("-"):
-        print(json.dumps({"success": False, "error": f"Invalid plugin ID: {plugin_id}"}))
-        sys.exit(1)
-
-    subcmd = "enable" if state in ("enable", "true", "1", "on") else "disable"
-    rc, out, err = run_cmd(["omarchy", "plugin", subcmd, plugin_id])
-    if rc == 0:
-        print(json.dumps({"success": True, "message": f"{plugin_id} {subcmd}d."}))
-        sys.exit(0)
+    _validate_plugin_id(plugin_id)
+    s_norm = str(state or "").strip().lower()
+    if s_norm in ("enable", "true", "1", "on"):
+        subcmd = "enable"
+    elif s_norm in ("disable", "false", "0", "off"):
+        subcmd = "disable"
     else:
-        print(json.dumps({"success": False, "error": err or out or f"Failed to {subcmd} plugin."}))
-        sys.exit(rc or 1)
+        print(json.dumps({"success": False, "error": f"Invalid toggle state: {state}"}))
+        sys.exit(1)
+    _run_plugin_action(
+        ["omarchy", "plugin", subcmd, plugin_id],
+        f"{plugin_id} {subcmd}d.",
+        f"Failed to {subcmd} plugin.",
+    )
 
 
 def check_speaker_calibrator_source_available():
     """
     Checks if the installation source for the speaker-calibrator plugin is available.
-    Returns True if:
-    1. The catalog has an active installable entry for the plugin (installAvailable != False, status != unavailable),
-       AND
-    2. Network reachability to repository/catalog hosts is functional.
+    Uses a short on-disk cache so repeated status polls do not hit github.com or
+    parse the full catalog on every tick.
     """
+    try:
+        if os.path.exists(SPEAKER_CAL_SOURCE_CACHE_FILE):
+            if time.time() - os.path.getmtime(SPEAKER_CAL_SOURCE_CACHE_FILE) < SPEAKER_CAL_SOURCE_TTL:
+                cached = load_json_cache(SPEAKER_CAL_SOURCE_CACHE_FILE, 4096)
+                if isinstance(cached, dict) and "available" in cached:
+                    return bool(cached["available"])
+    except Exception:
+        pass
+
+    available = True
     # 1. Check network connectivity to repository host (github.com)
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.6)
-        res = s.connect_ex(("github.com", 443))
-        s.close()
-        if res != 0:
-            return False
+        with socket.create_connection(("github.com", 443), timeout=0.6):
+            pass
     except Exception:
-        return False
+        available = False
 
     # 2. Check catalog cache / listing
-    catalog = None
-    if os.path.exists(CACHE_FILE):
-        try:
-            catalog = load_json_cache(CACHE_FILE, MAX_CATALOG_BYTES)
-        except Exception:
-            pass
+    if available:
+        catalog = None
+        if os.path.exists(CACHE_FILE):
+            try:
+                catalog = load_json_cache(CACHE_FILE, MAX_CATALOG_BYTES)
+            except Exception:
+                pass
 
-    if catalog and "plugins" in catalog:
-        found = False
-        for p in catalog.get("plugins", []):
-            if p.get("id") == "thefreshoffice.speaker-calibrator":
-                found = True
-                if p.get("installAvailable") is False:
-                    return False
-                st = str(p.get("status", "")).lower()
-                if st in ("unavailable", "deprecated", "removed", "disabled", "archived"):
-                    return False
-                repo = p.get("repo") or p.get("installCommand")
-                if not repo:
-                    return False
-                break
-        if not found:
-            return False
+        if catalog and "plugins" in catalog:
+            found = False
+            for p in catalog.get("plugins", []):
+                if p.get("id") == "thefreshoffice.speaker-calibrator":
+                    found = True
+                    if p.get("installAvailable") is False:
+                        available = False
+                    st = str(p.get("status", "")).lower()
+                    if st in ("unavailable", "deprecated", "removed", "disabled", "archived"):
+                        available = False
+                    repo = p.get("repo") or p.get("installCommand")
+                    if not repo:
+                        available = False
+                    break
+            if not found:
+                available = False
 
-    return True
+    try:
+        safe_write_json(SPEAKER_CAL_SOURCE_CACHE_FILE, {"available": available})
+    except Exception:
+        pass
+    return available
+
+
+def _extract_calibrator_status(data):
+    if not isinstance(data, dict):
+        return False, ""
+    service_active = bool(data.get("service") == "active" or data.get("enabled"))
+    compare = data.get("compare", {})
+    curr = compare.get("current", {}) if isinstance(compare, dict) else {}
+    label = curr.get("label", "") if isinstance(curr, dict) else ""
+    return service_active, label or ""
+
+
+def _is_owned_regular_or_dir(path, expect_dir=False):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return False
+    if expect_dir and not stat.S_ISDIR(st.st_mode):
+        return False
+    if not expect_dir and not stat.S_ISREG(st.st_mode):
+        return False
+    return not hasattr(os, "geteuid") or st.st_uid == os.geteuid()
 
 
 def get_speaker_calibrator_status():
@@ -972,27 +988,17 @@ def get_speaker_calibrator_status():
         if os.path.exists(cache_path):
             try:
                 with open(cache_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    service_active = bool(data.get("service") == "active" or data.get("enabled"))
-                    compare = data.get("compare", {})
-                    curr = compare.get("current", {})
-                    if curr.get("label"):
-                        active_profile = curr.get("label")
+                    service_active, active_profile = _extract_calibrator_status(json.load(f))
             except Exception:
                 pass
 
         if not active_profile:
             cal_script = os.path.join(plugins_dir, "speaker-calibrate.py")
-            if os.path.exists(cal_script):
+            if _is_owned_regular_or_dir(plugins_dir, expect_dir=True) and _is_owned_regular_or_dir(cal_script, expect_dir=False):
                 try:
                     proc = subprocess.run(["python3", cal_script, "status-cache-json"], capture_output=True, text=True, timeout=2)
                     if proc.returncode == 0:
-                        data = json.loads(proc.stdout)
-                        service_active = bool(data.get("service") == "active" or data.get("enabled"))
-                        compare = data.get("compare", {})
-                        curr = compare.get("current", {})
-                        if curr.get("label"):
-                            active_profile = curr.get("label")
+                        service_active, active_profile = _extract_calibrator_status(json.loads(proc.stdout))
                 except Exception:
                     pass
 
@@ -1020,30 +1026,26 @@ def check_user_access():
         if euid == 0:
             print(json.dumps({"status": "error", "error": "Plugin operations cannot be run as root"}), file=sys.stderr)
             sys.exit(1)
-        pkexec_uid = os.environ.get("PKEXEC_UID")
-        if pkexec_uid is not None:
-            try:
-                if int(pkexec_uid) != euid:
-                    print(json.dumps({"status": "error", "error": f"Security Error: Cross-user access denied for plugin operations (caller UID {pkexec_uid} != target UID {euid})"}), file=sys.stderr)
+        for env_var in ("PKEXEC_UID", "SUDO_UID"):
+            raw_uid = os.environ.get(env_var)
+            if raw_uid is not None:
+                try:
+                    parsed_uid = int(raw_uid)
+                except ValueError:
+                    print(json.dumps({"status": "error", "error": f"Security Error: Invalid {env_var} value"}), file=sys.stderr)
                     sys.exit(1)
-            except ValueError:
-                pass
-        sudo_uid = os.environ.get("SUDO_UID")
-        if sudo_uid is not None:
-            try:
-                if int(sudo_uid) != euid:
-                    print(json.dumps({"status": "error", "error": f"Security Error: Cross-user access denied for plugin operations (caller UID {sudo_uid} != target UID {euid})"}), file=sys.stderr)
+                if parsed_uid != euid:
+                    print(json.dumps({"status": "error", "error": f"Security Error: Cross-user access denied for plugin operations (caller UID {raw_uid} != target UID {euid})"}), file=sys.stderr)
                     sys.exit(1)
-            except ValueError:
-                pass
-        if os.path.exists(PLUGINS_DIR):
+        if os.path.lexists(PLUGINS_DIR):
             try:
-                stat = os.stat(PLUGINS_DIR)
-                if stat.st_uid != euid:
-                    print(json.dumps({"status": "error", "error": f"Security Error: Plugins directory not owned by current user (owner UID {stat.st_uid} != current UID {euid})"}), file=sys.stderr)
+                st = os.lstat(PLUGINS_DIR)
+                if stat.S_ISLNK(st.st_mode) or st.st_uid != euid:
+                    print(json.dumps({"status": "error", "error": f"Security Error: Plugins directory not owned by current user (owner UID {st.st_uid} != current UID {euid})"}), file=sys.stderr)
                     sys.exit(1)
-            except Exception:
-                pass
+            except Exception as exc:
+                print(json.dumps({"status": "error", "error": f"Security Error: Unable to verify plugins directory: {exc}"}), file=sys.stderr)
+                sys.exit(1)
 
 
 def emit_error(error):

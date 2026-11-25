@@ -220,6 +220,8 @@ function parseStatus(raw, previous) {
         data.speakerCalibrator.name = "Speaker Calibrator";
         data.speakerCalibrator.url = "https://plugins.omarchy.org/plugin.html?id=thefreshoffice.speaker-calibrator";
         data.speakerCalibrator.repo = "https://github.com/thefreshoffice/omarchy-speaker-calibrator.git";
+      } else if (data.speakerCalibrator === null && previous && previous.speakerCalibrator) {
+        data.speakerCalibrator = previous.speakerCalibrator;
       } else {
         data.speakerCalibrator = emptyStatus().speakerCalibrator;
       }
@@ -500,18 +502,28 @@ function getRecommendedAlternative(taskKey, conflictingChord) {
   return getRecommendedSystemChord(conflictingChord);
 }
 
-function findPluginConflict(targetTaskKey, newChord, currentStatus) {
-  var tasks = [
-    { key: "keybinding_select_all", name: "Select All", chord: (currentStatus && currentStatus.keybindingSelectAll) ? currentStatus.keybindingSelectAll : "CTRL + A" },
-    { key: "keybinding_delete", name: "Forward Delete", chord: (currentStatus && currentStatus.keybindingDelete) ? currentStatus.keybindingDelete : "DELETE" },
-    { key: "keybinding_find", name: "Find in Document", chord: (currentStatus && currentStatus.keybindingFind) ? currentStatus.keybindingFind : "CTRL + F" },
-    { key: "keybinding_undo", name: "Undo", chord: (currentStatus && currentStatus.keybindingUndo) ? currentStatus.keybindingUndo : "CTRL + Z" },
-    { key: "keybinding_redo", name: "Redo", chord: (currentStatus && currentStatus.keybindingRedo) ? currentStatus.keybindingRedo : "CTRL + SHIFT + Z" },
-    { key: "keybinding_save", name: "Save", chord: (currentStatus && currentStatus.keybindingSave) ? currentStatus.keybindingSave : "CTRL + S" },
-    { key: "keybinding_cut", name: "Cut", chord: (currentStatus && currentStatus.keybindingCut) ? currentStatus.keybindingCut : "CTRL + X" },
-    { key: "keybinding_reload", name: "Reload", chord: (currentStatus && currentStatus.keybindingReload) ? currentStatus.keybindingReload : "CTRL + R" },
-    { key: "keybinding_select_address", name: "Select Address", chord: (currentStatus && currentStatus.keybindingSelectAddress) ? currentStatus.keybindingSelectAddress : "CTRL + L" }
+var PLUGIN_ACTION_NORMS = [
+  "findindocument", "find", "selectall", "undo", "redo", "save",
+  "forwarddelete", "delete", "cut", "universalcut", "reload",
+  "selectaddress", "focusaddressbar", "selectaddressbar"
+];
+
+function keybindingTasks(status) {
+  return [
+    { key: "keybinding_select_all", prop: "keybindingSelectAll", name: "Select All", chord: (status && status.keybindingSelectAll) ? status.keybindingSelectAll : "CTRL + A" },
+    { key: "keybinding_delete", prop: "keybindingDelete", name: "Forward Delete", chord: (status && status.keybindingDelete) ? status.keybindingDelete : "DELETE" },
+    { key: "keybinding_find", prop: "keybindingFind", name: "Find in Document", chord: (status && status.keybindingFind) ? status.keybindingFind : "CTRL + F" },
+    { key: "keybinding_undo", prop: "keybindingUndo", name: "Undo", chord: (status && status.keybindingUndo) ? status.keybindingUndo : "CTRL + Z" },
+    { key: "keybinding_redo", prop: "keybindingRedo", name: "Redo", chord: (status && status.keybindingRedo) ? status.keybindingRedo : "CTRL + SHIFT + Z" },
+    { key: "keybinding_save", prop: "keybindingSave", name: "Save", chord: (status && status.keybindingSave) ? status.keybindingSave : "CTRL + S" },
+    { key: "keybinding_cut", prop: "keybindingCut", name: "Cut", chord: (status && status.keybindingCut) ? status.keybindingCut : "CTRL + X" },
+    { key: "keybinding_reload", prop: "keybindingReload", name: "Reload", chord: (status && status.keybindingReload) ? status.keybindingReload : "CTRL + R" },
+    { key: "keybinding_select_address", prop: "keybindingSelectAddress", name: "Select Address", chord: (status && status.keybindingSelectAddress) ? status.keybindingSelectAddress : "CTRL + L" }
   ];
+}
+
+function findPluginConflict(targetTaskKey, newChord, currentStatus) {
+  var tasks = keybindingTasks(currentStatus);
 
   var normTarget = normalizeChord(newChord);
   if (!normTarget) return null;
@@ -567,6 +579,7 @@ function findSystemConflict(targetTaskKey, newChord, currentStatus) {
     var sKey = systemKeys[j];
     if (normalizeChord(sKey) === normTarget) {
       var sItem = systemMap[sKey];
+      if (!sItem) continue;
       var sAct = sItem.action || "";
       var actNorm2 = sAct.toLowerCase().replace(/\s+/g, '');
       // If this action was already overridden to something else, its default chord is free
@@ -631,17 +644,7 @@ function getActiveConflicts(status) {
   var conflicts = [];
   var seen = {};
 
-  var tasks = [
-    { key: "keybinding_select_all", prop: "keybindingSelectAll", name: "Select All", chord: (status && status.keybindingSelectAll) ? status.keybindingSelectAll : "CTRL + A" },
-    { key: "keybinding_delete", prop: "keybindingDelete", name: "Forward Delete", chord: (status && status.keybindingDelete) ? status.keybindingDelete : "DELETE" },
-    { key: "keybinding_find", prop: "keybindingFind", name: "Find in Document", chord: (status && status.keybindingFind) ? status.keybindingFind : "CTRL + F" },
-    { key: "keybinding_undo", prop: "keybindingUndo", name: "Undo", chord: (status && status.keybindingUndo) ? status.keybindingUndo : "CTRL + Z" },
-    { key: "keybinding_redo", prop: "keybindingRedo", name: "Redo", chord: (status && status.keybindingRedo) ? status.keybindingRedo : "CTRL + SHIFT + Z" },
-    { key: "keybinding_save", prop: "keybindingSave", name: "Save", chord: (status && status.keybindingSave) ? status.keybindingSave : "CTRL + S" },
-    { key: "keybinding_cut", prop: "keybindingCut", name: "Cut", chord: (status && status.keybindingCut) ? status.keybindingCut : "CTRL + X" },
-    { key: "keybinding_reload", prop: "keybindingReload", name: "Reload", chord: (status && status.keybindingReload) ? status.keybindingReload : "CTRL + R" },
-    { key: "keybinding_select_address", prop: "keybindingSelectAddress", name: "Select Address", chord: (status && status.keybindingSelectAddress) ? status.keybindingSelectAddress : "CTRL + L" }
-  ];
+  var tasks = keybindingTasks(status);
 
   // 1. Check pairwise intra-plugin conflicts
   for (var i = 0; i < tasks.length; i++) {
@@ -674,7 +677,7 @@ function getActiveConflicts(status) {
   // 2. Check plugin tasks vs system keybindings
   var overrides = status.systemKeybindingOverrides || {};
   var systemMap = status.systemKeybindings || {};
-  var pluginActionNorms = ["findindocument", "find", "selectall", "undo", "redo", "save", "forwarddelete", "delete", "cut", "universalcut", "reload", "selectaddress", "focusaddressbar", "selectaddressbar"];
+  var pluginActionNorms = PLUGIN_ACTION_NORMS;
 
   for (var k = 0; k < tasks.length; k++) {
     var task = tasks[k];
@@ -687,6 +690,7 @@ function getActiveConflicts(status) {
       var sChord = sysKeys[s];
       if (normalizeChord(sChord) === normT) {
         var sItem = systemMap[sChord];
+        if (!sItem) continue;
         var sAct = sItem.action || "";
         var sActNorm = sAct.toLowerCase().replace(/\s+/g, "");
 

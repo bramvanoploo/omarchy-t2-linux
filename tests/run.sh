@@ -76,18 +76,22 @@ else
   ok "chord normalisers (skipped: node not installed)"
 fi
 
-# 4. The status payload stays valid JSON, and the keybinding map is only in
-# the --keys variant (the poll path stays small).
+# 4. The status payload stays valid JSON, and the keybinding map / speaker
+# calibrator probe are only in the --keys / --sound variants (poll stays small).
 bash "$HELPER" status > "$tmp/status.json" || bad "status exited non-zero"
-bash "$HELPER" status --keys > "$tmp/status-keys.json" || bad "status --keys exited non-zero"
+bash "$HELPER" status --keys --sound > "$tmp/status-keys.json" || bad "status --keys --sound exited non-zero"
 shape=$(python3 -I - "$tmp/status.json" "$tmp/status-keys.json" <<'PYEOF'
 import json, sys
 lite = json.load(open(sys.argv[1], encoding="utf-8"))
 keys = json.load(open(sys.argv[2], encoding="utf-8"))
 if lite.get("systemKeybindings") is not None:
     print("poll payload still carries the keybinding map")
+if lite.get("speakerCalibrator") is not None:
+    print("poll payload still carries speakerCalibrator")
 if not isinstance(keys.get("systemKeybindings"), dict):
     print("--keys payload lost the map")
+if not isinstance(keys.get("speakerCalibrator"), dict):
+    print("--sound payload lost speakerCalibrator")
 PYEOF
 )
 [[ -z "$shape" ]] && ok "status payload shape" || bad "status payload: $shape"
@@ -191,5 +195,65 @@ else
   [[ "$stored" == "SUPER + S" ]] && ok "set-keybindings stores the canonical chord" \
     || bad "set-keybindings stored $stored (expected 'SUPER + S')"
 fi
+
+# 10. Security & input validation guards
+! bash "$HELPER" open-url "file:///etc/passwd" >/dev/null 2>&1 \
+  && ok "open-url rejects non-HTTP(S) scheme" \
+  || bad "open-url accepted file:// URL"
+
+! python3 -I scripts/omapple-plugins-helper.py toggle some.plugin invalid_state >/dev/null 2>&1 \
+  && ok "plugins helper rejects invalid toggle state" \
+  || bad "plugins helper accepted invalid toggle state"
+
+! env PKEXEC_UID=notanumber python3 -I scripts/omapple-plugins-helper.py status-speaker-calibrator >/dev/null 2>&1 \
+  && ok "plugins helper fails closed on non-integer PKEXEC_UID" \
+  || bad "plugins helper ignored non-integer PKEXEC_UID"
+
+# 11. Limine cmdline writer (pcie_ports=compat and mem_sleep_default).
+lim_conf="$tmp/t2-mac.conf"
+lim_out=$(bash -c '
+  source "$1"
+  update_limine_cmdline_flag "$2" set "pcie_ports=compat" || true
+  update_limine_cmdline_flag "$2" set "mem_sleep_default" "deep" || true
+  update_limine_cmdline_flag "$2" set "mem_sleep_default" "s2idle" || true
+  update_limine_cmdline_flag "$2" remove "pcie_ports=compat" || true
+  cat "$2"
+' _ "$HELPER" "$lim_conf")
+if grep -q 'mem_sleep_default=s2idle' <<<"$lim_out" && ! grep -q 'pcie_ports=compat' <<<"$lim_out" && ! grep -q 'deep' <<<"$lim_out"; then
+  ok "update_limine_cmdline_flag add/update/remove"
+else
+  bad "update_limine_cmdline_flag produced: $lim_out"
+fi
+
+# 12. apply_keybindings writes marker block and rejects unsafe lua overrides.
+python3 -I - "$sb/.config/omarchy/t2-linux/settings.json" <<'PYEOF'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p, encoding="utf-8"))
+d["systemKeybindingOverrides"] = {
+    "Bad Lua": {"defaultChord": "SUPER + B", "currentChord": "SUPER + ALT + B", "dispatcher": "lua", "arg": "os.execute('id');"},
+    "Safe Exec": {"defaultChord": "SUPER + E", "currentChord": "SUPER + ALT + E", "dispatcher": "exec", "arg": "notify-send ok"}
+}
+json.dump(d, open(p, "w", encoding="utf-8"))
+PYEOF
+env HOME="$sb" XDG_CONFIG_HOME="$sb/.config" PATH="$sb/bin:$PATH" bash "$HELPER" apply-keybindings >/dev/null 2>"$tmp/kb.err" || true
+if grep -q 'BEGIN omarchy-t2-linux keybindings' "$sb/.config/hypr/bindings.lua" \
+   && grep -q 'Safe Exec' "$sb/.config/hypr/bindings.lua" \
+   && ! grep -q 'os.execute' "$sb/.config/hypr/bindings.lua"; then
+  ok "apply-keybindings marker block and LUA_ARG guard"
+else
+  bad "apply-keybindings output unexpected"
+fi
+
+# 13. apply_trackpad writes t2-trackpad.lua, updates hyprland.lua/input.lua, and enforces 3fg mutual exclusion.
+printf 'require("hypr.input")\n' > "$sb/.config/hypr/hyprland.lua"
+printf 'hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })\n' > "$sb/.config/hypr/input.lua"
+env HOME="$sb" XDG_CONFIG_HOME="$sb/.config" PATH="$sb/bin:$PATH" bash "$HELPER" set trackpad_drag_3fg 1 >/dev/null 2>"$tmp/tp.err" \
+  && grep -q 'require("hypr.t2-trackpad")' "$sb/.config/hypr/hyprland.lua" \
+  && grep -q 'managed by t2-trackpad' "$sb/.config/hypr/input.lua" \
+  && grep -q 'drag_3fg = 1' "$sb/.config/hypr/t2-trackpad.lua" \
+  && ! grep -q 'hl.gesture' "$sb/.config/hypr/t2-trackpad.lua" \
+  && ok "apply_trackpad config generation and 3fg mutual exclusion" \
+  || bad "apply_trackpad failed or missed mutual exclusion"
 
 exit $fail
