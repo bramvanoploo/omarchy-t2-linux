@@ -102,12 +102,6 @@ find_plugins_helper() {
     echo "$PLUGIN_ROOT/scripts/omapple-plugins-helper.py"
   elif [[ -f "/usr/local/libexec/omapple-plugins-helper.py" ]]; then
     echo "/usr/local/libexec/omapple-plugins-helper.py"
-  elif [[ -f "$SCRIPT_DIR/t2-plugins-helper.py" ]]; then
-    echo "$SCRIPT_DIR/t2-plugins-helper.py"
-  elif [[ -f "$PLUGIN_ROOT/scripts/t2-plugins-helper.py" ]]; then
-    echo "$PLUGIN_ROOT/scripts/t2-plugins-helper.py"
-  elif [[ -f "/usr/local/libexec/t2-plugins-helper.py" ]]; then
-    echo "/usr/local/libexec/t2-plugins-helper.py"
   fi
 }
 
@@ -237,7 +231,7 @@ get_battery_info() {
     (( percent > 100 )) && percent=100
 
     read -r status < "$bat_dir/status" 2>/dev/null || status="Unknown"
-    status="${status//[\"'$'\r$'\n']}"
+    status="${status//[$'\"\r\n']}"  # the bracket form matters: the old quoting put 'r' in the set
     [[ -z "$status" ]] && status="Unknown"
 
     read -r cycles < "$bat_dir/cycle_count" 2>/dev/null || cycles=0
@@ -319,9 +313,15 @@ get_aspm() {
   echo "${val:-default}"
 }
 
+wifi_iface() {
+  # The first interface iw lists can be a P2P device or a monitor interface,
+  # which has no client power save setting. Skip those.
+  iw dev 2>/dev/null | awk '/Interface/ && $2 !~ /^p2p-dev-/ && $2 !~ /mon$/ {print $2; exit}' || true
+}
+
 get_wifi_powersave() {
   local iface
-  iface=$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}' || true)
+  iface=$(wifi_iface)
   if [[ -n "$iface" ]]; then
     local res
     res=$(iw dev "$iface" get power_save 2>/dev/null || true)
@@ -336,7 +336,9 @@ get_wifi_powersave() {
 get_inactive_ethernet_json() {
   local json="[]"
   if command -v nmcli >/dev/null 2>&1; then
-    local items=()
+    # Let jq build the payload: nmcli -t escapes ':' in device names as '\:',
+    # and string concatenation would turn that into invalid JSON.
+    local args=() filter='[]' n=0
     while IFS=: read -r dev type state rest; do
       if [[ "$type" == "ethernet" ]]; then
         if [[ "$state" != "connected" && "$state" != "connecting" ]]; then
@@ -344,14 +346,15 @@ get_inactive_ethernet_json() {
           if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
             managed=false
           fi
-          items+=("{\"device\":\"$dev\",\"managed\":$managed,\"state\":\"$state\"}")
+          args+=(--arg "d$n" "$dev" --arg "s$n" "$state" --arg "m$n" "$managed")
+          filter+=" + [{device: \$d$n, managed: \$m$n == \"true\", state: \$s$n}]"
+          n=$((n + 1))
         fi
       fi
     done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
 
-    if (( ${#items[@]} > 0 )); then
-      local IFS=,
-      json="[${items[*]}]"
+    if (( n > 0 )); then
+      json=$(jq -nc "${args[@]}" "$filter")
     fi
   fi
   echo "$json"
@@ -490,19 +493,40 @@ get_hibernate_delay() {
   echo "$delay"
 }
 
-get_setting() {
-  local key="$1" default="$2"
+settings_readable_contents() {
+  # Only read settings.json when it belongs to the calling user.
   if [[ -f "$SETTINGS_FILE" && -r "$SETTINGS_FILE" ]]; then
     local s_owner
     s_owner=$(stat -c %u "$SETTINGS_FILE" 2>/dev/null || true)
     if [[ -z "$s_owner" || "$s_owner" == "$EUID" ]]; then
-      local res
-      res=$(jq -r --arg k "$key" '.[$k] // empty' "$SETTINGS_FILE" 2>/dev/null || true)
-      if [[ -n "$res" && "$res" != "null" ]]; then
-        echo "$res"
-        return
-      fi
+      cat "$SETTINGS_FILE" 2>/dev/null || true
     fi
+  fi
+}
+
+settings_values() {
+  # One jq pass for many keys, values separated by US (0x1f). The status path
+  # used to call get_setting once per key, which cost a stat + jq fork per key
+  # on every poll. US cannot appear in a validated setting value, and it is
+  # stripped from remote/hand-edited values here so a stray byte cannot shift
+  # the columns.
+  local raw
+  raw=$(settings_readable_contents)
+  if [[ -z "$raw" ]]; then
+    return 0
+  fi
+  jq -j --args '[$ARGS.positional[] as $k | .[$k] | if . == null then "" else tostring end
+    | gsub("\u001f"; "") + "\u001f"] | add // ""' -- "$@" <<<"$raw" 2>/dev/null || true
+}
+
+get_setting() {
+  local key="$1" default="$2"
+  local res
+  res=$(settings_values "$key")
+  res=${res%$'\x1f'}
+  if [[ -n "$res" && "$res" != "null" ]]; then
+    echo "$res"
+    return
   fi
   echo "$default"
 }
@@ -664,6 +688,14 @@ PYEOF
 }
 
 print_status_json() {
+  # `--keys` includes the full Omarchy system-keybinding map. The widget polls
+  # without it: the map is ~58 KB of the ~61 KB payload and only the keybindings
+  # tab reads it, so the poll keeps its shape and reports availability instead.
+  local want_keys=0
+  if [[ "${1:-}" == "--keys" ]]; then
+    want_keys=1
+  fi
+
   local is_t2=false
   if detect_t2; then
     is_t2=true
@@ -699,27 +731,34 @@ print_status_json() {
   hib_delay=$(get_hibernate_delay)
 
   local kbd_timeout touchbar_blank inactive_eth pcie_compat rec_prompt_shown t2_fixes_prompt_shown kb_select_all kb_delete kb_find kb_undo kb_redo
-  kbd_timeout=$(get_setting "kbdTimeout" "1m")
-  touchbar_blank=$(get_setting "touchbarBlank" "true")
-  rec_prompt_shown=$(get_setting "recommendedPromptShown" "false")
-  t2_fixes_prompt_shown=$(get_setting "t2FixesPromptShown" "false")
-  kb_select_all=$(get_setting "keybindingSelectAll" "CTRL + A")
-  kb_delete=$(get_setting "keybindingDelete" "DELETE")
-  kb_find=$(get_setting "keybindingFind" "CTRL + F")
-  kb_undo=$(get_setting "keybindingUndo" "CTRL + Z")
-  kb_redo=$(get_setting "keybindingRedo" "CTRL + SHIFT + Z")
-  kb_save=$(get_setting "keybindingSave" "CTRL + S")
-  kb_cut=$(get_setting "keybindingCut" "CTRL + X")
-  kb_reload=$(get_setting "keybindingReload" "CTRL + R")
-  kb_select_address=$(get_setting "keybindingSelectAddress" "CTRL + L")
+  local -a st=()
+  mapfile -d $'\x1f' -t st < <(settings_values kbdTimeout touchbarBlank recommendedPromptShown t2FixesPromptShown \
+    keybindingSelectAll keybindingDelete keybindingFind keybindingUndo keybindingRedo keybindingSave keybindingCut \
+    keybindingReload keybindingSelectAddress)
+  kbd_timeout=${st[0]:-1m}
+  touchbar_blank=${st[1]:-true}
+  rec_prompt_shown=${st[2]:-false}
+  t2_fixes_prompt_shown=${st[3]:-false}
+  kb_select_all=${st[4]:-CTRL + A}
+  kb_delete=${st[5]:-DELETE}
+  kb_find=${st[6]:-CTRL + F}
+  kb_undo=${st[7]:-CTRL + Z}
+  kb_redo=${st[8]:-CTRL + SHIFT + Z}
+  kb_save=${st[9]:-CTRL + S}
+  kb_cut=${st[10]:-CTRL + X}
+  kb_reload=${st[11]:-CTRL + R}
+  kb_select_address=${st[12]:-CTRL + L}
   inactive_eth=$(get_inactive_ethernet_json)
   pcie_compat=$(get_pcie_ports_compat)
 
-  local kb_payload sys_overrides sys_map
-  kb_payload=$(python3 -I - "$SETTINGS_FILE" <<'PYEOF'
-import glob, os, json, re, sys
+  local kb_payload kb_avail=false sys_overrides=null sys_map=null
+  kb_payload=$(python3 -I - "$SETTINGS_FILE" "$want_keys" "$SCRIPT_DIR" <<'PYEOF' || true
+import os, json, sys
 
 settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
+want_keys = (sys.argv[2] if len(sys.argv) > 2 else "1") == "1"
+sys.path.insert(0, sys.argv[3] if len(sys.argv) > 3 else "")
+import omapple_kb
 settings = {}
 if settings_file and os.path.exists(settings_file):
     try:
@@ -729,48 +768,15 @@ if settings_file and os.path.exists(settings_file):
         pass
 overrides = settings.get("systemKeybindingOverrides", {})
 
-cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.records"))
-bound_chords = set()
-raw = []
-if cache_files:
-    latest_cache = max(cache_files, key=os.path.getmtime)
-    try:
-        with open(latest_cache, "r", encoding="utf-8") as f:
-            for line in f:
-                if "→" in line:
-                    parts = line.strip().split("\t")
-                    combo, desc = parts[0].split("→", 1)
-                    combo = combo.strip().upper()
-                    desc = desc.strip()
-                    disp = parts[1] if len(parts) > 1 else "exec"
-                    arg = parts[2] if len(parts) > 2 else ""
-                    bound_chords.add(combo)
-                    raw.append((combo, desc, disp, arg))
-    except Exception:
-        pass
-
-def get_rec(chord):
-    tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
-    if not tokens:
-        return ""
-    key = tokens[-1]
-    mods = set(tokens[:-1])
-    ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
-    cands = []
-    if "ALT" not in mods:
-        m = list(mods | {"ALT"})
-        m.sort(key=lambda x: ord_map.get(x, 10))
-        cands.append(" + ".join(m) + f" + {key}")
-    if "CTRL" not in mods:
-        m = list(mods | {"CTRL"})
-        m.sort(key=lambda x: ord_map.get(x, 10))
-        cands.append(" + ".join(m) + f" + {key}")
-    for c in cands:
-        if c not in bound_chords:
-            return c
-    m = list(mods | {"ALT"})
-    m.sort(key=lambda x: ord_map.get(x, 10))
-    return " + ".join(m) + f" + {key}"
+avail = "true" if omapple_kb.latest_records_file() else "false"
+if not want_keys:
+    # Poll path: the map is the bulk of the payload and nothing outside the
+    # keybindings tab reads it. Say whether it is available at all so the tab
+    # can tell "not fetched" from "Omarchy has not written its list yet".
+    print(f"null\tnull\t{avail}")
+    raise SystemExit(0)
+raw = omapple_kb.load_records()
+bound = [r[0] for r in raw]
 
 system_map = {}
 for combo, desc, disp, arg in raw:
@@ -780,21 +786,31 @@ for combo, desc, disp, arg in raw:
         "dispatcher": disp,
         "arg": arg,
         "defaultChord": combo,
-        "recommendedChord": get_rec(combo)
+        "recommendedChord": omapple_kb.get_rec(combo, bound)
     }
 
 for act, item in overrides.items():
     if not item.get("recommendedChord"):
-        item["recommendedChord"] = get_rec(item.get("defaultChord") or item.get("currentChord"))
+        item["recommendedChord"] = omapple_kb.get_rec(
+            item.get("defaultChord") or item.get("currentChord"), bound)
 
 out_overrides = json.dumps(overrides)
 out_map = json.dumps(system_map)
-print(f"{out_overrides}\t{out_map}")
+print(f"{out_overrides}\t{out_map}\t{avail}")
 PYEOF
 )
-  IFS=$'\t' read -r sys_overrides sys_map <<< "$kb_payload"
-  [[ -z "$sys_overrides" ]] && sys_overrides="{}"
-  [[ -z "$sys_map" ]] && sys_map="{}"
+  if [[ -n "$kb_payload" ]]; then
+    IFS=$'\t' read -r sys_overrides sys_map kb_avail <<< "$kb_payload"
+    if [[ "$kb_avail" != "true" ]]; then
+      kb_avail=false
+    fi
+    if [[ "$sys_map" != "null" && -z "$sys_map" ]]; then
+      sys_map="{}"
+    fi
+    if [[ "$sys_overrides" != "null" && -z "$sys_overrides" ]]; then
+      sys_overrides="{}"
+    fi
+  fi
 
   local helper_installed=false
   if [[ -x "$SYSTEM_HELPER" ]]; then
@@ -823,9 +839,11 @@ PYEOF
     chip_label="$vendor ($sys_arch)"
   fi
 
-  local plugin_ver="1.2.0"
+  # manifest.json is the only place the version is written; an unreadable
+  # manifest sends an empty string and the QML shows its own fallback.
+  local plugin_ver=""
   if [[ -f "$PLUGIN_ROOT/manifest.json" ]]; then
-    plugin_ver=$(jq -r '.version // "1.2.0"' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || echo "1.2.0")
+    plugin_ver=$(jq -r '.version // empty' "$PLUGIN_ROOT/manifest.json" 2>/dev/null || true)
   fi
 
   local speaker_cal_json
@@ -837,6 +855,28 @@ PYEOF
     speaker_cal_json='{"installed":false,"enabled":false}'
   fi
   [[ -z "$speaker_cal_json" ]] && speaker_cal_json='{"installed":false,"enabled":false}'
+
+  json_escape "$model"; model=$REPLY
+  json_escape "$vendor"; vendor=$REPLY
+  json_escape "$chip_label"; chip_label=$REPLY
+  json_escape "$cpu_name"; cpu_name=$REPLY
+  json_escape "$kernel_release"; kernel_release=$REPLY
+  json_escape "$sys_arch"; sys_arch=$REPLY
+  json_escape "$epp"; epp=$REPLY
+  json_escape "$aspm"; aspm=$REPLY
+  json_escape "$kbd_timeout"; kbd_timeout=$REPLY
+  json_escape "$mem_sleep"; mem_sleep=$REPLY
+  json_escape "$lid_act"; lid_act=$REPLY
+  json_escape "$hib_delay"; hib_delay=$REPLY
+  json_escape "$kb_select_all"; kb_select_all=$REPLY
+  json_escape "$kb_delete"; kb_delete=$REPLY
+  json_escape "$kb_find"; kb_find=$REPLY
+  json_escape "$kb_undo"; kb_undo=$REPLY
+  json_escape "$kb_redo"; kb_redo=$REPLY
+  json_escape "$kb_save"; kb_save=$REPLY
+  json_escape "$kb_cut"; kb_cut=$REPLY
+  json_escape "$kb_reload"; kb_reload=$REPLY
+  json_escape "$kb_select_address"; kb_select_address=$REPLY
 
   cat <<EOF
 {
@@ -881,10 +921,27 @@ PYEOF
   "keybindingSelectAddress": "$kb_select_address",
   "systemKeybindingOverrides": $sys_overrides,
   "systemKeybindings": $sys_map,
+  "systemKeybindingsAvailable": $kb_avail,
   "trackpad": $trackpad_json,
   "speakerCalibrator": $speaker_cal_json
 }
 EOF
+}
+
+# Every string that goes into the status payload has to survive JSON. Most
+# values come from sysfs or DMI, but settings.json can be hand-edited, so
+# escape the same way for all of them. Sets REPLY instead of echoing to keep
+# this fork-free (the status path is called on a timer).
+json_escape() {
+  local s="$1"
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  # shortcut: other C0 control bytes are rejected by the settings validators on
+  # write; extend this list if a new free-text field is ever read from disk.
+  REPLY="$s"
 }
 
 # ---------------------------------------------------------------------------
@@ -893,9 +950,6 @@ EOF
 
 run_privileged() {
   local target="$SCRIPT_DIR/omapple-helper"
-  if [[ ! -f "$target" && -f "$SCRIPT_DIR/t2-helper" ]]; then
-    target="$SCRIPT_DIR/t2-helper"
-  fi
   if [[ -x "$SYSTEM_HELPER" ]]; then
     target="$SYSTEM_HELPER"
   fi
@@ -976,6 +1030,9 @@ save_user_setting() {
         echo "Error: Invalid keybinding chord for $key: '$val'" >&2
         exit 1
       fi
+      # Store one chord form ("cmd+s" and "WIN + S" both become "SUPER + S"), the
+      # form bindings.lua and the widget model compare.
+      val=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import omapple_kb; print(omapple_kb.canonical_chord(sys.argv[2]) or sys.argv[2])' "$SCRIPT_DIR" "$val")
       ;;
     trackpadNaturalScroll|trackpadTapToClick|trackpadClickfingerBehavior|trackpadDisableWhileTyping|trackpadTapAndDrag|trackpadDragLock|trackpadMiddleButtonEmulation|trackpadLeftHanded|trackpadFlipX|trackpadFlipY|trackpadSwipeWorkspaces)
       case "$val" in
@@ -1026,20 +1083,21 @@ save_user_setting() {
   esac
 
   mkdir -p "$(dirname "$SETTINGS_FILE")"
-  python3 -I - "$SETTINGS_FILE" "$key" "$val" <<'PYEOF'
-import sys, os, json
+  python3 -I - "$SETTINGS_FILE" "$key" "$val" "$SCRIPT_DIR" <<'PYEOF'
+import sys
+
+sys.path.insert(0, sys.argv[4] if len(sys.argv) > 4 else "")
+import omapple_kb
 
 file_path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
-data = {}
-if os.path.isfile(file_path):
-    if hasattr(os, "geteuid") and os.stat(file_path).st_uid != os.geteuid():
-        sys.stderr.write("Security Error: settings.json not owned by current user\n")
-        sys.exit(1)
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
+try:
+    data = omapple_kb.load_settings(file_path)
+except PermissionError as exc:
+    sys.stderr.write(f"Security Error: {exc}\n")
+    sys.exit(1)
+if data is None:
+    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
+    sys.exit(1)
 
 val_lower = val.lower().strip()
 if val_lower in ('true', 'on'):
@@ -1063,10 +1121,7 @@ if key == "trackpadDrag3fg" and data.get("trackpadDrag3fg", 0) > 0:
 elif key == "trackpadSwipeWorkspaces" and data.get("trackpadSwipeWorkspaces", False):
     data["trackpadDrag3fg"] = 0
 
-tmp_file = file_path + ".tmp." + str(os.getpid())
-with open(tmp_file, 'w', encoding='utf-8') as f:
-    json.dump(data, f, indent=2)
-os.replace(tmp_file, file_path)
+omapple_kb.save_settings(file_path, data)
 PYEOF
 }
 
@@ -1188,6 +1243,44 @@ unmanaged-devices=interface-name:$dev"
   else
     rm -f "$conf"
   fi
+}
+
+# Three presets need the same sweep: leave connected NICs alone, unmanage the idle ones.
+unmanage_idle_ethernet() {
+  command -v nmcli >/dev/null 2>&1 || return 0
+  local dev type state rest is_managed
+  while IFS=: read -r dev type state rest; do
+    [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]] || continue
+    is_managed=true
+    if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
+      is_managed=false
+    fi
+    if [[ "$is_managed" == "true" ]]; then
+      apply_ethernet_managed "$dev" "no"
+    fi
+  done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+}
+
+manage_all_ethernet() {
+  command -v nmcli >/dev/null 2>&1 || return 0
+  local dev type state rest
+  while IFS=: read -r dev type state rest; do
+    [[ "$type" == "ethernet" ]] && apply_ethernet_managed "$dev" "yes"
+  done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+}
+
+# The presets share the same opt-out flags; the polkit rules already bound which
+# flags each subcommand may carry, so one lenient parser is enough.
+parse_skip_flags() {
+  SKIP_PCIE=false SKIP_ETH=false SKIP_LIMINE=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --skip-pcie|--no-pcie) SKIP_PCIE=true ;;
+      --skip-eth|--no-eth) SKIP_ETH=true ;;
+      --skip-limine) SKIP_LIMINE=true ;;
+    esac
+    shift
+  done
 }
 
 apply_pcie_ports_compat() {
@@ -1415,6 +1508,33 @@ HandleLidSwitchDocked=$mode"
   systemctl kill -s HUP systemd-logind 2>/dev/null || true
 }
 
+# /proc/acpi/wakeup is a toggle file and the kernel resets it at every boot, so
+# the desired state is recorded here and replayed by omapple-wake.service.
+WAKE_STATE_FILE="${OMAPPLE_WAKE_STATE:-/etc/omapple/wake}"
+
+record_wake_state() {
+  local dev="$1" state="$2" content=""
+  if [[ -f "$WAKE_STATE_FILE" ]]; then
+    content=$(grep -v "^${dev}=" "$WAKE_STATE_FILE" || true)
+  fi
+  [[ -n "$content" ]] && content+=$'\n'
+  atomic_write_file "$WAKE_STATE_FILE" "${content}${dev}=${state}"
+}
+
+restore_wake_state() {
+  if [[ ! -r "$WAKE_STATE_FILE" ]]; then
+    echo "No saved wake state in $WAKE_STATE_FILE; leaving /proc/acpi/wakeup at kernel defaults."
+    return 0
+  fi
+  local saved dev state
+  saved=$(< "$WAKE_STATE_FILE")
+  while IFS='=' read -r dev state; do
+    [[ -n "$dev" && -n "$state" ]] || continue
+    apply_wake_toggle "$dev" "$state"
+  done <<< "$saved"
+  echo "Restored wake devices from $WAKE_STATE_FILE."
+}
+
 apply_wake_toggle() {
   local dev="${1:-}"
   local desired="${2:-}" # on | off
@@ -1444,6 +1564,7 @@ apply_wake_toggle() {
   if [[ ("$desired" == "on" && "$current" == "false") || ("$desired" == "off" && "$current" == "true") ]]; then
     echo "$dev" > /proc/acpi/wakeup 2>/dev/null || true
   fi
+  record_wake_state "$dev" "$desired"
 }
 
 apply_audio_powersave() {
@@ -1562,90 +1683,43 @@ HandleLidSwitch=suspend-then-hibernate"
   fi
 }
 
-install_system_helper() {
-  local helper_src=""
-  local rules_src=""
-  if [[ -f "$PLUGIN_ROOT/scripts/omapple-helper" ]]; then
-    helper_src="$PLUGIN_ROOT/scripts/omapple-helper"
-  elif [[ -f "$PLUGIN_ROOT/scripts/t2-helper" ]]; then
-    helper_src="$PLUGIN_ROOT/scripts/t2-helper"
-  fi
-
-  if [[ -f "$PLUGIN_ROOT/system/90-omapple.rules" ]]; then
-    rules_src="$PLUGIN_ROOT/system/90-omapple.rules"
-  elif [[ -f "$PLUGIN_ROOT/system/90-omarchy-t2-linux.rules" ]]; then
-    rules_src="$PLUGIN_ROOT/system/90-omarchy-t2-linux.rules"
-  fi
-
-  if [[ -z "$helper_src" || -z "$rules_src" ]]; then
-    echo "Error: Cannot locate helper source files in $PLUGIN_ROOT" >&2
-    exit 1
-  fi
-
-  mkdir -p /usr/local/libexec /etc/polkit-1/rules.d
-  install -Dm755 "$helper_src" /usr/local/libexec/omapple-helper
-  rm -f /usr/local/libexec/omarchy-t2-helper
-  ln -sf /usr/local/libexec/omapple-helper /usr/local/libexec/omarchy-t2-helper
-
-  local py_src=""
-  if [[ -f "$PLUGIN_ROOT/scripts/omapple-plugins-helper.py" ]]; then
-    py_src="$PLUGIN_ROOT/scripts/omapple-plugins-helper.py"
-  elif [[ -f "$PLUGIN_ROOT/scripts/t2-plugins-helper.py" ]]; then
-    py_src="$PLUGIN_ROOT/scripts/t2-plugins-helper.py"
-  fi
-  if [[ -n "$py_src" ]]; then
-    install -Dm755 "$py_src" /usr/local/libexec/omapple-plugins-helper.py
-    rm -f /usr/local/libexec/t2-plugins-helper.py
-    ln -sf /usr/local/libexec/omapple-plugins-helper.py /usr/local/libexec/t2-plugins-helper.py
-  fi
-
-  install -Dm644 "$rules_src" /etc/polkit-1/rules.d/90-omapple.rules
-  rm -f /etc/polkit-1/rules.d/90-omarchy-t2-linux.rules
-  ln -sf /etc/polkit-1/rules.d/90-omapple.rules /etc/polkit-1/rules.d/90-omarchy-t2-linux.rules
-  echo "Installed system helper, plugins helper, and polkit rules successfully."
-}
-
-uninstall_system_helper() {
-  rm -f /usr/local/libexec/omapple-helper /usr/local/libexec/omarchy-t2-helper \
-        /usr/local/libexec/omapple-plugins-helper.py /usr/local/libexec/t2-plugins-helper.py \
-        /etc/polkit-1/rules.d/90-omapple.rules /etc/polkit-1/rules.d/90-omarchy-t2-linux.rules
-  echo "Removed system helper, plugins helper, and polkit rules."
-}
-
 apply_keybindings() {
   assert_user_operation "Keybinding configuration"
   validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
   local bindings_file="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/bindings.lua"
   validate_user_config_path "$bindings_file" "Keybinding configuration"
-  [[ -f "$bindings_file" ]] || return 0
+  if [[ ! -f "$bindings_file" ]]; then
+    # Do not report success: the caller (and the widget) must see that nothing
+    # was written rather than showing "Changes saved.".
+    echo "Error: $bindings_file is missing, so keybindings were not applied." >&2
+    return 1
+  fi
 
-  python3 -I - "$SETTINGS_FILE" "$bindings_file" <<'PYEOF'
-import sys, json, os, re
+  python3 -I - "$SETTINGS_FILE" "$bindings_file" "$SCRIPT_DIR" <<'PYEOF'
+import sys, os, re
 
 settings_file = sys.argv[1]
 bindings_file = sys.argv[2]
+sys.path.insert(0, sys.argv[3] if len(sys.argv) > 3 else "")
+import omapple_kb
 
-if os.path.exists(settings_file):
-    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
-        sys.stderr.write("Security Error: settings.json not owned by current user\n")
-        sys.exit(1)
 if os.path.exists(bindings_file):
     if hasattr(os, "geteuid") and os.stat(bindings_file).st_uid != os.geteuid():
         sys.stderr.write("Security Error: bindings.lua not owned by current user\n")
         sys.exit(1)
 
-settings = {}
-if os.path.exists(settings_file):
-    try:
-        with open(settings_file, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    except Exception:
-        pass
+try:
+    settings = omapple_kb.load_settings(settings_file)
+except PermissionError as exc:
+    sys.stderr.write(f"Security Error: {exc}\n")
+    sys.exit(1)
+if settings is None:
+    # Writing bindings.lua from an unreadable settings.json would replace the
+    # omarchy-t2 block with the defaults, so stop instead.
+    sys.stderr.write("Error: settings.json is not readable as JSON, so keybindings were not applied\n")
+    sys.exit(1)
 
-def norm_c(c):
-    if not c: return ""
-    tokens = [t.strip().upper() for t in re.split(r"[\+\s]+", c) if t.strip()]
-    return " + ".join(tokens)
+norm_c = omapple_kb.canonical_chord
 
 select_all = norm_c(settings.get("keybindingSelectAll", "CTRL + A"))
 delete_key = norm_c(settings.get("keybindingDelete", "DELETE"))
@@ -1738,12 +1812,27 @@ if select_address_key and select_address_key not in ("NONE", "CTRL + L"):
     binds.append(f'o.bind("{select_address_key}", "Select address", hl.dsp.send_shortcut({{ mods = "CTRL", key = "l" }}))')
 
 # System Overrides
+# shortcut: one call, no statement chaining; a real Lua expression sandbox is out
+# of scope, so upgrade to a parser if untrusted sources ever reach this.
+LUA_ARG = re.compile(r"^(hl|o)\.[A-Za-z0-9_.]+\([^;]*\)$", re.S)
+skipped = 0
 for action, item in system_overrides.items():
     orig = norm_c(item.get("defaultChord", ""))
     cur = norm_c(item.get("currentChord", ""))
-    disp = item.get("dispatcher", "exec")
-    arg = item.get("arg", "")
+    disp = str(item.get("dispatcher", "exec")).strip()
+    arg = str(item.get("arg", ""))
     if orig and cur and cur != orig:
+        # dispatcher/arg end up inside bindings.lua. "lua" dispatchers are written
+        # as an expression, so they must look like one call and nothing else, and
+        # must not carry a comment marker; other dispatchers go inside a quoted
+        # string, where "--" is harmless and quotes/backslashes get escaped.
+        if len(arg) > 500 or "\n" in arg:
+            skipped += 1
+            continue
+        if disp == "lua":
+            if "--" in arg or not LUA_ARG.fullmatch(arg):
+                skipped += 1
+                continue
         unbinds.append(orig)
         unbinds.append(cur)
         safe_action = action.replace('\\', '\\\\').replace('"', '\\"')
@@ -1753,6 +1842,8 @@ for action, item in system_overrides.items():
         else:
             safe_arg = arg.replace('\\', '\\\\').replace('"', '\\"')
             binds.append(f'o.bind("{safe_cur}", "{safe_action}", "{safe_arg}")')
+if skipped:
+    sys.stderr.write(f"Skipped {skipped} keybinding override(s) with an unusable dispatcher argument\n")
 
 seen = set()
 unique_unbinds = []
@@ -1837,21 +1928,21 @@ apply_recommended_keybindings() {
   assert_user_operation "Keybinding configuration"
   validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
   local py_res=0
-  python3 -I - "$SETTINGS_FILE" <<'PYEOF' || py_res=$?
-import sys, json, os, glob
+  python3 -I - "$SETTINGS_FILE" "$SCRIPT_DIR" <<'PYEOF' || py_res=$?
+import sys, os
 
 settings_file = sys.argv[1]
+sys.path.insert(0, sys.argv[2] if len(sys.argv) > 2 else "")
+import omapple_kb
+try:
+    settings = omapple_kb.load_settings(settings_file)
+except PermissionError as exc:
+    sys.stderr.write(f"Security Error: {exc}\n")
+    sys.exit(1)
+if settings is None:
+    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
+    sys.exit(1)
 if os.path.exists(settings_file):
-    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
-        sys.stderr.write("Security Error: settings.json not owned by current user\n")
-        sys.exit(1)
-settings = {}
-if os.path.exists(settings_file):
-    try:
-        with open(settings_file, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    except Exception:
-        pass
 
     rec_keys = {
         "keybindingSelectAll": "SUPER + A",
@@ -1874,48 +1965,10 @@ if os.path.exists(settings_file):
             settings[k] = v
             changed = True
 
-    cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.records"))
     overrides = dict(settings.get("systemKeybindingOverrides", {}))
-    if cache_files:
-        latest_cache = max(cache_files, key=os.path.getmtime)
-        bound_chords = set()
-        raw = []
-        try:
-            with open(latest_cache, "r", encoding="utf-8") as f:
-                for line in f:
-                    if "→" in line:
-                        parts = line.strip().split("\t")
-                        combo, desc = parts[0].split("→", 1)
-                        combo = combo.strip().upper()
-                        desc = desc.strip()
-                        disp = parts[1] if len(parts) > 1 else "exec"
-                        arg = parts[2] if len(parts) > 2 else ""
-                        bound_chords.add(combo)
-                        raw.append((combo, desc, disp, arg))
-        except Exception:
-            pass
-
-        def get_rec(chord):
-            tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
-            if not tokens: return ""
-            key = tokens[-1]
-            mods = set(tokens[:-1])
-            ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
-            cands = []
-            if "ALT" not in mods:
-                m = list(mods | {"ALT"})
-                m.sort(key=lambda x: ord_map.get(x, 10))
-                cands.append(" + ".join(m) + f" + {key}")
-            if "CTRL" not in mods:
-                m = list(mods | {"CTRL"})
-                m.sort(key=lambda x: ord_map.get(x, 10))
-                cands.append(" + ".join(m) + f" + {key}")
-            for c in cands:
-                if c not in bound_chords:
-                    return c
-            m = list(mods | {"ALT"})
-            m.sort(key=lambda x: ord_map.get(x, 10))
-            return " + ".join(m) + f" + {key}"
+    raw = omapple_kb.load_records()
+    if raw:
+        bound = [r[0] for r in raw]
 
         rec_tasks = {
             "SUPER + A": "select all",
@@ -1929,35 +1982,16 @@ if os.path.exists(settings_file):
             "SUPER + L": "select address"
         }
 
-        def normalize_chord_tokens(c):
-            if not c: return set(), None
-            import re
-            tokens = [t.strip().upper() for t in re.split(r"[\+\s]+", c) if t.strip()]
-            mods = set()
-            key = None
-            for t in tokens:
-                if t in ("SUPER", "LOGO", "WIN", "CMD", "COMMAND"):
-                    mods.add("SUPER")
-                elif t in ("CTRL", "CONTROL"):
-                    mods.add("CTRL")
-                elif t in ("ALT", "OPTION"):
-                    mods.add("ALT")
-                elif t in ("SHIFT",):
-                    mods.add("SHIFT")
-                else:
-                    key = t
-            return frozenset(mods), key
-
-        norm_rec = {normalize_chord_tokens(rc): (rc, name) for rc, name in rec_tasks.items()}
+        norm_rec = {omapple_kb.normalize_chord_tokens(rc): (rc, name) for rc, name in rec_tasks.items()}
 
         for combo, desc, disp, arg in raw:
-            c_norm = normalize_chord_tokens(combo)
+            c_norm = omapple_kb.normalize_chord_tokens(combo)
             if c_norm in norm_rec:
                 r_chord, r_name = norm_rec[c_norm]
                 desc_clean = desc.lower().replace(" ", "").replace("_", "").replace("-", "")
                 r_clean = r_name.replace(" ", "")
                 if desc_clean not in (r_clean, "delete", "findindocument", "save", "cut", "universalcut", "reload", "selectaddress", "selectaddressbar", "focusaddressbar"):
-                    rec_alt = get_rec(combo)
+                    rec_alt = omapple_kb.get_rec(combo, bound)
                     overrides[desc] = {
                         "action": desc,
                         "defaultChord": combo,
@@ -1972,10 +2006,7 @@ if os.path.exists(settings_file):
         changed = True
 
     if changed:
-        tmp_file = settings_file + ".tmp." + str(os.getpid())
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2)
-        os.replace(tmp_file, settings_file)
+        omapple_kb.save_settings(settings_file, settings)
         sys.exit(0)
     else:
         sys.exit(2)
@@ -1991,21 +2022,20 @@ PYEOF
 reset_keybindings_to_defaults() {
   assert_user_operation "Keybinding configuration"
   validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
-  python3 -I - "$SETTINGS_FILE" <<'PYEOF'
-import sys, json, os
+  python3 -I - "$SETTINGS_FILE" "$SCRIPT_DIR" <<'PYEOF'
+import sys
 
 settings_file = sys.argv[1]
-if os.path.exists(settings_file):
-    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
-        sys.stderr.write("Security Error: settings.json not owned by current user\n")
-        sys.exit(1)
-settings = {}
-if os.path.exists(settings_file):
-    try:
-        with open(settings_file, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    except Exception:
-        pass
+sys.path.insert(0, sys.argv[2] if len(sys.argv) > 2 else "")
+import omapple_kb
+try:
+    settings = omapple_kb.load_settings(settings_file)
+except PermissionError as exc:
+    sys.stderr.write(f"Security Error: {exc}\n")
+    sys.exit(1)
+if settings is None:
+    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
+    sys.exit(1)
 
 settings["keybindingSelectAll"] = "CTRL + A"
 settings["keybindingDelete"] = "DELETE"
@@ -2019,98 +2049,13 @@ settings["keybindingReload"] = "CTRL + R"
 settings["keybindingSelectAddress"] = "CTRL + L"
 settings["systemKeybindingOverrides"] = {}
 
-tmp_file = settings_file + ".tmp." + str(os.getpid())
-with open(tmp_file, "w", encoding="utf-8") as f:
-    json.dump(settings, f, indent=2)
-os.replace(tmp_file, settings_file)
+omapple_kb.save_settings(settings_file, settings)
 PYEOF
   apply_keybindings
 }
 
 set_system_keybinding() {
-  local action="${1:-}"
-  local new_chord="${2:-}"
-  local def_chord="${3:-}"
-  local disp="${4:-exec}"
-  local arg="${5:-}"
-  local rec_chord="${6:-}"
-  [[ -n "$action" && -n "$new_chord" ]] || return 1
-
-  assert_user_operation "Keybinding configuration"
-  validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
-
-  if [[ ! "$new_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
-    echo "Error: Invalid keybinding chord: '$new_chord'" >&2
-    return 1
-  fi
-  if [[ -n "$def_chord" && ! "$def_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
-    echo "Error: Invalid default chord: '$def_chord'" >&2
-    return 1
-  fi
-
-  python3 -I - "$SETTINGS_FILE" "$action" "$new_chord" "$def_chord" "$disp" "$arg" "$rec_chord" <<'PYEOF'
-import sys, json, os
-settings_file = sys.argv[1]
-if os.path.exists(settings_file):
-    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
-        sys.stderr.write("Security Error: settings.json not owned by current user\n")
-        sys.exit(1)
-action = sys.argv[2]
-new_chord = sys.argv[3]
-def_chord = sys.argv[4] if len(sys.argv) > 4 else ""
-disp = sys.argv[5] if len(sys.argv) > 5 else "exec"
-arg = sys.argv[6] if len(sys.argv) > 6 else ""
-rec_chord = sys.argv[7] if len(sys.argv) > 7 else ""
-
-def get_rec(chord):
-    if not chord: return ""
-    tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
-    if not tokens: return ""
-    key = tokens[-1]
-    mods = set(tokens[:-1])
-    ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
-    if "ALT" not in mods:
-        m = list(mods | {"ALT"})
-        m.sort(key=lambda x: ord_map.get(x, 10))
-        return " + ".join(m) + f" + {key}"
-    return "SUPER + ALT + " + key
-
-settings = {}
-if os.path.exists(settings_file):
-    try:
-        with open(settings_file, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    except Exception:
-        pass
-overrides = settings.get("systemKeybindingOverrides", {})
-if not def_chord and action in overrides:
-    def_chord = overrides[action].get("defaultChord", "")
-
-if def_chord and new_chord == def_chord:
-    if action in overrides:
-        del overrides[action]
-else:
-    rec = rec_chord.strip() if rec_chord else overrides.get(action, {}).get("recommendedChord", "").strip()
-    if not rec:
-        rec = get_rec(def_chord) if def_chord else get_rec(new_chord)
-    if not rec:
-        rec = new_chord
-    overrides[action] = {
-        "action": action,
-        "defaultChord": def_chord,
-        "currentChord": new_chord,
-        "recommendedChord": rec,
-        "dispatcher": disp,
-        "arg": arg
-    }
-
-settings["systemKeybindingOverrides"] = overrides
-tmp_file = settings_file + ".tmp." + str(os.getpid())
-with open(tmp_file, "w", encoding="utf-8") as f:
-    json.dump(settings, f, indent=2)
-os.replace(tmp_file, settings_file)
-PYEOF
-  apply_keybindings
+  set_keybinding_with_system_override "" "" "$@"
 }
 
 reset_system_keybinding() {
@@ -2120,26 +2065,25 @@ reset_system_keybinding() {
   assert_user_operation "Keybinding configuration"
   validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
 
-  python3 -I - "$SETTINGS_FILE" "$action" <<'PYEOF'
-import sys, json, os
+  python3 -I - "$SETTINGS_FILE" "$action" "$SCRIPT_DIR" <<'PYEOF'
+import sys
+
 settings_file, action = sys.argv[1], sys.argv[2]
-if os.path.exists(settings_file):
-    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
-        sys.stderr.write("Security Error: settings.json not owned by current user\n")
-        sys.exit(1)
-    try:
-        with open(settings_file, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    except Exception:
-        settings = {}
-    overrides = settings.get("systemKeybindingOverrides", {})
-    if action in overrides:
-        del overrides[action]
-        settings["systemKeybindingOverrides"] = overrides
-        tmp_file = settings_file + ".tmp." + str(os.getpid())
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2)
-        os.replace(tmp_file, settings_file)
+sys.path.insert(0, sys.argv[3] if len(sys.argv) > 3 else "")
+import omapple_kb
+try:
+    settings = omapple_kb.load_settings(settings_file)
+except PermissionError as exc:
+    sys.stderr.write(f"Security Error: {exc}\n")
+    sys.exit(1)
+if settings is None:
+    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
+    sys.exit(1)
+overrides = settings.get("systemKeybindingOverrides", {})
+if action in overrides:
+    del overrides[action]
+    settings["systemKeybindingOverrides"] = overrides
+    omapple_kb.save_settings(settings_file, settings)
 PYEOF
   apply_keybindings
 }
@@ -2157,7 +2101,7 @@ set_keybinding_with_system_override() {
   assert_user_operation "Keybinding configuration"
   validate_user_config_path "$SETTINGS_FILE" "Keybinding configuration"
 
-  if [[ ! "$task_chord" =~ ^[A-Za-z0-9_\ +-]+$ || ! "$new_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
+  if [[ -n "$task_chord" && ! "$task_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]] || [[ ! "$new_chord" =~ ^[A-Za-z0-9_\ +-]+$ ]]; then
     echo "Error: Invalid keybinding chord format" >&2
     return 1
   fi
@@ -2165,43 +2109,60 @@ set_keybinding_with_system_override() {
     echo "Error: Invalid default chord format" >&2
     return 1
   fi
+  # dispatcher and arg end up inside bindings.lua, so only accept what the writer
+  # can emit safely.
+  case "$disp" in
+    exec|lua|sendshortcut|invoke|submap|keyword|pass) ;;
+    *)
+      echo "Error: Unsupported keybinding dispatcher: '$disp'" >&2
+      return 1
+      ;;
+  esac
+  if (( ${#arg} > 500 )); then
+    echo "Error: Keybinding command is too long." >&2
+    return 1
+  fi
 
-  python3 -I - "$SETTINGS_FILE" "$task_key" "$task_chord" "$action" "$new_chord" "$def_chord" "$disp" "$arg" "$rec_chord" <<'PYEOF'
-import sys, json, os
+  python3 -I - "$SETTINGS_FILE" "$SCRIPT_DIR" "$task_key" "$task_chord" "$action" "$new_chord" "$def_chord" "$disp" "$arg" "$rec_chord" <<'PYEOF'
+import sys
 settings_file = sys.argv[1]
-if os.path.exists(settings_file):
-    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
-        sys.stderr.write("Security Error: settings.json not owned by current user\n")
-        sys.exit(1)
-task_key = sys.argv[2]
-task_chord = sys.argv[3]
-action = sys.argv[4]
-new_chord = sys.argv[5]
-def_chord = sys.argv[6] if len(sys.argv) > 6 else ""
-disp = sys.argv[7] if len(sys.argv) > 7 else "exec"
-arg = sys.argv[8] if len(sys.argv) > 8 else ""
-rec_chord = sys.argv[9] if len(sys.argv) > 9 else ""
+sys.path.insert(0, sys.argv[2] if len(sys.argv) > 2 else "")
+import omapple_kb
+try:
+    settings = omapple_kb.load_settings(settings_file)
+except PermissionError as exc:
+    sys.stderr.write(f"Security Error: {exc}\n")
+    sys.exit(1)
+if settings is None:
+    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
+    sys.exit(1)
+task_key = sys.argv[3]
+task_chord = sys.argv[4]
+action = sys.argv[5]
+new_chord = sys.argv[6]
+def_chord = sys.argv[7] if len(sys.argv) > 7 else ""
+disp = sys.argv[8] if len(sys.argv) > 8 else "exec"
+arg = sys.argv[9] if len(sys.argv) > 9 else ""
+rec_chord = sys.argv[10] if len(sys.argv) > 10 else ""
+
+# Store chords in one canonical form ("cmd+s" and "WIN + S" both become "SUPER + S"),
+# the same form the widget compares and displays.
+new_chord = omapple_kb.canonical_chord(new_chord)
+task_chord = omapple_kb.canonical_chord(task_chord) if task_chord else ""
+def_chord = omapple_kb.canonical_chord(def_chord) if def_chord else ""
+rec_chord = omapple_kb.canonical_chord(rec_chord) if rec_chord else ""
 
 def get_rec(chord):
-    if not chord: return ""
-    tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
-    if not tokens: return ""
-    key = tokens[-1]
-    mods = set(tokens[:-1])
-    ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
-    if "ALT" not in mods:
-        m = list(mods | {"ALT"})
-        m.sort(key=lambda x: ord_map.get(x, 10))
-        return " + ".join(m) + f" + {key}"
-    return "SUPER + ALT + " + key
-
-settings = {}
-if os.path.exists(settings_file):
-    try:
-        with open(settings_file, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    except Exception:
-        pass
+    if not chord:
+        return ""
+    # Chords already spoken for: the task slots plus every other override, so the
+    # suggestion the widget shows is one Hyprland will actually accept.
+    bound = {settings.get(k, "") for k in set(tk_map.values())}
+    for act, o in overrides.items():
+        if act != action:
+            bound.add(o.get("currentChord", ""))
+            bound.add(o.get("defaultChord", ""))
+    return omapple_kb.get_rec(chord, bound)
 
 tk_map = {
     "keybinding_select_all": "keybindingSelectAll",
@@ -2251,214 +2212,9 @@ if action:
         }
     settings["systemKeybindingOverrides"] = overrides
 
-tmp_file = settings_file + ".tmp." + str(os.getpid())
-with open(tmp_file, "w", encoding="utf-8") as f:
-    json.dump(settings, f, indent=2)
-os.replace(tmp_file, settings_file)
+omapple_kb.save_settings(settings_file, settings)
 PYEOF
   apply_keybindings
-}
-
-check_keybinding() {
-  local target_chord="${1:-}"
-  local current_task_key="${2:-}"
-
-  assert_user_operation "Keybinding query"
-  validate_user_config_path "$SETTINGS_FILE" "Keybinding query"
-
-  python3 -I - "$target_chord" "$current_task_key" "$SETTINGS_FILE" <<'PYEOF'
-import sys, os, json, re, glob, subprocess
-
-target_chord = sys.argv[1].strip() if len(sys.argv) > 1 else ""
-current_task_key = sys.argv[2].strip() if len(sys.argv) > 2 else ""
-settings_path = sys.argv[3] if len(sys.argv) > 3 else ""
-
-if settings_path and os.path.exists(settings_path):
-    if hasattr(os, "geteuid") and os.stat(settings_path).st_uid != os.geteuid():
-        sys.stderr.write("Security Error: settings.json not owned by current user\n")
-        sys.exit(1)
-
-def normalize_chord(c):
-    if not c:
-        return set(), None
-    tokens = [t.strip().upper() for t in re.split(r"[\+\s]+", c) if t.strip()]
-    mods = set()
-    key = None
-    for t in tokens:
-        if t in ("SUPER", "LOGO", "WIN", "CMD", "COMMAND"):
-            mods.add("SUPER")
-        elif t in ("CTRL", "CONTROL"):
-            mods.add("CTRL")
-        elif t in ("ALT", "OPTION"):
-            mods.add("ALT")
-        elif t in ("SHIFT",):
-            mods.add("SHIFT")
-        else:
-            key = t
-    return mods, key
-
-t_mods, t_key = normalize_chord(target_chord)
-if not t_key:
-    print(json.dumps({"chord": target_chord, "inUse": False, "conflict": False, "action": None}))
-    sys.exit(0)
-
-friendly_task_names = {
-    "keybinding_select_all": "Select All",
-    "keybindingSelectAll": "Select All",
-    "keybinding_delete": "Forward Delete",
-    "keybindingDelete": "Forward Delete",
-    "keybinding_find": "Find",
-    "keybindingFind": "Find",
-    "keybinding_undo": "Undo",
-    "keybindingUndo": "Undo",
-    "keybinding_redo": "Redo",
-    "keybindingRedo": "Redo",
-    "keybinding_save": "Save",
-    "keybindingSave": "Save",
-    "keybinding_cut": "Cut",
-    "keybindingCut": "Cut",
-    "keybinding_reload": "Reload",
-    "keybindingReload": "Reload",
-    "keybinding_select_address": "Select address",
-    "keybindingSelectAddress": "Select address"
-}
-
-current_task_friendly = friendly_task_names.get(current_task_key, current_task_key).lower()
-
-# 1. Check settings and defaults for conflicts with other tasks in our plugin
-plugin_bindings = {
-    "keybinding_select_all": "CTRL + A",
-    "keybinding_delete": "DELETE",
-    "keybinding_find": "CTRL + F",
-    "keybinding_undo": "CTRL + Z",
-    "keybinding_redo": "CTRL + SHIFT + Z",
-    "keybinding_save": "CTRL + S",
-    "keybinding_cut": "CTRL + X",
-    "keybinding_reload": "CTRL + R",
-    "keybinding_select_address": "CTRL + L"
-}
-sys_overrides = {}
-if settings_path and os.path.isfile(settings_path):
-    try:
-        with open(settings_path, "r", encoding="utf-8") as f:
-            saved = json.load(f)
-            for k, v in saved.items():
-                if k.startswith("keybinding") and isinstance(v, str):
-                    plugin_bindings[k] = v
-            sys_overrides = saved.get("systemKeybindingOverrides", {})
-    except Exception:
-        pass
-
-# 2. Check system keybindings records cache
-cache_files = glob.glob(os.path.expanduser("~/.cache/omarchy/keybindings-*.records"))
-bound_chords = set()
-raw_records = []
-if cache_files:
-    latest_cache = max(cache_files, key=os.path.getmtime)
-    try:
-        with open(latest_cache, "r", encoding="utf-8") as f:
-            for line in f:
-                if "→" in line:
-                    parts = line.strip().split("\t")
-                    combo, desc = parts[0].split("→", 1)
-                    combo = combo.strip().upper()
-                    desc = desc.strip()
-                    disp = parts[1] if len(parts) > 1 else "exec"
-                    arg = parts[2] if len(parts) > 2 else ""
-                    bound_chords.add(combo)
-                    raw_records.append((combo, desc, disp, arg))
-    except Exception:
-        pass
-
-def get_rec(chord):
-    tokens = [t.strip().upper() for t in chord.split("+") if t.strip()]
-    if not tokens: return ""
-    key = tokens[-1]
-    mods = set(tokens[:-1])
-    ord_map = {"SUPER": 0, "CTRL": 1, "ALT": 2, "SHIFT": 3}
-    cands = []
-    if "ALT" not in mods:
-        m = list(mods | {"ALT"})
-        m.sort(key=lambda x: ord_map.get(x, 10))
-        cands.append(" + ".join(m) + f" + {key}")
-    if "CTRL" not in mods:
-        m = list(mods | {"CTRL"})
-        m.sort(key=lambda x: ord_map.get(x, 10))
-        cands.append(" + ".join(m) + f" + {key}")
-    for c in cands:
-        if c not in bound_chords:
-            return c
-    m = list(mods | {"ALT"})
-    m.sort(key=lambda x: ord_map.get(x, 10))
-    return " + ".join(m) + f" + {key}"
-
-# 1. Check plugin tasks
-for s_key, s_chord in plugin_bindings.items():
-    s_norm_key = s_key.lower().replace("_", "")
-    c_norm_key = current_task_key.lower().replace("_", "")
-    if s_norm_key == c_norm_key:
-        continue
-    s_mods, s_k = normalize_chord(s_chord)
-    if s_k == t_key and s_mods == t_mods:
-        act = friendly_task_names.get(s_key, s_key)
-        print(json.dumps({
-            "chord": target_chord,
-            "inUse": True,
-            "conflict": True,
-            "action": act,
-            "source": "t2-linux",
-            "recommendedChord": get_rec(target_chord)
-        }))
-        sys.exit(0)
-
-for k_part, desc, disp, arg in raw_records:
-    k_mods, k_key = normalize_chord(k_part)
-    if k_key == t_key and k_mods == t_mods:
-        is_conflict = (desc.lower() != current_task_friendly and not (desc.lower() == "delete" and current_task_friendly == "forward delete") and not (desc.lower() == "universal cut" and current_task_friendly == "cut") and not (desc.lower() in ("select address bar", "focus address bar") and current_task_friendly == "select address"))
-        # If this action is already overridden to something else, this default chord is freed
-        if desc in sys_overrides:
-            ov_m, ov_k = normalize_chord(sys_overrides[desc].get("currentChord", ""))
-            if (ov_m, ov_k) != (t_mods, t_key):
-                continue
-        print(json.dumps({
-            "chord": target_chord,
-            "inUse": True,
-            "conflict": is_conflict,
-            "action": desc,
-            "source": "system",
-            "defaultChord": k_part,
-            "recommendedChord": get_rec(k_part),
-            "dispatcher": disp,
-            "arg": arg
-        }))
-        sys.exit(0)
-
-# Check active overrides
-for act, ov in sys_overrides.items():
-    ov_chord = ov.get("currentChord", "")
-    ov_mods, ov_key = normalize_chord(ov_chord)
-    if ov_key == t_key and ov_mods == t_mods:
-        is_conflict = (act.lower() != current_task_friendly)
-        print(json.dumps({
-            "chord": target_chord,
-            "inUse": True,
-            "conflict": is_conflict,
-            "action": act,
-            "source": "system",
-            "defaultChord": ov.get("defaultChord", ov_chord),
-            "recommendedChord": ov.get("recommendedChord", get_rec(ov_chord)),
-            "dispatcher": ov.get("dispatcher", "exec"),
-            "arg": ov.get("arg", "")
-        }))
-        sys.exit(0)
-
-print(json.dumps({
-    "chord": target_chord,
-    "inUse": False,
-    "conflict": False,
-    "action": None
-}))
-PYEOF
 }
 
 # ---------------------------------------------------------------------------
@@ -2471,21 +2227,20 @@ apply_trackpad() {
   local hypr_dir="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
   validate_user_config_path "$hypr_dir" "Trackpad configuration"
 
-  python3 -I - "$SETTINGS_FILE" <<'PYEOF'
-import sys, os, json, subprocess
+  python3 -I - "$SETTINGS_FILE" "$hypr_dir" "$SCRIPT_DIR" <<'PYEOF'
+import sys, os, subprocess
 
+sys.path.insert(0, sys.argv[3] if len(sys.argv) > 3 else "")
+import omapple_kb
 settings_file = sys.argv[1] if len(sys.argv) > 1 else ""
-if settings_file and os.path.isfile(settings_file):
-    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
-        sys.stderr.write("Security Error: settings.json not owned by current user\n")
-        sys.exit(1)
-settings = {}
-if settings_file and os.path.isfile(settings_file):
-    try:
-        with open(settings_file, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    except Exception:
-        pass
+try:
+    settings = omapple_kb.load_settings(settings_file)
+except PermissionError as exc:
+    sys.stderr.write(f"Security Error: {exc}\n")
+    sys.exit(1)
+if settings is None:
+    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
+    sys.exit(1)
 
 def as_bool(v, fallback):
     if v is None: return fallback
@@ -2523,7 +2278,7 @@ swipe_workspaces = as_bool(settings.get("trackpadSwipeWorkspaces"), True)
 if drag_3fg > 0 and swipe_workspaces:
     swipe_workspaces = False
 
-hypr_dir = os.path.expanduser("~/.config/hypr")
+hypr_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser("~/.config/hypr")
 trackpad_lua = os.path.join(hypr_dir, "t2-trackpad.lua")
 hyprland_lua = os.path.join(hypr_dir, "hyprland.lua")
 input_lua = os.path.join(hypr_dir, "input.lua")
@@ -2609,21 +2364,20 @@ apply_recommended_trackpad() {
   assert_user_operation "Trackpad configuration"
   validate_user_config_path "$SETTINGS_FILE" "Trackpad configuration"
   local py_res=0
-  python3 -I - "$SETTINGS_FILE" <<'PYEOF' || py_res=$?
-import sys, os, json
+  python3 -I - "$SETTINGS_FILE" "$SCRIPT_DIR" <<'PYEOF' || py_res=$?
+import sys, os
 
+sys.path.insert(0, sys.argv[2] if len(sys.argv) > 2 else "")
+import omapple_kb
 settings_file = sys.argv[1]
-if settings_file and os.path.exists(settings_file):
-    if hasattr(os, "geteuid") and os.stat(settings_file).st_uid != os.geteuid():
-        sys.stderr.write("Security Error: settings.json not owned by current user\n")
-        sys.exit(1)
-settings = {}
-if os.path.exists(settings_file):
-    try:
-        with open(settings_file, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    except Exception:
-        pass
+try:
+    settings = omapple_kb.load_settings(settings_file)
+except PermissionError as exc:
+    sys.stderr.write(f"Security Error: {exc}\n")
+    sys.exit(1)
+if settings is None:
+    sys.stderr.write("Error: settings.json is not readable as JSON, so nothing was changed\n")
+    sys.exit(1)
 
 recommended = {
     "trackpadNaturalScroll": True,
@@ -2675,10 +2429,7 @@ for k, v in recommended.items():
 
 if changed:
     os.makedirs(os.path.dirname(settings_file), exist_ok=True)
-    tmp_file = settings_file + ".tmp." + str(os.getpid())
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2)
-    os.replace(tmp_file, settings_file)
+    omapple_kb.save_settings(settings_file, settings)
     sys.exit(0)
 else:
     sys.exit(2)
@@ -2734,55 +2485,23 @@ restart_trackpad() {
 }
 
 do_apply_t2_fixes() {
-  local skip_pcie=false
-  local skip_eth=false
-  local skip_limine=false
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --skip-pcie|--no-pcie) skip_pcie=true; shift ;;
-      --skip-eth|--no-eth) skip_eth=true; shift ;;
-      --skip-limine) skip_limine=true; shift ;;
-      *) shift ;;
-    esac
-  done
+  parse_skip_flags "$@"
 
-  if [[ "$skip_eth" != "true" ]] && command -v nmcli >/dev/null 2>&1; then
-    while IFS=: read -r dev type state rest; do
-      if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
-        local is_managed=true
-        if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
-          is_managed=false
-        fi
-        if [[ "$is_managed" == "true" ]]; then
-          apply_ethernet_managed "$dev" "no"
-        fi
-      fi
-    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+  if [[ "$SKIP_ETH" != "true" ]]; then
+    unmanage_idle_ethernet
   fi
 
-  if [[ "$skip_pcie" != "true" ]]; then
-    local pcie_curr
-    pcie_curr=$(get_pcie_ports_compat)
-    if [[ "$pcie_curr" != "true" ]]; then
-      local update_limine=true
-      if [[ "$skip_limine" == "true" ]]; then
-        update_limine=false
-      fi
-      apply_pcie_ports_compat "on" "$update_limine"
+  if [[ "$SKIP_PCIE" != "true" ]] && [[ "$(get_pcie_ports_compat)" != "true" ]]; then
+    local update_limine=true
+    if [[ "$SKIP_LIMINE" == "true" ]]; then
+      update_limine=false
     fi
+    apply_pcie_ports_compat "on" "$update_limine"
   fi
 }
 
 do_apply_recommended() {
-  local skip_limine=false
-  local skip_pcie=false
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --skip-limine) skip_limine=true; shift ;;
-      --skip-pcie) skip_pcie=true; shift ;;
-      *) shift ;;
-    esac
-  done
+  parse_skip_flags "$@"
 
   local limine_needed=false
 
@@ -2831,19 +2550,7 @@ do_apply_recommended() {
     apply_wifi_powersave "off"
   fi
 
-  if command -v nmcli >/dev/null 2>&1; then
-    while IFS=: read -r dev type state rest; do
-      if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
-        local is_managed=true
-        if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
-          is_managed=false
-        fi
-        if [[ "$is_managed" == "true" ]]; then
-          apply_ethernet_managed "$dev" "no"
-        fi
-      fi
-    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
-  fi
+  unmanage_idle_ethernet
 
   local cur_audio
   cur_audio=$(get_audio_powersave)
@@ -2857,7 +2564,7 @@ do_apply_recommended() {
     apply_usb_autosuspend "true"
   fi
 
-  if [[ "$skip_pcie" != "true" ]] && detect_t2; then
+  if [[ "$SKIP_PCIE" != "true" ]] && detect_t2; then
     local cur_pcie
     cur_pcie=$(get_pcie_ports_compat)
     if [[ "$cur_pcie" != "true" ]]; then
@@ -2866,22 +2573,16 @@ do_apply_recommended() {
     fi
   fi
 
-  if [[ "$limine_needed" == "true" && "$skip_limine" != "true" ]]; then
+  if [[ "$limine_needed" == "true" && "$SKIP_LIMINE" != "true" ]]; then
     run_limine_update
   fi
 }
 
 do_apply_recommended_suspend() {
-  local skip_limine=false
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --skip-limine) skip_limine=true; shift ;;
-      *) shift ;;
-    esac
-  done
+  parse_skip_flags "$@"
 
   local update_limine=true
-  if [[ "$skip_limine" == "true" ]]; then
+  if [[ "$SKIP_LIMINE" == "true" ]]; then
     update_limine=false
   fi
 
@@ -2934,18 +2635,10 @@ do_reset_suspend_to_defaults() {
 }
 
 do_apply_recommended_battery() {
-  local skip_limine=false
-  local skip_pcie=false
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --skip-limine) skip_limine=true; shift ;;
-      --skip-pcie) skip_pcie=true; shift ;;
-      *) shift ;;
-    esac
-  done
+  parse_skip_flags "$@"
 
   local update_limine=true
-  if [[ "$skip_limine" == "true" ]]; then
+  if [[ "$SKIP_LIMINE" == "true" ]]; then
     update_limine=false
   fi
 
@@ -2955,19 +2648,7 @@ do_apply_recommended_battery() {
     apply_wifi_powersave "off"
   fi
 
-  if command -v nmcli >/dev/null 2>&1; then
-    while IFS=: read -r dev type state rest; do
-      if [[ "$type" == "ethernet" && "$state" != "connected" && "$state" != "connecting" ]]; then
-        local is_managed=true
-        if [[ "$state" == "unmanaged" || -f "/etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-${dev}.conf" ]]; then
-          is_managed=false
-        fi
-        if [[ "$is_managed" == "true" ]]; then
-          apply_ethernet_managed "$dev" "no"
-        fi
-      fi
-    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
-  fi
+  unmanage_idle_ethernet
 
   local cur_audio
   cur_audio=$(get_audio_powersave)
@@ -2981,7 +2662,7 @@ do_apply_recommended_battery() {
     apply_usb_autosuspend "true"
   fi
 
-  if [[ "$skip_pcie" != "true" ]] && detect_t2; then
+  if [[ "$SKIP_PCIE" != "true" ]] && detect_t2; then
     local cur_pcie
     cur_pcie=$(get_pcie_ports_compat)
     if [[ "$cur_pcie" != "true" ]]; then
@@ -3015,19 +2696,17 @@ for arg in "$@"; do
   validate_no_control_chars "$arg" "Argument"
 done
 
+# Sourced instead of executed (the test suite): keep the pure functions
+# available and skip the command dispatch.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-status}" in
   status)
-    print_status_json
+    print_status_json "${2:-}"
     ;;
 
-  detect)
-    if detect_t2; then
-      echo "T2 detected"
-      exit 0
-    else
-      echo "No T2 chip found"
-      exit 1
-    fi
+  battery)
+    # Cheap poll for the closed panel: the bar icon only needs the battery.
+    get_battery_info
     ;;
 
   detect-touchbar|detect-tb)
@@ -3291,10 +2970,6 @@ case "${1:-status}" in
     assert_user_operation "Keybinding configuration"
     shift; set_keybinding_with_system_override "$@" ;;
 
-  check-keybinding)
-    assert_user_operation "Keybinding query"
-    shift; check_keybinding "${1:-}" "${2:-}" ;;
-
   start-key-record)
     assert_user_operation "Key recording"
     echo 'hl.dispatch(hl.dsp.submap("omapple_record"))' | hyprctl repl >/dev/null 2>&1 || true
@@ -3325,6 +3000,8 @@ case "${1:-status}" in
     shift; apply_wake_toggle "LID0" "${1:-}" ;;
   apply-wake-ac)
     shift; apply_wake_toggle "ADP1" "${1:-}" ;;
+  restore-wake)
+    restore_wake_state ;;
   apply-audio-powersave)
     shift; apply_audio_powersave "${1:-}" ;;
   apply-usb-autosuspend)
@@ -3396,15 +3073,6 @@ case "${1:-status}" in
     ;;
   do-reset-battery-to-defaults)
     shift; do_reset_battery_to_defaults ;;
-  install-system)
-    run_privileged do-install-system ;;
-  do-install-system)
-    install_system_helper ;;
-  uninstall-system)
-    run_privileged do-uninstall-system ;;
-  do-uninstall-system)
-    uninstall_system_helper ;;
-
   plugins-list|plugins)
     assert_user_operation "Plugin operations"
     shift
@@ -3440,12 +3108,6 @@ case "${1:-status}" in
     [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
     exec python3 -I "$helper_py" toggle "$@"
     ;;
-  speaker-calibrator-status|status-speaker-calibrator)
-    assert_user_operation "Plugin operations"
-    helper_py=$(find_plugins_helper)
-    [[ -z "$helper_py" ]] && { echo '{"status":"error","error":"omapple-plugins-helper.py not found"}' >&2; exit 1; }
-    exec python3 -I "$helper_py" status-speaker-calibrator
-    ;;
   open-speaker-calibrator)
     assert_user_operation "Speaker calibrator launch"
     vol_arg="${2:-}"
@@ -3463,19 +3125,6 @@ case "${1:-status}" in
     elif command -v quickshell >/dev/null 2>&1; then
       quickshell -p /usr/share/omarchy/shell ipc call shell summon '["thefreshoffice.speaker-calibrator", "{}"]' || true
     fi
-    ;;
-
-  set-volume)
-    assert_user_operation "Audio volume control"
-    vol="${2:-50%}"
-    if command -v wpctl >/dev/null 2>&1; then
-      wpctl set-volume @DEFAULT_AUDIO_SINK@ "$vol" >/dev/null 2>&1 || true
-    elif command -v pactl >/dev/null 2>&1; then
-      pactl set-sink-volume @DEFAULT_SINK@ "$vol" >/dev/null 2>&1 || true
-    elif command -v amixer >/dev/null 2>&1; then
-      amixer set Master "$vol" >/dev/null 2>&1 || true
-    fi
-    echo "{\"status\":\"ok\",\"volume\":\"$vol\"}"
     ;;
 
   open-url)
@@ -3497,8 +3146,9 @@ case "${1:-status}" in
     ;;
 
   *)
-    echo "Usage: $0 {status|detect|set <key> <val>|apply-recommended|apply-t2-fixes|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle|speaker-calibrator-status|open-speaker-calibrator|set-volume|open-url|restart-audio}" >&2
+    echo "Usage: $0 {status [--keys]|set <key> <val>|apply-recommended|apply-t2-fixes|plugins-list|plugin-install|plugin-update|plugin-remove|plugin-toggle|open-speaker-calibrator|open-url|restart-audio}" >&2
     exit 1
     ;;
 esac
+fi
 

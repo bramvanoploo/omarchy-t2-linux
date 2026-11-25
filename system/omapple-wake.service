@@ -1,0 +1,15 @@
+[Unit]
+Description=Restore OmApple ACPI wake device settings
+Documentation=file:/etc/omapple/wake
+# The kernel resets /proc/acpi/wakeup to firmware defaults on every boot, so
+# replay whatever the OmApple battery tab last chose.
+ConditionPathExists=/etc/omapple/wake
+After=systemd-tmpfiles-setup.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/omapple-helper restore-wake
+
+[Install]
+WantedBy=multi-user.target

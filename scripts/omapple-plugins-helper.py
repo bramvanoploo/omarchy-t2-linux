@@ -163,7 +163,6 @@ FALLBACK_T2_PLUGINS = [
 ]
 
 
-import tempfile
 
 
 def user_owned_dir(path):
@@ -179,6 +178,15 @@ def ensure_cache_dir():
     if os.path.exists(CACHE_DIR) and not user_owned_dir(CACHE_DIR):
         raise PermissionError(f"Cache directory not owned by current user: {CACHE_DIR}")
     os.makedirs(CACHE_DIR, mode=0o700, exist_ok=True)
+    # Older helpers used a unique temp name per run, so every interrupted fetch
+    # left its own ~13 MB orphan behind. Clear those once; the current fixed
+    # name needs no sweeping because the next write truncates it.
+    for name in os.listdir(CACHE_DIR):
+        if ".tmp." in name:
+            try:
+                os.remove(os.path.join(CACHE_DIR, name))
+            except OSError:
+                pass
 
 
 def safe_write_json(file_path, data):
@@ -186,20 +194,23 @@ def safe_write_json(file_path, data):
     parent = os.path.dirname(file_path) or "."
     if not user_owned_dir(parent):
         raise PermissionError(f"Cache directory not owned by current user: {parent}")
-    fd, tmp_path = tempfile.mkstemp(prefix=os.path.basename(file_path) + ".tmp.", dir=parent)
+    # One fixed temp name instead of a unique one per call: a fetch killed
+    # mid-write (the widget watchdog used to fire before the helper's own read
+    # budget) then left a fresh ~13 MB orphan in the cache dir on every retry.
+    tmp_path = file_path + ".tmp"
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, file_path)
     except Exception:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
         raise
+
 
 
 def load_json_cache(file_path, max_bytes):
@@ -801,7 +812,7 @@ def run_cmd(cmd_list):
         return 1, "", str(e)
 
 
-def install_plugin(repo_or_url, plugin_id=""):
+def install_plugin(repo_or_url):
     if not repo_or_url:
         print(json.dumps({"success": False, "error": "No repo URL provided"}))
         sys.exit(1)
@@ -814,8 +825,8 @@ def install_plugin(repo_or_url, plugin_id=""):
         print(json.dumps({"success": False, "error": f"Invalid GitHub repository URL: {repo_or_url}"}))
         sys.exit(1)
 
-    if not url.startswith("http://") and not url.startswith("https://") and not url.startswith("git@"):
-        url = f"https://github.com/{url}"
+    # The regex above already admits only https:// or git@ GitHub URLs, so the
+    # scheme never needs repairing here - only the .git suffix is optional.
     if not url.endswith(".git") and "github.com" in url:
         url = f"{url}.git"
 
@@ -1052,8 +1063,7 @@ def main():
         list_plugins(force_refresh=force)
     elif cmd in ("install", "plugin-install"):
         repo = sys.argv[2] if len(sys.argv) > 2 else ""
-        pid = sys.argv[3] if len(sys.argv) > 3 else ""
-        install_plugin(repo, pid)
+        install_plugin(repo)
     elif cmd in ("update", "plugin-update"):
         pid = sys.argv[2] if len(sys.argv) > 2 else ""
         update_plugin(pid)

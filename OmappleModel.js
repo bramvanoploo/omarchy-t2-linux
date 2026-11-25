@@ -2,7 +2,6 @@
 
 function emptyStatus() {
   return {
-    version: "1.2.0",
     isT2: true,
     isApple: true,
     hasTouchBar: false,
@@ -84,12 +83,11 @@ function emptyStatus() {
   };
 }
 
-function parseStatus(raw) {
+function parseStatus(raw, previous) {
   if (!raw || typeof raw !== "string" || !raw.trim()) return null;
   try {
     var data = JSON.parse(raw);
     if (data && typeof data === "object") {
-      data.version = data.version || "1.2.0";
       data.isT2 = Boolean(data.isT2);
       if (data.hasTouchBar !== undefined) {
         data.hasTouchBar = Boolean(data.hasTouchBar);
@@ -125,12 +123,20 @@ function parseStatus(raw) {
         data.battery = emptyStatus().battery;
       }
 
-      if (!data.systemKeybindingOverrides || typeof data.systemKeybindingOverrides !== "object") {
-        data.systemKeybindingOverrides = {};
-      }
+      // A poll that did not ask for the keybinding map (the 58 KB bulk of the
+      // payload) sends null for both fields: carry the last map forward rather
+      // than dropping it. An empty object means "there really is nothing".
+      var kbOmitted = data.systemKeybindings === null
+      var ovOmitted = data.systemKeybindingOverrides === null
       if (!data.systemKeybindings || typeof data.systemKeybindings !== "object") {
-        data.systemKeybindings = {};
+        data.systemKeybindings = (kbOmitted && previous && previous.systemKeybindings)
+          ? previous.systemKeybindings : {}
       }
+      if (!data.systemKeybindingOverrides || typeof data.systemKeybindingOverrides !== "object") {
+        data.systemKeybindingOverrides = (ovOmitted && previous && previous.systemKeybindingOverrides)
+          ? previous.systemKeybindingOverrides : {}
+      }
+      data.systemKeybindingsAvailable = data.systemKeybindingsAvailable !== false
 
       if (!Array.isArray(data.inactiveEthernet)) {
         data.inactiveEthernet = [];
@@ -262,14 +268,6 @@ function formatEpp(epp) {
   }
 }
 
-function formatAspm(aspm) {
-  switch (aspm) {
-    case "powersave": return "Powersave";
-    case "default": return "Default";
-    case "performance": return "Performance";
-    default: return aspm || "Unknown";
-  }
-}
 
 function formatMemSleep(mode) {
   switch (mode) {
@@ -890,30 +888,8 @@ function sensitivityFromSpeedPercent(percent) {
   return Math.round(((clamped / 50.0) - 1.0) * 100) / 100;
 }
 
-function scrollPercentFromFactor(factor) {
-  var f = Number(factor);
-  if (!isFinite(f)) f = 1.0;
-  var clamped = Math.max(0.1, Math.min(2.0, f));
-  return Math.round(((clamped - 0.1) / 1.9) * 100);
-}
 
-function factorFromScrollPercent(percent) {
-  var p = Number(percent);
-  if (!isFinite(p)) p = 50;
-  var clamped = Math.max(0, Math.min(100, p));
-  return Math.round((0.1 + (clamped / 100.0) * 1.9) * 100) / 100;
-}
 
-function formatAccelProfile(profile) {
-  var p = String(profile || "").toLowerCase().trim();
-  if (p === "flat") return "Flat";
-  return "Adaptive";
-}
 
-function formatTapButtonMap(map) {
-  var m = String(map || "").toLowerCase().trim();
-  if (m === "lmr") return "LMR (X11 Standard)";
-  return "LRM (Mac Default)";
-}
 
 

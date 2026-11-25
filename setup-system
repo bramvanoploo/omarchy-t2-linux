@@ -6,12 +6,16 @@ umask 077
 src=$(cd -- "$(dirname -- "$0")" && pwd)
 
 [[ -f "$src/scripts/omapple-helper" ]] || { echo "Missing $src/scripts/omapple-helper" >&2; exit 1; }
+[[ -f "$src/scripts/omapple_kb.py" ]] || { echo "Missing $src/scripts/omapple_kb.py" >&2; exit 1; }
 [[ -f "$src/scripts/omapple-plugins-helper.py" ]] || { echo "Missing $src/scripts/omapple-plugins-helper.py" >&2; exit 1; }
 [[ -f "$src/system/90-omapple.rules" ]] || { echo "Missing $src/system/90-omapple.rules" >&2; exit 1; }
+[[ -f "$src/system/omapple-wake.service" ]] || { echo "Missing $src/system/omapple-wake.service" >&2; exit 1; }
 
-bash -n "$src/scripts/omapple-helper"
-python3 -I -m py_compile "$src/scripts/omapple-plugins-helper.py"
+"$src/tests/run.sh"
 
+# The helper imports omapple_kb from its own directory, so it has to be installed
+# next to it (/usr/local/libexec) as well as in the plugin directory.
+install -Dm644 "$src/scripts/omapple_kb.py" /usr/local/libexec/omapple_kb.py
 install -Dm755 "$src/scripts/omapple-helper" /usr/local/libexec/omapple-helper
 rm -f /usr/local/libexec/omarchy-t2-helper
 ln -sf /usr/local/libexec/omapple-helper /usr/local/libexec/omarchy-t2-helper
@@ -22,9 +26,16 @@ ln -sf /usr/local/libexec/omapple-plugins-helper.py /usr/local/libexec/t2-plugin
 
 install -Dm644 "$src/system/90-omapple.rules" /etc/polkit-1/rules.d/90-omapple.rules
 rm -f /etc/polkit-1/rules.d/90-omarchy-t2-linux.rules
-install -Dm644 "$src/system/90-omapple.rules" /etc/polkit-1/rules.d/90-omarchy-t2-linux.rules
+# One rule file on disk: the legacy name is a symlink, so a future tightening
+# of the allow-list cannot be undercut by a stale second copy.
+ln -sf /etc/polkit-1/rules.d/90-omapple.rules /etc/polkit-1/rules.d/90-omarchy-t2-linux.rules
+
+# /proc/acpi/wakeup resets to firmware defaults at every boot; this unit replays
+# the state saved in /etc/omapple/wake.
+install -Dm644 "$src/system/omapple-wake.service" /etc/systemd/system/omapple-wake.service
 
 systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable omapple-wake.service >/dev/null 2>&1 || true
 systemctl try-restart polkitd.service >/dev/null 2>&1 || true
 
-echo "✓ Installed /usr/local/libexec/omapple-helper, omapple-plugins-helper.py and polkit rules (with backwards compatibility symlinks)."
+echo "✓ Installed /usr/local/libexec/omapple-helper, omapple_kb.py, omapple-plugins-helper.py, omapple-wake.service and polkit rules (with backwards compatibility symlinks)."
