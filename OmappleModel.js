@@ -2,7 +2,6 @@
 
 function emptyStatus() {
   return {
-    version: "1.2.0",
     isT2: true,
     isApple: true,
     hasTouchBar: false,
@@ -84,12 +83,11 @@ function emptyStatus() {
   };
 }
 
-function parseStatus(raw) {
+function parseStatus(raw, previous) {
   if (!raw || typeof raw !== "string" || !raw.trim()) return null;
   try {
     var data = JSON.parse(raw);
     if (data && typeof data === "object") {
-      data.version = data.version || "1.2.0";
       data.isT2 = Boolean(data.isT2);
       if (data.hasTouchBar !== undefined) {
         data.hasTouchBar = Boolean(data.hasTouchBar);
@@ -125,12 +123,20 @@ function parseStatus(raw) {
         data.battery = emptyStatus().battery;
       }
 
-      if (!data.systemKeybindingOverrides || typeof data.systemKeybindingOverrides !== "object") {
-        data.systemKeybindingOverrides = {};
-      }
+      // A poll that did not ask for the keybinding map (the 58 KB bulk of the
+      // payload) sends null for both fields: carry the last map forward rather
+      // than dropping it. An empty object means "there really is nothing".
+      var kbOmitted = data.systemKeybindings === null
+      var ovOmitted = data.systemKeybindingOverrides === null
       if (!data.systemKeybindings || typeof data.systemKeybindings !== "object") {
-        data.systemKeybindings = {};
+        data.systemKeybindings = (kbOmitted && previous && previous.systemKeybindings)
+          ? previous.systemKeybindings : {}
       }
+      if (!data.systemKeybindingOverrides || typeof data.systemKeybindingOverrides !== "object") {
+        data.systemKeybindingOverrides = (ovOmitted && previous && previous.systemKeybindingOverrides)
+          ? previous.systemKeybindingOverrides : {}
+      }
+      data.systemKeybindingsAvailable = data.systemKeybindingsAvailable !== false
 
       if (!Array.isArray(data.inactiveEthernet)) {
         data.inactiveEthernet = [];
@@ -214,6 +220,8 @@ function parseStatus(raw) {
         data.speakerCalibrator.name = "Speaker Calibrator";
         data.speakerCalibrator.url = "https://plugins.omarchy.org/plugin.html?id=thefreshoffice.speaker-calibrator";
         data.speakerCalibrator.repo = "https://github.com/thefreshoffice/omarchy-speaker-calibrator.git";
+      } else if (data.speakerCalibrator === null && previous && previous.speakerCalibrator) {
+        data.speakerCalibrator = previous.speakerCalibrator;
       } else {
         data.speakerCalibrator = emptyStatus().speakerCalibrator;
       }
@@ -262,14 +270,6 @@ function formatEpp(epp) {
   }
 }
 
-function formatAspm(aspm) {
-  switch (aspm) {
-    case "powersave": return "Powersave";
-    case "default": return "Default";
-    case "performance": return "Performance";
-    default: return aspm || "Unknown";
-  }
-}
 
 function formatMemSleep(mode) {
   switch (mode) {
@@ -502,18 +502,28 @@ function getRecommendedAlternative(taskKey, conflictingChord) {
   return getRecommendedSystemChord(conflictingChord);
 }
 
-function findPluginConflict(targetTaskKey, newChord, currentStatus) {
-  var tasks = [
-    { key: "keybinding_select_all", name: "Select All", chord: (currentStatus && currentStatus.keybindingSelectAll) ? currentStatus.keybindingSelectAll : "CTRL + A" },
-    { key: "keybinding_delete", name: "Forward Delete", chord: (currentStatus && currentStatus.keybindingDelete) ? currentStatus.keybindingDelete : "DELETE" },
-    { key: "keybinding_find", name: "Find in Document", chord: (currentStatus && currentStatus.keybindingFind) ? currentStatus.keybindingFind : "CTRL + F" },
-    { key: "keybinding_undo", name: "Undo", chord: (currentStatus && currentStatus.keybindingUndo) ? currentStatus.keybindingUndo : "CTRL + Z" },
-    { key: "keybinding_redo", name: "Redo", chord: (currentStatus && currentStatus.keybindingRedo) ? currentStatus.keybindingRedo : "CTRL + SHIFT + Z" },
-    { key: "keybinding_save", name: "Save", chord: (currentStatus && currentStatus.keybindingSave) ? currentStatus.keybindingSave : "CTRL + S" },
-    { key: "keybinding_cut", name: "Cut", chord: (currentStatus && currentStatus.keybindingCut) ? currentStatus.keybindingCut : "CTRL + X" },
-    { key: "keybinding_reload", name: "Reload", chord: (currentStatus && currentStatus.keybindingReload) ? currentStatus.keybindingReload : "CTRL + R" },
-    { key: "keybinding_select_address", name: "Select Address", chord: (currentStatus && currentStatus.keybindingSelectAddress) ? currentStatus.keybindingSelectAddress : "CTRL + L" }
+var PLUGIN_ACTION_NORMS = [
+  "findindocument", "find", "selectall", "undo", "redo", "save",
+  "forwarddelete", "delete", "cut", "universalcut", "reload",
+  "selectaddress", "focusaddressbar", "selectaddressbar"
+];
+
+function keybindingTasks(status) {
+  return [
+    { key: "keybinding_select_all", prop: "keybindingSelectAll", name: "Select All", chord: (status && status.keybindingSelectAll) ? status.keybindingSelectAll : "CTRL + A" },
+    { key: "keybinding_delete", prop: "keybindingDelete", name: "Forward Delete", chord: (status && status.keybindingDelete) ? status.keybindingDelete : "DELETE" },
+    { key: "keybinding_find", prop: "keybindingFind", name: "Find in Document", chord: (status && status.keybindingFind) ? status.keybindingFind : "CTRL + F" },
+    { key: "keybinding_undo", prop: "keybindingUndo", name: "Undo", chord: (status && status.keybindingUndo) ? status.keybindingUndo : "CTRL + Z" },
+    { key: "keybinding_redo", prop: "keybindingRedo", name: "Redo", chord: (status && status.keybindingRedo) ? status.keybindingRedo : "CTRL + SHIFT + Z" },
+    { key: "keybinding_save", prop: "keybindingSave", name: "Save", chord: (status && status.keybindingSave) ? status.keybindingSave : "CTRL + S" },
+    { key: "keybinding_cut", prop: "keybindingCut", name: "Cut", chord: (status && status.keybindingCut) ? status.keybindingCut : "CTRL + X" },
+    { key: "keybinding_reload", prop: "keybindingReload", name: "Reload", chord: (status && status.keybindingReload) ? status.keybindingReload : "CTRL + R" },
+    { key: "keybinding_select_address", prop: "keybindingSelectAddress", name: "Select Address", chord: (status && status.keybindingSelectAddress) ? status.keybindingSelectAddress : "CTRL + L" }
   ];
+}
+
+function findPluginConflict(targetTaskKey, newChord, currentStatus) {
+  var tasks = keybindingTasks(currentStatus);
 
   var normTarget = normalizeChord(newChord);
   if (!normTarget) return null;
@@ -569,6 +579,7 @@ function findSystemConflict(targetTaskKey, newChord, currentStatus) {
     var sKey = systemKeys[j];
     if (normalizeChord(sKey) === normTarget) {
       var sItem = systemMap[sKey];
+      if (!sItem) continue;
       var sAct = sItem.action || "";
       var actNorm2 = sAct.toLowerCase().replace(/\s+/g, '');
       // If this action was already overridden to something else, its default chord is free
@@ -633,17 +644,7 @@ function getActiveConflicts(status) {
   var conflicts = [];
   var seen = {};
 
-  var tasks = [
-    { key: "keybinding_select_all", prop: "keybindingSelectAll", name: "Select All", chord: (status && status.keybindingSelectAll) ? status.keybindingSelectAll : "CTRL + A" },
-    { key: "keybinding_delete", prop: "keybindingDelete", name: "Forward Delete", chord: (status && status.keybindingDelete) ? status.keybindingDelete : "DELETE" },
-    { key: "keybinding_find", prop: "keybindingFind", name: "Find in Document", chord: (status && status.keybindingFind) ? status.keybindingFind : "CTRL + F" },
-    { key: "keybinding_undo", prop: "keybindingUndo", name: "Undo", chord: (status && status.keybindingUndo) ? status.keybindingUndo : "CTRL + Z" },
-    { key: "keybinding_redo", prop: "keybindingRedo", name: "Redo", chord: (status && status.keybindingRedo) ? status.keybindingRedo : "CTRL + SHIFT + Z" },
-    { key: "keybinding_save", prop: "keybindingSave", name: "Save", chord: (status && status.keybindingSave) ? status.keybindingSave : "CTRL + S" },
-    { key: "keybinding_cut", prop: "keybindingCut", name: "Cut", chord: (status && status.keybindingCut) ? status.keybindingCut : "CTRL + X" },
-    { key: "keybinding_reload", prop: "keybindingReload", name: "Reload", chord: (status && status.keybindingReload) ? status.keybindingReload : "CTRL + R" },
-    { key: "keybinding_select_address", prop: "keybindingSelectAddress", name: "Select Address", chord: (status && status.keybindingSelectAddress) ? status.keybindingSelectAddress : "CTRL + L" }
-  ];
+  var tasks = keybindingTasks(status);
 
   // 1. Check pairwise intra-plugin conflicts
   for (var i = 0; i < tasks.length; i++) {
@@ -676,7 +677,7 @@ function getActiveConflicts(status) {
   // 2. Check plugin tasks vs system keybindings
   var overrides = status.systemKeybindingOverrides || {};
   var systemMap = status.systemKeybindings || {};
-  var pluginActionNorms = ["findindocument", "find", "selectall", "undo", "redo", "save", "forwarddelete", "delete", "cut", "universalcut", "reload", "selectaddress", "focusaddressbar", "selectaddressbar"];
+  var pluginActionNorms = PLUGIN_ACTION_NORMS;
 
   for (var k = 0; k < tasks.length; k++) {
     var task = tasks[k];
@@ -689,6 +690,7 @@ function getActiveConflicts(status) {
       var sChord = sysKeys[s];
       if (normalizeChord(sChord) === normT) {
         var sItem = systemMap[sChord];
+        if (!sItem) continue;
         var sAct = sItem.action || "";
         var sActNorm = sAct.toLowerCase().replace(/\s+/g, "");
 
@@ -890,30 +892,8 @@ function sensitivityFromSpeedPercent(percent) {
   return Math.round(((clamped / 50.0) - 1.0) * 100) / 100;
 }
 
-function scrollPercentFromFactor(factor) {
-  var f = Number(factor);
-  if (!isFinite(f)) f = 1.0;
-  var clamped = Math.max(0.1, Math.min(2.0, f));
-  return Math.round(((clamped - 0.1) / 1.9) * 100);
-}
 
-function factorFromScrollPercent(percent) {
-  var p = Number(percent);
-  if (!isFinite(p)) p = 50;
-  var clamped = Math.max(0, Math.min(100, p));
-  return Math.round((0.1 + (clamped / 100.0) * 1.9) * 100) / 100;
-}
 
-function formatAccelProfile(profile) {
-  var p = String(profile || "").toLowerCase().trim();
-  if (p === "flat") return "Flat";
-  return "Adaptive";
-}
 
-function formatTapButtonMap(map) {
-  var m = String(map || "").toLowerCase().trim();
-  if (m === "lmr") return "LMR (X11 Standard)";
-  return "LRM (Mac Default)";
-}
 
 

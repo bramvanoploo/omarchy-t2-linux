@@ -68,8 +68,6 @@ polkit.addRule(function(action, subject) {
   if (subcommand === "do-reset-suspend-to-defaults" && args.length === 0) return polkit.Result.YES;
   if (subcommand === "do-apply-recommended-battery" && matchAll(skipRecFlags)) return polkit.Result.YES;
   if (subcommand === "do-reset-battery-to-defaults" && args.length === 0) return polkit.Result.YES;
-  if (subcommand === "do-install-system" && args.length === 0) return polkit.Result.AUTH_ADMIN;
-  if (subcommand === "do-uninstall-system" && args.length === 0) return polkit.Result.AUTH_ADMIN;
 
   return polkit.Result.NO;
 });

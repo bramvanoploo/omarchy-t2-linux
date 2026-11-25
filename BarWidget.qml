@@ -18,6 +18,7 @@ BarWidget {
   property bool applying: false
   property string lastNotice: ""
   property bool limineUpdating: false
+  property bool pluginActionTimedOut: false
   property bool rebootConfirmOpen: false
   property bool recommendedConfirmOpen: false
   property bool t2FixesConfirmOpen: false
@@ -42,6 +43,7 @@ BarWidget {
   property string conflictRecommendedChord: ""
   property bool conflictIsSystem: false
   property string conflictSystemAction: ""
+  property string conflictSystemDefaultChord: ""
   property string conflictSystemDispatcher: ""
   property string conflictSystemArg: ""
   property string pendingConflictSystemAction: ""
@@ -53,7 +55,7 @@ BarWidget {
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string helper: pluginDir + "/scripts/omapple-helper"
-  readonly property string pluginVersion: (root.status && root.status.version) ? String(root.status.version) : "1.2.0"
+  readonly property string pluginVersion: (root.status && root.status.version) ? String(root.status.version) : "1.3.0"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color accent: Color.accent
@@ -79,10 +81,14 @@ BarWidget {
   property string pluginFilterQuery: ""
   property int pluginFilterMode: 0 // 0: All Apple Plugins, 1: Installed
   property bool filterT2Only: false
+  // Cached from the status payload so the plugin list does not re-filter on
+  // every poll: reading root.status here made each status write rebind every
+  // plugin delegate under the cursor.
+  property bool statusIsT2: true
 
   readonly property var filteredPlugins: {
     var list = root.pluginList || []
-    if (root.filterT2Only && root.status && root.status.isT2) {
+    if (root.filterT2Only && root.statusIsT2) {
       list = list.filter(function(p) { return Boolean(p && (p.isT2 || p.isExactT2)) })
     }
     if (root.pluginFilterMode === 1) {
@@ -101,16 +107,64 @@ BarWidget {
     return list
   }
 
+  // One tooltip for the ten shortcut rows instead of ten copies.
+  function keybindingTooltip(row) {
+    return row.isCustom
+      ? ("Custom shortcut: " + Model.formatChordForDisplay(row.cur) + "\nClick to re-record")
+      : "Record custom key combination"
+  }
+
+  function setTaskChord(statusObj, taskKey, chord) {
+    var propMap = {
+      keybinding_select_all: "keybindingSelectAll",
+      keybinding_delete: "keybindingDelete",
+      keybinding_find: "keybindingFind",
+      keybinding_undo: "keybindingUndo",
+      keybinding_redo: "keybindingRedo",
+      keybinding_save: "keybindingSave",
+      keybinding_cut: "keybindingCut",
+      keybinding_reload: "keybindingReload",
+      keybinding_select_address: "keybindingSelectAddress"
+    }
+    var prop = propMap[taskKey]
+    if (!prop || !statusObj) return false
+    statusObj[prop] = chord
+    return true
+  }
+
+  // The keybindings tab is hidden with visible:, not a Loader, so its models
+  // still re-evaluate on every status write. Both of these walk the shortcut
+  // records, so they only run while that tab is the one on screen.
+  readonly property var systemOverridesList: root.currentTabId === "keybindings" && root.status
+    ? Model.getSystemOverridesList(root.status) : []
+  readonly property var activeConflicts: root.currentTabId === "keybindings" && root.status
+    ? Model.getActiveConflicts(root.status) : []
+
+  // Stop-then-start for the shared action process: Quickshell ignores a new
+  // command while a process is running, so an unguarded start silently drops
+  // whatever was just clicked.
+  function runAction(cmd) {
+    if (actionProc.running) actionProc.running = false
+    actionProc.command = cmd
+    actionProc.running = true
+  }
+
   function refresh() {
     if (statusProc.running) return
-    statusProc.command = ["bash", helper, "status"]
+    // The keybinding map is 58 KB of the 61 KB payload and only the keybindings
+    // tab reads it; speaker-calibrator probes only matter on the sound tab.
+    var cmd = ["bash", helper, "status"]
+    if (root.currentTabId === "keybindings") cmd.push("--keys")
+    else if (root.currentTabId === "sound") cmd.push("--sound")
+    statusProc.command = cmd
     statusProc.running = true
   }
 
   function applyStatus(raw) {
     if (!raw || typeof raw !== "string" || !raw.trim()) return
-    var parsed = Model.parseStatus(raw)
+    var parsed = Model.parseStatus(raw, root.status)
     if (parsed) {
+      root.statusIsT2 = parsed.isT2
       status = parsed
       if (root.opened && root.openedViaBarButton && parsed.isT2 && !parsed.t2FixesPromptShown && !Model.areAllT2FixesApplied(parsed) && !root.limineUpdating && !root.rebootConfirmOpen) {
         root.t2FixesConfirmOpen = true
@@ -240,8 +294,7 @@ BarWidget {
       if (actionProc.running) actionProc.running = false
       root.applying = true
       root.lastNotice = "Applying T2 ethernet fixes…"
-      actionProc.command = ["bash", helper, "apply-t2-fixes", "--skip-pcie"]
-      actionProc.running = true
+      runAction(["bash", helper, "apply-t2-fixes", "--skip-pcie"])
     }
   }
 
@@ -316,6 +369,7 @@ BarWidget {
             var sysChord = sysKeys[sk]
             if (Model.normalizeChord(sysChord) === rNorm) {
               var sItem = s.systemKeybindings[sysChord]
+              if (!sItem) continue
               var sAct = sItem.action || ""
               var sActNorm = sAct.toLowerCase().replace(/\s+/g, "")
               if (recTaskNames.indexOf(sActNorm) === -1) {
@@ -356,8 +410,7 @@ BarWidget {
       root.applying = true
       var cmd2 = ["bash", helper, "apply-recommended", "--skip-limine"]
       if (!isT2Detected) cmd2.push("--skip-pcie")
-      actionProc.command = cmd2
-      actionProc.running = true
+      runAction(cmd2)
     }
   }
 
@@ -395,8 +448,7 @@ BarWidget {
     } else {
       if (actionProc.running) actionProc.running = false
       root.applying = true
-      actionProc.command = ["bash", helper, "apply-recommended-suspend", "--skip-limine"]
-      actionProc.running = true
+      runAction(["bash", helper, "apply-recommended-suspend", "--skip-limine"])
     }
   }
 
@@ -464,8 +516,7 @@ BarWidget {
       root.applying = true
       var cmd = ["bash", helper, "apply-recommended-battery", "--skip-limine"]
       if (!isT2Detected) cmd.push("--skip-pcie")
-      actionProc.command = cmd
-      actionProc.running = true
+      runAction(cmd)
     }
   }
 
@@ -526,8 +577,7 @@ BarWidget {
     root.lastNotice = "Applying recommended trackpad defaults…"
     if (actionProc.running) actionProc.running = false
     root.applying = true
-    actionProc.command = ["bash", helper, "apply-recommended-trackpad"]
-    actionProc.running = true
+    runAction(["bash", helper, "apply-recommended-trackpad"])
   }
 
   function resetTrackpadToDefaults() {
@@ -555,15 +605,13 @@ BarWidget {
       root.status = s
     }
     root.lastNotice = "Restoring trackpad settings to defaults…"
-    actionProc.command = ["bash", helper, "reset-trackpad-to-defaults"]
-    actionProc.running = true
+    runAction(["bash", helper, "reset-trackpad-to-defaults"])
   }
 
   function restartTrackpad() {
     noticeTimer.stop()
     root.lastNotice = "Restarting trackpad driver…"
-    actionProc.command = ["bash", helper, "restart-trackpad"]
-    actionProc.running = true
+    runAction(["bash", helper, "restart-trackpad"])
   }
 
   function reloadAudioServices() {
@@ -571,8 +619,13 @@ BarWidget {
     root.lastNotice = "Reloading PipeWire & WirePlumber audio services…"
     if (actionProc.running) actionProc.running = false
     root.applying = true
-    actionProc.command = ["bash", helper, "restart-audio"]
-    actionProc.running = true
+    runAction(["bash", helper, "restart-audio"])
+  }
+
+  function runPromptSetting(key, val) {
+    if (promptProc.running) promptProc.running = false
+    promptProc.command = ["bash", helper, "set", key, val]
+    promptProc.running = true
   }
 
   function dismissRecommendedPrompt() {
@@ -581,8 +634,7 @@ BarWidget {
       s.recommendedPromptShown = true
       root.status = s
     }
-    actionProc.command = ["bash", helper, "set", "recommended_prompt_shown", "true"]
-    actionProc.running = true
+    runPromptSetting("recommended_prompt_shown", "true")
   }
 
   function dismissT2FixesPrompt() {
@@ -591,8 +643,7 @@ BarWidget {
       s.t2FixesPromptShown = true
       root.status = s
     }
-    actionProc.command = ["bash", helper, "set", "t2_fixes_prompt_shown", "true"]
-    actionProc.running = true
+    runPromptSetting("t2_fixes_prompt_shown", "true")
   }
 
   function setOption(key, val) {
@@ -600,7 +651,6 @@ BarWidget {
       setMemSleep(val)
       return
     }
-    if (actionProc.running) actionProc.running = false
     applying = true
     noticeTimer.stop()
     lastNotice = "Applying " + key + "…"
@@ -638,12 +688,10 @@ BarWidget {
         s.wakeOnAc = (val === "on" || val === "true")
       } else if (key === "touchbar_blank") {
         s.touchbarBlank = (val === "true" || val === "on")
-      } else if (key === "mem_sleep") {
-        s.memSleep = val
       } else if (key === "lid_action") {
         s.lidAction = val
       } else if (key === "clamshell") {
-        s.clamshell = (val === "true" || val === "on")
+        s.clamshellMode = (val === "true" || val === "on")
       } else if (key === "hibernate_delay") {
         s.hibernateDelay = val
       } else if (key === "kbd_timeout") {
@@ -698,8 +746,7 @@ BarWidget {
       root.status = s
     }
 
-    actionProc.command = ["bash", helper, "set", key, String(val)]
-    actionProc.running = true
+    runAction(["bash", helper, "set", key, String(val)])
   }
 
   function fetchPlugins(force) {
@@ -840,11 +887,20 @@ BarWidget {
       root.open()
       root.rebootConfirmOpen = true
     }
-    function showRecommendedDialog(): void { root.open(); root.recommendedConfirmOpen = true }
+    function showRecommendedDialog(): void {
+      if (root.limineUpdating || limineProc.running) return
+      root.open()
+      root.recommendedConfirmOpen = true
+    }
     function applyRecommendedOptions(): void { root.applyRecommendedOptions() }
-    function showT2FixesDialog(): void { root.open(); root.t2FixesConfirmOpen = true }
+    function showT2FixesDialog(): void {
+      if (root.limineUpdating || limineProc.running) return
+      root.open()
+      root.t2FixesConfirmOpen = true
+    }
     function applyT2Fixes(): void { root.applyT2Fixes() }
     function selectTab(index: int): void {
+      if (!root.tabs || index < 0 || index >= root.tabs.length) return
       root.activeTab = index
       if (root.tabs[index] && root.tabs[index].id === "plugins" && root.opened) {
         root.fetchPlugins(true)
@@ -958,15 +1014,7 @@ BarWidget {
 
         if (root.status) {
           var s = Object.assign({}, root.status)
-          if (tKey === "keybinding_select_all") s.keybindingSelectAll = tChord
-          else if (tKey === "keybinding_delete") s.keybindingDelete = tChord
-          else if (tKey === "keybinding_find") s.keybindingFind = tChord
-          else if (tKey === "keybinding_undo") s.keybindingUndo = tChord
-          else if (tKey === "keybinding_redo") s.keybindingRedo = tChord
-          else if (tKey === "keybinding_save") s.keybindingSave = tChord
-          else if (tKey === "keybinding_cut") s.keybindingCut = tChord
-          else if (tKey === "keybinding_reload") s.keybindingReload = tChord
-          else if (tKey === "keybinding_select_address") s.keybindingSelectAddress = tChord
+          root.setTaskChord(s, tKey, tChord)
 
           var ov = Object.assign({}, s.systemKeybindingOverrides || {})
           var recChord = (ov[action] && ov[action].recommendedChord) ? ov[action].recommendedChord : Model.getRecommendedSystemChord(sDef || chord);
@@ -985,8 +1033,7 @@ BarWidget {
         root.lastNotice = "Assigned " + Model.getTaskFriendlyName(tKey) + " (" + Model.formatChordForDisplay(tChord) + ") and set " + action + " to " + Model.formatChordForDisplay(chord)
         noticeTimer.restart()
 
-        actionProc.command = ["bash", helper, "set-keybinding-with-system-override", tKey, tChord, action, chord, sDef, sDisp, sArg, recChord]
-        actionProc.running = true
+        runAction(["bash", helper, "set-keybinding-with-system-override", tKey, tChord, action, chord, sDef, sDisp, sArg, recChord])
         return
       }
 
@@ -1008,25 +1055,8 @@ BarWidget {
 
       if (root.status) {
         var s2 = Object.assign({}, root.status)
-        if (task === "keybinding_select_all") s2.keybindingSelectAll = chord
-        else if (task === "keybinding_delete") s2.keybindingDelete = chord
-        else if (task === "keybinding_find") s2.keybindingFind = chord
-        else if (task === "keybinding_undo") s2.keybindingUndo = chord
-        else if (task === "keybinding_redo") s2.keybindingRedo = chord
-        else if (task === "keybinding_save") s2.keybindingSave = chord
-        else if (task === "keybinding_cut") s2.keybindingCut = chord
-        else if (task === "keybinding_reload") s2.keybindingReload = chord
-        else if (task === "keybinding_select_address") s2.keybindingSelectAddress = chord
-
-        if (tKey2 === "keybinding_select_all") s2.keybindingSelectAll = tChord2
-        else if (tKey2 === "keybinding_delete") s2.keybindingDelete = tChord2
-        else if (tKey2 === "keybinding_find") s2.keybindingFind = tChord2
-        else if (tKey2 === "keybinding_undo") s2.keybindingUndo = tChord2
-        else if (tKey2 === "keybinding_redo") s2.keybindingRedo = tChord2
-        else if (tKey2 === "keybinding_save") s2.keybindingSave = tChord2
-        else if (tKey2 === "keybinding_cut") s2.keybindingCut = tChord2
-        else if (tKey2 === "keybinding_reload") s2.keybindingReload = tChord2
-        else if (tKey2 === "keybinding_select_address") s2.keybindingSelectAddress = tChord2
+        root.setTaskChord(s2, task, chord)
+        root.setTaskChord(s2, tKey2, tChord2)
 
         root.status = s2
       }
@@ -1034,8 +1064,7 @@ BarWidget {
       root.lastNotice = "Updated " + Model.getTaskFriendlyName(tKey2) + " (" + Model.formatChordForDisplay(tChord2) + ") and " + Model.getTaskFriendlyName(task) + " (" + Model.formatChordForDisplay(chord) + ")"
       noticeTimer.restart()
 
-      actionProc.command = ["bash", helper, "set-keybindings", task, chord, tKey2, tChord2]
-      actionProc.running = true
+      runAction(["bash", helper, "set-keybindings", task, chord, tKey2, tChord2])
       return
     }
 
@@ -1075,15 +1104,7 @@ BarWidget {
 
         if (root.status) {
           var s = Object.assign({}, root.status)
-          if (tKey === "keybinding_select_all") s.keybindingSelectAll = tChord
-          else if (tKey === "keybinding_delete") s.keybindingDelete = tChord
-          else if (tKey === "keybinding_find") s.keybindingFind = tChord
-          else if (tKey === "keybinding_undo") s.keybindingUndo = tChord
-          else if (tKey === "keybinding_redo") s.keybindingRedo = tChord
-          else if (tKey === "keybinding_save") s.keybindingSave = tChord
-          else if (tKey === "keybinding_cut") s.keybindingCut = tChord
-          else if (tKey === "keybinding_reload") s.keybindingReload = tChord
-          else if (tKey === "keybinding_select_address") s.keybindingSelectAddress = tChord
+          root.setTaskChord(s, tKey, tChord)
 
           var ov = Object.assign({}, s.systemKeybindingOverrides || {})
           ov[action] = {
@@ -1101,8 +1122,7 @@ BarWidget {
         root.lastNotice = "Assigned " + Model.getTaskFriendlyName(tKey) + " (" + Model.formatChordForDisplay(tChord) + ") and set " + action + " to " + Model.formatChordForDisplay(recChord)
         noticeTimer.restart()
 
-        actionProc.command = ["bash", helper, "set-keybinding-with-system-override", tKey, tChord, action, recChord, sDef, sDisp, sArg, recChord]
-        actionProc.running = true
+        runAction(["bash", helper, "set-keybinding-with-system-override", tKey, tChord, action, recChord, sDef, sDisp, sArg, recChord])
         return
       }
 
@@ -1123,25 +1143,8 @@ BarWidget {
 
       if (root.status) {
         var s2 = Object.assign({}, root.status)
-        if (task === "keybinding_select_all") s2.keybindingSelectAll = recChord
-        else if (task === "keybinding_delete") s2.keybindingDelete = recChord
-        else if (task === "keybinding_find") s2.keybindingFind = recChord
-        else if (task === "keybinding_undo") s2.keybindingUndo = recChord
-        else if (task === "keybinding_redo") s2.keybindingRedo = recChord
-        else if (task === "keybinding_save") s2.keybindingSave = recChord
-        else if (task === "keybinding_cut") s2.keybindingCut = recChord
-        else if (task === "keybinding_reload") s2.keybindingReload = recChord
-        else if (task === "keybinding_select_address") s2.keybindingSelectAddress = recChord
-
-        if (tKey2 === "keybinding_select_all") s2.keybindingSelectAll = tChord2
-        else if (tKey2 === "keybinding_delete") s2.keybindingDelete = tChord2
-        else if (tKey2 === "keybinding_find") s2.keybindingFind = tChord2
-        else if (tKey2 === "keybinding_undo") s2.keybindingUndo = tChord2
-        else if (tKey2 === "keybinding_redo") s2.keybindingRedo = tChord2
-        else if (tKey2 === "keybinding_save") s2.keybindingSave = tChord2
-        else if (tKey2 === "keybinding_cut") s2.keybindingCut = tChord2
-        else if (tKey2 === "keybinding_reload") s2.keybindingReload = tChord2
-        else if (tKey2 === "keybinding_select_address") s2.keybindingSelectAddress = tChord2
+        root.setTaskChord(s2, task, recChord)
+        root.setTaskChord(s2, tKey2, tChord2)
 
         root.status = s2
       }
@@ -1149,8 +1152,7 @@ BarWidget {
       root.lastNotice = "Updated " + Model.getTaskFriendlyName(tKey2) + " (" + Model.formatChordForDisplay(tChord2) + ") and " + Model.getTaskFriendlyName(task) + " (" + Model.formatChordForDisplay(recChord) + ")"
       noticeTimer.restart()
 
-      actionProc.command = ["bash", helper, "set-keybindings", task, recChord, tKey2, tChord2]
-      actionProc.running = true
+      runAction(["bash", helper, "set-keybindings", task, recChord, tKey2, tChord2])
       return
     }
 
@@ -1193,6 +1195,7 @@ BarWidget {
       root.conflictDisplacedChord = systemConflict.currentChord
       root.conflictRecommendedChord = systemConflict.recommendedChord
       root.conflictSystemAction = systemConflict.action
+      root.conflictSystemDefaultChord = systemConflict.defaultChord || systemConflict.currentChord
       root.conflictSystemDispatcher = systemConflict.dispatcher
       root.conflictSystemArg = systemConflict.arg
       root.conflictDialogOpen = true
@@ -1226,21 +1229,13 @@ BarWidget {
 
     if (isSys) {
       var sysAction = root.conflictSystemAction
-      var sysDef = root.conflictDisplacedChord
+      var sysDef = root.conflictSystemDefaultChord || root.conflictDisplacedChord
       var sysDisp = root.conflictSystemDispatcher
       var sysArg = root.conflictSystemArg
 
       if (root.status) {
         var s = Object.assign({}, root.status)
-        if (targetKey === "keybinding_select_all") s.keybindingSelectAll = targetChord
-        else if (targetKey === "keybinding_delete") s.keybindingDelete = targetChord
-        else if (targetKey === "keybinding_find") s.keybindingFind = targetChord
-        else if (targetKey === "keybinding_undo") s.keybindingUndo = targetChord
-        else if (targetKey === "keybinding_redo") s.keybindingRedo = targetChord
-        else if (targetKey === "keybinding_save") s.keybindingSave = targetChord
-        else if (targetKey === "keybinding_cut") s.keybindingCut = targetChord
-        else if (targetKey === "keybinding_reload") s.keybindingReload = targetChord
-        else if (targetKey === "keybinding_select_address") s.keybindingSelectAddress = targetChord
+        root.setTaskChord(s, targetKey, targetChord)
 
         var recChord = (displacedChord && displacedChord.trim()) ? displacedChord : Model.getRecommendedSystemChord(sysDef || targetChord);
         var overrides = Object.assign({}, s.systemKeybindingOverrides || {})
@@ -1259,30 +1254,12 @@ BarWidget {
       root.lastNotice = "Assigned " + root.conflictTargetTaskName + " (" + Model.formatChordForDisplay(targetChord) + ") and moved " + sysAction + " to " + Model.formatChordForDisplay(displacedChord)
       noticeTimer.restart()
 
-      actionProc.command = ["bash", helper, "set-keybinding-with-system-override", targetKey, targetChord, sysAction, displacedChord, sysDef, sysDisp, sysArg, recChord]
-      actionProc.running = true
+      runAction(["bash", helper, "set-keybinding-with-system-override", targetKey, targetChord, sysAction, displacedChord, sysDef, sysDisp, sysArg, recChord])
     } else {
       if (root.status) {
         var s2 = Object.assign({}, root.status)
-        if (displacedKey === "keybinding_select_all") s2.keybindingSelectAll = displacedChord
-        else if (displacedKey === "keybinding_delete") s2.keybindingDelete = displacedChord
-        else if (displacedKey === "keybinding_find") s2.keybindingFind = displacedChord
-        else if (displacedKey === "keybinding_undo") s2.keybindingUndo = displacedChord
-        else if (displacedKey === "keybinding_redo") s2.keybindingRedo = displacedChord
-        else if (displacedKey === "keybinding_save") s2.keybindingSave = displacedChord
-        else if (displacedKey === "keybinding_cut") s2.keybindingCut = displacedChord
-        else if (displacedKey === "keybinding_reload") s2.keybindingReload = displacedChord
-        else if (displacedKey === "keybinding_select_address") s2.keybindingSelectAddress = displacedChord
-
-        if (targetKey === "keybinding_select_all") s2.keybindingSelectAll = targetChord
-        else if (targetKey === "keybinding_delete") s2.keybindingDelete = targetChord
-        else if (targetKey === "keybinding_find") s2.keybindingFind = targetChord
-        else if (targetKey === "keybinding_undo") s2.keybindingUndo = targetChord
-        else if (targetKey === "keybinding_redo") s2.keybindingRedo = targetChord
-        else if (targetKey === "keybinding_save") s2.keybindingSave = targetChord
-        else if (targetKey === "keybinding_cut") s2.keybindingCut = targetChord
-        else if (targetKey === "keybinding_reload") s2.keybindingReload = targetChord
-        else if (targetKey === "keybinding_select_address") s2.keybindingSelectAddress = targetChord
+        root.setTaskChord(s2, displacedKey, displacedChord)
+        root.setTaskChord(s2, targetKey, targetChord)
 
         root.status = s2
       }
@@ -1290,8 +1267,7 @@ BarWidget {
       root.lastNotice = "Updated " + root.conflictTargetTaskName + " (" + Model.formatChordForDisplay(targetChord) + ") and " + displacedName + " (" + Model.formatChordForDisplay(displacedChord) + ")"
       noticeTimer.restart()
 
-      actionProc.command = ["bash", helper, "set-keybindings", displacedKey, displacedChord, targetKey, targetChord]
-      actionProc.running = true
+      runAction(["bash", helper, "set-keybindings", displacedKey, displacedChord, targetKey, targetChord])
     }
   }
 
@@ -1344,8 +1320,7 @@ BarWidget {
     root.lastNotice = "Restored " + action + " to system default"
     noticeTimer.restart()
 
-    actionProc.command = ["bash", helper, "reset-system-keybinding", action]
-    actionProc.running = true
+    runAction(["bash", helper, "reset-system-keybinding", action])
   }
 
   function setSystemKeybinding(action, newChord, defaultChord, dispatcher, arg, recommendedChord) {
@@ -1374,8 +1349,7 @@ BarWidget {
     root.lastNotice = "Updated " + action + " to " + Model.formatChordForDisplay(newChord)
     noticeTimer.restart()
 
-    actionProc.command = ["bash", helper, "set-system-keybinding", action, newChord, effectiveDef || "", dispatcher || "exec", arg || "", recChord || ""]
-    actionProc.running = true
+    runAction(["bash", helper, "set-system-keybinding", action, newChord, effectiveDef || "", dispatcher || "exec", arg || "", recChord || ""])
   }
 
   function cancelConflictDialog() {
@@ -1400,10 +1374,12 @@ BarWidget {
     root.conflictRecommendedChord = conflict.recommendedChord
     if (isSys) {
       root.conflictSystemAction = conflict.action2
+      root.conflictSystemDefaultChord = conflict.defaultChord || conflict.chord2 || conflict.chord
       root.conflictSystemDispatcher = conflict.dispatcher || "exec"
       root.conflictSystemArg = conflict.arg || ""
     } else {
       root.conflictSystemAction = ""
+      root.conflictSystemDefaultChord = ""
     }
     root.conflictDialogOpen = true
     Qt.callLater(function() {
@@ -1448,6 +1424,7 @@ BarWidget {
             var sysChord = sysKeys[sk]
             if (Model.normalizeChord(sysChord) === rNorm) {
               var sItem = s.systemKeybindings[sysChord]
+              if (!sItem) continue
               var sAct = sItem.action || ""
               var sActNorm = sAct.toLowerCase().replace(/\s+/g, "")
               if (recTaskNames.indexOf(sActNorm) === -1) {
@@ -1472,8 +1449,7 @@ BarWidget {
     root.lastNotice = "Applied recommended Mac shortcuts."
     noticeTimer.restart()
 
-    actionProc.command = ["bash", helper, "apply-recommended-keybindings"]
-    actionProc.running = true
+    runAction(["bash", helper, "apply-recommended-keybindings"])
   }
 
   function resetKeybindingsToDefaults() {
@@ -1500,8 +1476,7 @@ BarWidget {
     root.lastNotice = "Restored keybindings to system defaults."
     noticeTimer.restart()
 
-    actionProc.command = ["bash", helper, "reset-keybindings-to-defaults"]
-    actionProc.running = true
+    runAction(["bash", helper, "reset-keybindings-to-defaults"])
   }
 
 
@@ -1511,6 +1486,11 @@ BarWidget {
   onActiveTabChanged: {
     if (root.tabs[root.activeTab] && root.tabs[root.activeTab].id === "plugins" && opened) {
       root.fetchPlugins(true)
+    }
+    // The keybinding map and speaker-calibrator probe are only fetched while
+    // their tabs are open, so switching to them asks for them straight away.
+    if ((root.currentTabId === "keybindings" || root.currentTabId === "sound") && opened) {
+      refreshTimer.restart()
     }
   }
 
@@ -1543,6 +1523,9 @@ BarWidget {
   Component.onCompleted: {
     refresh()
     fetchPlugins()
+    // If the shell died while the recorder was open, Hyprland is still inside
+    // the omapple_record submap and normal keys look dead. Clear it.
+    exitRecordSubmap()
   }
 
   Component.onDestruction: {
@@ -1558,6 +1541,65 @@ BarWidget {
       waitForEnd: true
       onStreamFinished: root.applyStatus(text)
     }
+    onStarted: statusWatchdog.restart()
+    onExited: function(exitCode) {
+      statusWatchdog.stop()
+      // Without this a failed or half-written payload keeps the previous
+      // status on screen with no sign that it went stale.
+      if (exitCode !== 0) {
+        root.lastNotice = "Status check failed (exit code " + exitCode + ")."
+        noticeTimer.restart()
+      }
+    }
+  }
+
+  // A full status run forks python/jq/nmcli/iw and probes CPU, NetworkManager
+  // and limine. The closed panel only shows the battery, so poll that alone.
+  Process {
+    id: batteryProc
+    command: ["bash", helper, "battery"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyBattery(text)
+    }
+  }
+
+  function applyBattery(raw) {
+    if (!raw || !raw.trim() || !root.status) return
+    try {
+      var bat = JSON.parse(raw)
+      if (!bat || typeof bat !== "object") return
+      var s = Object.assign({}, root.status)
+      s.battery = bat
+      root.status = s
+    } catch (e) {
+      console.warn("Battery JSON parse error:", e)
+    }
+  }
+
+  function refreshBattery() {
+    if (!batteryProc.running) batteryProc.running = true
+  }
+
+  // Wall-clock ceilings. A stalled D-Bus call, a pkexec waiting for an agent
+  // that is not running, or a hyprctl socket that never answers would else
+  // pin the applying state on screen until the shell restarts.
+  Timer {
+    id: statusWatchdog
+    interval: 15000
+    repeat: false
+    onTriggered: {
+      if (statusProc.running) statusProc.running = false
+      root.lastNotice = "Status check timed out."
+      noticeTimer.restart()
+    }
+  }
+
+  // Process that only records that a start-up prompt was dismissed. It is kept
+  // off actionProc so closing the panel cannot cut an apply in half.
+  Process {
+    id: promptProc
+    stderr: StdioCollector { waitForEnd: true }
   }
 
   // Process to execute mutation actions
@@ -1571,7 +1613,9 @@ BarWidget {
         }
       }
     }
+    onStarted: actionWatchdog.restart()
     onExited: function(exitCode) {
+      actionWatchdog.stop()
       root.applying = false
       if (exitCode === 0) {
         root.lastNotice = "Changes saved."
@@ -1580,6 +1624,20 @@ BarWidget {
       }
       noticeTimer.restart()
       refreshTimer.restart()
+    }
+  }
+
+  // A settings write or a pkexec'd apply should finish in well under a minute;
+  // hyprctl reloads and audio restarts are the slowest part of this path.
+  Timer {
+    id: actionWatchdog
+    interval: 60000
+    repeat: false
+    onTriggered: {
+      if (actionProc.running) actionProc.running = false
+      root.applying = false
+      root.lastNotice = "Operation timed out."
+      noticeTimer.restart()
     }
   }
 
@@ -1600,7 +1658,9 @@ BarWidget {
         }
       }
     }
+    onStarted: limineWatchdog.restart()
     onExited: function(exitCode) {
+      limineWatchdog.stop()
       root.limineUpdating = false
       if (exitCode === 0) {
         root.lastNotice = "Limine boot configuration updated successfully."
@@ -1610,6 +1670,20 @@ BarWidget {
       }
       noticeTimer.restart()
       refreshTimer.restart()
+    }
+  }
+
+  // Boot entry rewrites are slow and can block on a disk that is not there;
+  // without a ceiling limineUpdating would keep the panel busy forever.
+  Timer {
+    id: limineWatchdog
+    interval: 300000
+    repeat: false
+    onTriggered: {
+      if (limineProc.running) limineProc.running = false
+      root.limineUpdating = false
+      root.lastNotice = "Boot configuration update timed out."
+      noticeTimer.restart()
     }
   }
 
@@ -1637,11 +1711,12 @@ BarWidget {
   }
 
   // Wall-clock ceiling for a catalog fetch. The helper bounds the response
-  // size; this bounds the whole call, so a stalled endpoint cannot pin the
-  // loading state the plugins tab shows when the widget opens.
+  // size and its own read budget (CATALOG_FETCH_BUDGET, 45 s); this sits above
+  // that so the helper always wins the race and removes its own temp file -
+  // killing it mid-write used to leave a ~13 MB orphan in the cache dir.
   Timer {
     id: pluginsFetchWatchdog
-    interval: 20000
+    interval: 50000
     repeat: false
     onTriggered: {
       if (pluginsProc.running) {
@@ -1663,6 +1738,7 @@ BarWidget {
     repeat: false
     onTriggered: {
       if (pluginActionProc.running) {
+        root.pluginActionTimedOut = true
         pluginActionProc.running = false
         root.activePluginOpId = ""
         root.pluginActionStatus = "Plugin operation timed out."
@@ -1681,8 +1757,16 @@ BarWidget {
       id: pluginActionStderr
       waitForEnd: true
     }
+    onStarted: {
+      root.pluginActionTimedOut = false
+      pluginActionWatchdog.restart()
+    }
     onExited: function(exitCode) {
       pluginActionWatchdog.stop()
+      if (root.pluginActionTimedOut) {
+        root.pluginActionTimedOut = false
+        return
+      }
       var opId = root.activePluginOpId
       root.activePluginOpId = ""
       var msg = ""
@@ -1749,10 +1833,13 @@ BarWidget {
   }
 
   Timer {
-    interval: root.opened ? 4000 : 15000
+    // Poll cost is a full helper run (hardware probes + JSON), so the closed
+    // interval is deliberately long: the panel refreshes on open, on tab
+    // change and after every action anyway.
+    interval: root.opened ? 4000 : 60000
     running: true
     repeat: true
-    onTriggered: root.refresh()
+    onTriggered: root.opened ? root.refresh() : root.refreshBattery()
   }
 
   // --- Bar Icon Button ---
@@ -2270,6 +2357,20 @@ BarWidget {
                     width: flickable.width - Style.space(14)
                     spacing: Style.space(14)
 
+                    // The polkit rule is what lets a privileged apply run
+                    // without an admin prompt, and nothing installs it for the
+                    // user, so say so once at the top of every tab.
+                    Text {
+                      visible: Boolean(root.status) && root.status.helperInstalled === false
+                      width: parent.width
+                      wrapMode: Text.WordWrap
+                      text: "󰀪 System helper not installed. Run  sudo " + root.pluginDir + "/setup-system  once and these changes apply without a password prompt."
+                      color: Color.warning || root.accent
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.letterSpacing: 0.8
+                    }
+
                     // Category Title Header
                     Item {
                       width: parent.width
@@ -2532,11 +2633,12 @@ BarWidget {
                             readonly property real btnWidth: (width - spacing * 2) / 3
 
                             Repeater {
-                              model: [
+                              model: (root.opened && root.currentTabId === "battery") ? [
                                 { val: "power", label: "Powersave" },
                                 { val: "balanced", label: "Balanced" },
                                 { val: "performance", label: "Performance" }
                               ]
+                              : []
 
                               delegate: Button {
                                 width: parent.btnWidth
@@ -2641,7 +2743,8 @@ BarWidget {
                             spacing: Style.space(6)
 
                             Repeater {
-                              model: (root.status && root.status.inactiveEthernet) ? root.status.inactiveEthernet : []
+                              model: (root.opened && root.currentTabId === "battery") ? (root.status && root.status.inactiveEthernet) ? root.status.inactiveEthernet : []
+                              : []
 
                               delegate: BorderSurface {
                                 width: parent.width
@@ -2888,13 +2991,14 @@ BarWidget {
                             readonly property real btnWidth: (width - spacing * 4) / 5
 
                             Repeater {
-                              model: [
+                              model: (root.opened && root.currentTabId === "battery") ? [
                                 { val: "30s", label: "30 sec" },
                                 { val: "1m", label: "1 min" },
                                 { val: "2m", label: "2 min" },
                                 { val: "5m", label: "5 min" },
                                 { val: "off", label: "Never" }
                               ]
+                              : []
 
                               delegate: Button {
                                 width: parent.btnWidth
@@ -2979,7 +3083,8 @@ BarWidget {
                             readonly property real btnWidth: modes.length > 0 ? (width - spacing * (modes.length - 1)) / modes.length : width
 
                             Repeater {
-                              model: parent.modes
+                              model: (root.opened && root.currentTabId === "suspend") ? parent.modes
+                              : []
 
                               delegate: Button {
                                 width: parent.btnWidth
@@ -3051,12 +3156,13 @@ BarWidget {
                             readonly property real btnWidth: (width - spacing * 3) / 4
 
                             Repeater {
-                              model: [
+                              model: (root.opened && root.currentTabId === "suspend") ? [
                                 { val: "suspend", label: "Suspend" },
                                 { val: "ignore", label: "Do Nothing" },
                                 { val: "lock", label: "Lock" },
                                 { val: "hibernate", label: "Hibernate" }
                               ]
+                              : []
 
                               delegate: Button {
                                 width: parent.btnWidth
@@ -3127,10 +3233,11 @@ BarWidget {
                             readonly property real btnWidth: (width - spacing) / 2
 
                             Repeater {
-                              model: [
+                              model: (root.opened && root.currentTabId === "suspend") ? [
                                 { val: "true", label: "Stay Awake (Clamshell)" },
                                 { val: "false", label: "Always Suspend" }
                               ]
+                              : []
 
                               delegate: Button {
                                 width: parent.btnWidth
@@ -3289,12 +3396,13 @@ BarWidget {
                             readonly property real btnWidth: (width - spacing * 3) / 4
 
                             Repeater {
-                              model: [
+                              model: (root.opened && root.currentTabId === "suspend") ? [
                                 { val: "off", label: "Never" },
                                 { val: "30min", label: "30 min" },
                                 { val: "1hour", label: "1 hour" },
                                 { val: "2hours", label: "2 hours" }
                               ]
+                              : []
 
                               delegate: Button {
                                 width: parent.btnWidth
@@ -3362,6 +3470,20 @@ BarWidget {
                       visible: root.currentTabId === "keybindings"
                       width: parent.width
                       spacing: Style.space(12)
+
+                      // The conflict list is built from the shortcut records
+                      // Omarchy writes. Without them the tab would look clean
+                      // while showing nothing real.
+                      Text {
+                        visible: Boolean(root.status) && root.status.systemKeybindingsAvailable === false
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "󰀪 Omarchy has not written its shortcut list yet, so system shortcuts and conflicts cannot be checked."
+                        color: Color.warning || root.accent
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.letterSpacing: 0.8
+                      }
 
                       // Tasks Keybindings Card (Compact Unified Card)
                       BorderSurface {
@@ -3470,7 +3592,7 @@ BarWidget {
                                 width: parent.btnWidth
                                 iconText: "󰌌"
                                 text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
-                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                tooltipText: root.keybindingTooltip(parent)
                                 bordered: true
                                 fontSize: Style.font.caption
                                 iconSize: Style.font.bodySmall
@@ -3569,7 +3691,7 @@ BarWidget {
                                 width: parent.btnWidth
                                 iconText: "󰌌"
                                 text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
-                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                tooltipText: root.keybindingTooltip(parent)
                                 bordered: true
                                 fontSize: Style.font.caption
                                 iconSize: Style.font.bodySmall
@@ -3668,7 +3790,7 @@ BarWidget {
                                 width: parent.btnWidth
                                 iconText: "󰌌"
                                 text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
-                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                tooltipText: root.keybindingTooltip(parent)
                                 bordered: true
                                 fontSize: Style.font.caption
                                 iconSize: Style.font.bodySmall
@@ -3767,7 +3889,7 @@ BarWidget {
                                 width: parent.btnWidth
                                 iconText: "󰌌"
                                 text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
-                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                tooltipText: root.keybindingTooltip(parent)
                                 bordered: true
                                 fontSize: Style.font.caption
                                 iconSize: Style.font.bodySmall
@@ -3866,7 +3988,7 @@ BarWidget {
                                 width: parent.btnWidth
                                 iconText: "󰌌"
                                 text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
-                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                tooltipText: root.keybindingTooltip(parent)
                                 bordered: true
                                 fontSize: Style.font.caption
                                 iconSize: Style.font.bodySmall
@@ -3965,7 +4087,7 @@ BarWidget {
                                 width: parent.btnWidth
                                 iconText: "󰌌"
                                 text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
-                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                tooltipText: root.keybindingTooltip(parent)
                                 bordered: true
                                 fontSize: Style.font.caption
                                 iconSize: Style.font.bodySmall
@@ -4064,7 +4186,7 @@ BarWidget {
                                 width: parent.btnWidth
                                 iconText: "󰌌"
                                 text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
-                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                tooltipText: root.keybindingTooltip(parent)
                                 bordered: true
                                 fontSize: Style.font.caption
                                 iconSize: Style.font.bodySmall
@@ -4163,7 +4285,7 @@ BarWidget {
                                 width: parent.btnWidth
                                 iconText: "󰌌"
                                 text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
-                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                tooltipText: root.keybindingTooltip(parent)
                                 bordered: true
                                 fontSize: Style.font.caption
                                 iconSize: Style.font.bodySmall
@@ -4262,7 +4384,7 @@ BarWidget {
                                 width: parent.btnWidth
                                 iconText: "󰌌"
                                 text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
-                                tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                tooltipText: root.keybindingTooltip(parent)
                                 bordered: true
                                 fontSize: Style.font.caption
                                 iconSize: Style.font.bodySmall
@@ -4278,7 +4400,7 @@ BarWidget {
 
                       // Changed System Shortcuts Section (Dynamic - only visible when overrides exist)
                       BorderSurface {
-                        visible: Model.getSystemOverridesList(root.status).length > 0
+                        visible: root.systemOverridesList.length > 0
                         width: parent.width
                         height: changedSysCol.implicitHeight + Style.space(28)
                         color: Util.alpha(root.foreground, 0.03)
@@ -4302,7 +4424,8 @@ BarWidget {
                           }
 
                           Repeater {
-                            model: Model.getSystemOverridesList(root.status)
+                            model: (root.opened && root.currentTabId === "keybindings") ? root.systemOverridesList
+                            : []
 
                             delegate: Column {
                               width: parent.width
@@ -4393,7 +4516,7 @@ BarWidget {
                                     width: parent.btnWidth
                                     iconText: "󰌌"
                                     text: parent.isCustom ? Model.formatChordForDisplay(parent.cur) : "Custom…"
-                                    tooltipText: parent.isCustom ? ("Custom shortcut: " + Model.formatChordForDisplay(parent.cur) + "\nClick to re-record") : "Record custom key combination"
+                                    tooltipText: root.keybindingTooltip(parent)
                                     bordered: true
                                     fontSize: Style.font.caption
                                     iconSize: Style.font.bodySmall
@@ -4406,7 +4529,7 @@ BarWidget {
                               }
 
                               PanelSeparator {
-                                visible: index < Model.getSystemOverridesList(root.status).length - 1
+                                visible: index < root.systemOverridesList.length - 1
                                 width: parent.width
                                 foreground: root.foreground
                               }
@@ -4417,7 +4540,7 @@ BarWidget {
 
                       // Conflicting Shortcuts Section (Dynamic - only visible when conflicts exist)
                       BorderSurface {
-                        visible: Model.getActiveConflicts(root.status).length > 0
+                        visible: root.activeConflicts.length > 0
                         width: parent.width
                         height: conflictingCol.implicitHeight + Style.space(28)
                         color: Util.alpha(Color.warning || root.accent, 0.05)
@@ -4453,7 +4576,8 @@ BarWidget {
                           }
 
                           Repeater {
-                            model: Model.getActiveConflicts(root.status)
+                            model: (root.opened && root.currentTabId === "keybindings") ? root.activeConflicts
+                            : []
 
                             delegate: Column {
                               width: parent.width
@@ -4559,7 +4683,7 @@ BarWidget {
                               }
 
                               PanelSeparator {
-                                visible: index < Model.getActiveConflicts(root.status).length - 1
+                                visible: index < root.activeConflicts.length - 1
                                 width: parent.width
                                 foreground: root.foreground
                               }
@@ -4689,9 +4813,6 @@ BarWidget {
                               step: 5
                               integer: true
                               value: Model.speedPercentFromSensitivity(root.status && root.status.trackpad ? root.status.trackpad.sensitivity : 0.0)
-                              onMoved: function(v) {
-                                root.setOption("trackpad_sensitivity", Model.sensitivityFromSpeedPercent(v))
-                              }
                               onReleased: function(v) {
                                 root.setOption("trackpad_sensitivity", Model.sensitivityFromSpeedPercent(v))
                               }
@@ -4813,9 +4934,6 @@ BarWidget {
                               step: 5
                               integer: true
                               value: Math.round(((root.status && root.status.trackpad ? root.status.trackpad.scrollFactor : 1.0)) * 100)
-                              onMoved: function(v) {
-                                root.setOption("trackpad_scroll_factor", (v / 100.0).toFixed(2))
-                              }
                               onReleased: function(v) {
                                 root.setOption("trackpad_scroll_factor", (v / 100.0).toFixed(2))
                               }
@@ -5555,7 +5673,7 @@ BarWidget {
                                   anchors.verticalCenter: parent.verticalCenter
                                   height: Style.space(18)
                                   color: Util.alpha(root.accent, 0.15)
-                                  radius: Style.cornerRadiusSmall
+                                  radius: Style.space(2)
                                   leftPadding: Style.space(6)
                                   rightPadding: Style.space(6)
 
@@ -5564,7 +5682,7 @@ BarWidget {
                                     text: "Installed" + (speakerCalSection.scInfo && speakerCalSection.scInfo.version ? (" v" + speakerCalSection.scInfo.version) : "")
                                     color: root.accent
                                     font.family: root.fontFamily
-                                    font.pixelSize: Style.font.tiny
+                                    font.pixelSize: Style.font.caption
                                     font.bold: true
                                   }
                                 }
@@ -5587,7 +5705,7 @@ BarWidget {
                             width: parent.width
                             height: Style.space(32)
                             color: Util.alpha(root.accent, 0.08)
-                            radius: Style.cornerRadiusSmall
+                            radius: Style.space(2)
 
                             Row {
                               anchors.fill: parent
@@ -5621,7 +5739,7 @@ BarWidget {
                             width: parent.width
                             color: Util.alpha(root.accent, 0.05)
                             borderSpec: Border.flat(Util.alpha(root.accent, 0.2), 1)
-                            radius: Style.cornerRadiusSmall
+                            radius: Style.space(2)
                             height: creatorAckRow.implicitHeight + Style.space(20)
 
                             Row {
@@ -6189,7 +6307,8 @@ BarWidget {
 
                       // Plugin Cards Repeater
                       Repeater {
-                        model: root.filteredPlugins
+                        model: (root.opened && root.currentTabId === "plugins") ? root.filteredPlugins
+                        : []
 
                         delegate: BorderSurface {
                           id: pluginCard
@@ -6702,7 +6821,7 @@ BarWidget {
                       }
 
                       Repeater {
-                        model: [
+                        model: (root.opened && root.t2FixesConfirmOpen) ? [
                           {
                             title: "Ethernet Management",
                             val: Model.areAllEthernetUnmanaged(root.status) ? "Unmanaged (Already applied)" : "Unmanaged (All devices)",
@@ -6716,6 +6835,7 @@ BarWidget {
                             applied: Boolean(root.status && root.status.pciePortsCompat)
                           }
                         ]
+                        : []
 
                         delegate: BorderSurface {
                           width: parent.width
@@ -6933,6 +7053,7 @@ BarWidget {
 
                       Repeater {
                         model: {
+                          if (!(root.opened && root.recommendedConfirmOpen)) return []
                           var items = [
                             {
                               title: "Sleep mode",
@@ -7051,6 +7172,7 @@ BarWidget {
 
                       Repeater {
                         model: {
+                          if (!(root.opened && root.recommendedConfirmOpen)) return []
                           var items = [
                             {
                               title: "Wi-Fi Power Management",
@@ -7162,7 +7284,7 @@ BarWidget {
                       }
 
                       Repeater {
-                        model: [
+                        model: (root.opened && root.recommendedConfirmOpen) ? [
                           {
                             title: "Select All",
                             val: "CMD + A",
@@ -7224,6 +7346,7 @@ BarWidget {
                             applied: Boolean(root.status && Model.areAllMacShortcutsApplied(root.status))
                           }
                         ]
+                        : []
 
                         delegate: BorderSurface {
                           width: parent.width
@@ -7293,7 +7416,7 @@ BarWidget {
                       }
 
                       Repeater {
-                        model: [
+                        model: (root.opened && root.recommendedConfirmOpen) ? [
                           {
                             title: "Natural Scrolling",
                             val: "Enabled",
@@ -7361,6 +7484,7 @@ BarWidget {
                             applied: Boolean(root.status && root.status.trackpad && root.status.trackpad.drag3fg === 0)
                           }
                         ]
+                        : []
 
                         delegate: BorderSurface {
                           width: parent.width

@@ -1,8 +1,68 @@
 #!/bin/bash
-set -euo pipefail
+# teardown-system: undo everything the OmApple plugin changed - the installed
+# helper/rules/unit, the /etc drop-ins the helper writes, and the Hyprland edits
+# it makes in the invoking user's config.
+set -uo pipefail
 
 [[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo ./teardown-system" >&2; exit 1; }
+
+# --- installed helper, rules, unit and the state it keeps ---
 rm -f /usr/local/libexec/omapple-helper /usr/local/libexec/omarchy-t2-helper \
+      /usr/local/libexec/omapple_kb.py \
       /usr/local/libexec/omapple-plugins-helper.py /usr/local/libexec/t2-plugins-helper.py \
       /etc/polkit-1/rules.d/90-omapple.rules /etc/polkit-1/rules.d/90-omarchy-t2-linux.rules
-echo "✓ Removed omapple and omarchy-t2 helper binaries and polkit rules."
+systemctl disable omapple-wake.service >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/omapple-wake.service /etc/omapple/wake
+rmdir /etc/omapple >/dev/null 2>&1 || true
+
+# --- system drop-ins written by scripts/omapple-helper ---
+rm -f /etc/tmpfiles.d/omarchy-t2-epp.conf /etc/tmpfiles.d/omarchy-t2-aspm.conf \
+      /etc/tmpfiles.d/omarchy-t2-mem-sleep.conf
+if command -v nmcli >/dev/null 2>&1; then
+  for conf in /etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-*.conf; do
+    [[ -f "$conf" ]] || continue
+    dev="${conf##*/99-omarchy-t2-unmanaged-}"
+    dev="${dev%.conf}"
+    [[ -n "$dev" ]] && nmcli device set "$dev" managed --permanent yes >/dev/null 2>&1 || true
+  done
+fi
+rm -f /etc/NetworkManager/conf.d/omarchy-wifi-powersave.conf \
+      /etc/NetworkManager/conf.d/99-omarchy-t2-unmanaged-*.conf
+rm -f /etc/modprobe.d/omarchy-t2-audio.conf /etc/modprobe.d/omarchy-usb-autosuspend.conf
+rm -f /etc/systemd/logind.conf.d/30-t2-lid.conf /etc/systemd/logind.conf.d/35-t2-clamshell.conf
+rm -f /etc/systemd/sleep.conf.d/30-t2-sleep.conf
+# shortcut: /etc/limine-entry-tool.d/t2-mac.conf is left alone because it may
+# carry other kernel command line settings; use the PCIe toggle's "off" path.
+
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl try-restart polkit.service polkitd.service >/dev/null 2>&1 || true
+systemctl kill -s HUP systemd-logind 2>/dev/null || true
+systemctl try-restart NetworkManager.service >/dev/null 2>&1 || true
+
+# --- the invoking user's Hyprland edits ---
+user="${SUDO_USER:-}"
+if [[ -n "$user" && "$user" != "root" ]]; then
+  user_home=$(getent passwd "$user" | cut -d: -f6)
+  hypr="$user_home/.config/hypr"
+  # The marker block is the one scripts/omapple-helper writes into bindings.lua.
+  [[ -f "$hypr/bindings.lua" && ! -L "$hypr/bindings.lua" ]] &&
+    sed -i '/-- BEGIN omarchy-t2-linux keybindings/,/-- END omarchy-t2-linux keybindings/d' "$hypr/bindings.lua"
+  [[ -f "$hypr/hyprland.lua" && ! -L "$hypr/hyprland.lua" ]] && sed -i "/require([\"']hypr\.t2-trackpad[\"'])/d" "$hypr/hyprland.lua"
+  [[ -f "$hypr/t2-trackpad.lua" && ! -L "$hypr/t2-trackpad.lua" ]] && rm -f "$hypr/t2-trackpad.lua"
+  # Only uncomment the gesture line the trackpad page commented out (it carries
+  # the "managed by t2-trackpad" marker).
+  [[ -f "$hypr/input.lua" && ! -L "$hypr/input.lua" ]] && sed -i \
+    's|^\([ \t]*\)-- hl\.gesture({ fingers = 3, direction = "horizontal", action = "workspace" }) -- managed by t2-trackpad|\1hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })|' \
+    "$hypr/input.lua"
+  rm -rf "$user_home/.config/omarchy/t2-linux"
+  # sed -i runs as root here, so the rewritten config files would be left owned
+  # by root; hand them back to the user.
+  user_uid=$(id -u "$user" 2>/dev/null || true)
+  user_gid=$(id -g "$user" 2>/dev/null || true)
+  if [[ -n "$user_uid" && -n "$user_gid" ]]; then
+    chown "$user_uid:$user_gid" "$hypr/bindings.lua" "$hypr/hyprland.lua" "$hypr/input.lua" 2>/dev/null || true
+  fi
+  echo "✓ Removed the plugin's Hyprland edits and settings for $user."
+fi
+
+echo "✓ Removed omapple helpers, polkit rules, wake unit and system drop-ins."
